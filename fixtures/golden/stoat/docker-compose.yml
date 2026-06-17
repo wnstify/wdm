@@ -1,0 +1,787 @@
+# Stoat — Hardened Docker Compose (wdm template, chat platform, formerly Revolt)
+# Fifteen long-running services plus two one-shot init containers: a MongoDB
+# backend, a Redis cache, a RabbitMQ event bus, a Garage S3 object store, eight
+# Rust microservices (api, events, autumn, january, gifbox, crond, pushd,
+# voice-ingress), a LiveKit voice/video SFU, the web frontend, and an in-stack
+# Caddy router; mongo-init seeds cleanup collections and garage-init bootstraps
+# the Garage bucket.
+#
+# Security baseline (PRD §11.1, §12.2):
+#   - cap_drop: ALL on every container, re-adding only what each one provably
+#     needs (probe-verified). The wdm named-volume model replaces the upstream's
+#     bind-mount + forced-user + privileged-chown approach:
+#       database / redis / rabbit -> the gosu-drop posture: each entrypoint
+#         starts as root, chowns its NAMED volume, and drops to the image uid
+#         (mongo/redis 999, rabbit 100). That needs the five init / privilege-
+#         drop caps CHOWN/DAC_OVERRIDE/FOWNER/SETGID/SETUID. A zero-cap set
+#         silently breaks redis BGSAVE persistence and fails the rabbit start
+#         (su-exec setgroups), so the gosu-drop set is mandatory here.
+#       garage -> DAC_OVERRIDE only: a scratch image running as container root
+#         that writes its own root-owned named volumes (no cap needed for those),
+#         but must read its bind-mounted garage.toml — mode 0600, owned by the
+#         installing uid — which cap_drop: ALL would otherwise deny.
+#       the eight Rust services + web + livekit -> the image's nonroot user
+#         (65532 / 1000) with ZERO added caps under cap_drop: ALL.
+#       caddy -> NET_BIND_SERVICE only: the caddy binary carries the file
+#         capability to bind privileged port 80, so it runs as root with that one
+#         cap re-added (the AdGuard/file-cap pattern).
+#       mongo-init -> a mongosh client (user 1000, no volume), zero caps.
+#       garage-init -> capless root (alpine has no nonroot user; it runs apk add
+#         and writes its own files), zero caps.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - tmpfs for ephemeral writes; healthchecks gate startup via depends_on
+#   - Five segmented networks (wdm creates the four internal ones with --internal
+#     at install): stoat-frontend (external — Caddy host bind, livekit STUN,
+#     garage-init apk egress), stoat-app, stoat-data, stoat-rabbit, stoat-voice.
+#   - The LiveKit WebRTC ports are the ONLY public surface (PRD §11.1): the TCP
+#     signal 7881 and the UDP media range 50000-50100 bind all interfaces by
+#     design so remote voice peers connect directly. Caddy binds 127.0.0.1:8880
+#     only — front it with a reverse proxy for TLS.
+#
+# Config generation (PRD §17, F6): wdm renders secrets.env, garage.toml,
+# livekit.yml, .env.web, and Revolt.toml from the placeholder map at install,
+# reproducing the upstream generate-config.sh output — wdm is the sole generator
+# and never invokes that script. The Caddyfile and init-scripts/init-garage.sh
+# are static sidecars copied verbatim.
+#
+# wdm renders this template into ~/docker/stoat/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` time via --env-file
+# ~/docker/stoat/.env (mode 0600).
+
+name: stoat
+services:
+  # ===========================================================================
+  # Infrastructure
+  # ===========================================================================
+  database:
+    image: mongo:8.3.2
+    container_name: stoat-database
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    command: mongod --auth --bind_ip_all
+    volumes:
+      # Named volume (not a bind mount): the mongo entrypoint runs as container
+      # root, chowns /data/db, and drops to the mongodb user (999) via gosu. The
+      # container root is fine — /data/db is the writable path, so this is not
+      # read_only.
+      - mongo_data:/data/db
+    networks:
+      - stoat-data
+    cap_drop:
+      - ALL
+    cap_add:
+      # gosu-drop init: chown the named volume and drop privileges to uid 999.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_DATABASE}
+          cpus: "${CPUS_LIMIT_DATABASE}"
+          pids: ${PIDS_LIMIT_DATABASE}
+        reservations:
+          memory: 768m
+          cpus: "0.25"
+    healthcheck:
+      # On the MIN profile the 17-container boot storm on a 2-CPU host makes mongo
+      # slow to first-healthy; the generous timeout/start_period keep the
+      # service_healthy dependency gate from aborting `compose up` during a normal
+      # slow boot (memory is not the constraint here).
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 10s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  redis:
+    image: redis:8.6.3-alpine
+    container_name: stoat-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --loglevel warning
+    volumes:
+      # Named volume: the redis entrypoint chowns /data and drops to uid 999.
+      - redis_data:/data
+    networks:
+      - stoat-data
+      - stoat-voice
+    cap_drop:
+      - ALL
+    cap_add:
+      # gosu-drop init. A zero-cap set SILENTLY breaks BGSAVE persistence (a
+      # data-loss trap), so the full init / privilege-drop set is mandatory.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_REDIS}
+          cpus: "${CPUS_LIMIT_REDIS}"
+          pids: ${PIDS_LIMIT_REDIS}
+        reservations:
+          memory: 64m
+          cpus: "0.1"
+    healthcheck:
+      # Loosened for the MIN-profile boot storm on a 2-CPU host: a slow first boot
+      # must not trip the service_healthy gate that fronts `compose up` (memory is
+      # not the constraint).
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  rabbit:
+    image: rabbitmq:4.2.5-alpine
+    container_name: stoat-rabbit
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
+      # Memory detection misfires in a container; set explicit watermarks.
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit vm_memory_high_watermark_paging_ratio 0.9 -rabbit vm_memory_high_watermark {absolute,\"900MiB\"}"
+    volumes:
+      # Named volume: the rabbitmq entrypoint chowns /var/lib/rabbitmq and drops
+      # to uid 100. The upstream forced user "100:101" is dropped — the gosu-drop
+      # entrypoint handles ownership on the named volume.
+      - rabbit_data:/var/lib/rabbitmq
+    networks:
+      - stoat-rabbit
+    cap_drop:
+      - ALL
+    cap_add:
+      # gosu-drop init. A zero-cap set FAILS the start (su-exec setgroups), so
+      # the full init / privilege-drop set is mandatory.
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_RABBIT}
+          cpus: "${CPUS_LIMIT_RABBIT}"
+          pids: ${PIDS_LIMIT_RABBIT}
+        reservations:
+          memory: 256m
+          cpus: "0.1"
+    healthcheck:
+      # RabbitMQ is the slowest to first-healthy under the MIN-profile boot storm
+      # on a 2-CPU host, and its service_healthy gate fronts caddy + voice-ingress.
+      # First boot can spend several minutes migrating RabbitMQ 4.x feature flags,
+      # so the start period must absorb that work before failed probes count.
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 15s
+      timeout: 60s
+      retries: 6
+      start_period: 300s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  garage:
+    # Garage: S3-compatible object storage. Scratch image — no shell, so the
+    # healthcheck is disabled and garage-init gates readiness via the admin API.
+    image: dxflrs/garage:v2.3.0
+    container_name: stoat-garage
+    restart: unless-stopped
+    volumes:
+      # wdm-rendered garage.toml, bind-mounted read-only (config_generation
+      # artifact; the catalog mount field names this exact bind).
+      - ./garage.toml:/etc/garage.toml:ro
+      # Named volumes: garage runs as container root and writes its own
+      # root-owned meta/data dirs — no extra cap needed for those writes.
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    networks:
+      - stoat-data
+    cap_drop:
+      - ALL
+    cap_add:
+      # garage runs as container root, but garage.toml is mode 0600 owned by the
+      # installing uid (it carries rpc_secret/admin_token/metrics_token, PRD §11).
+      # cap_drop: ALL strips DAC_OVERRIDE, so capless root cannot read that
+      # bind-mounted config and crash-loops. DAC_OVERRIDE re-grants exactly that
+      # read without widening the 0600 secret-file posture.
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_GARAGE}
+          cpus: "${CPUS_LIMIT_GARAGE}"
+          pids: ${PIDS_LIMIT_GARAGE}
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+    healthcheck:
+      disable: true
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  # ===========================================================================
+  # Application services (Rust; image-default nonroot 65532, zero caps,
+  # Revolt.toml bind-mounted read-only, secrets via the rendered secrets.env)
+  # ===========================================================================
+  api:
+    image: ghcr.io/stoatchat/api:v0.12.1
+    container_name: stoat-api
+    restart: unless-stopped
+    env_file: secrets.env
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbit:
+        condition: service_healthy
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-app
+      - stoat-data
+      - stoat-rabbit
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_API}
+          cpus: "${CPUS_LIMIT_API}"
+          pids: ${PIDS_LIMIT_API}
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  events:
+    image: ghcr.io/stoatchat/events:v0.12.1
+    container_name: stoat-events
+    restart: unless-stopped
+    env_file: secrets.env
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-app
+      - stoat-data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_EVENTS}
+          cpus: "${CPUS_LIMIT_EVENTS}"
+          pids: ${PIDS_LIMIT_EVENTS}
+        reservations:
+          memory: 96m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  autumn:
+    # The file-server. NOT read_only (matches upstream — autumn omits it).
+    image: ghcr.io/stoatchat/file-server:v0.12.1
+    container_name: stoat-autumn
+    restart: unless-stopped
+    env_file: secrets.env
+    depends_on:
+      database:
+        condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-app
+      - stoat-data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_AUTUMN}
+          cpus: "${CPUS_LIMIT_AUTUMN}"
+          pids: ${PIDS_LIMIT_AUTUMN}
+        reservations:
+          memory: 96m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  january:
+    image: ghcr.io/stoatchat/proxy:v0.12.1
+    container_name: stoat-january
+    restart: unless-stopped
+    env_file: secrets.env
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-app
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_JANUARY}
+          cpus: "${CPUS_LIMIT_JANUARY}"
+          pids: ${PIDS_LIMIT_JANUARY}
+        reservations:
+          memory: 64m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  gifbox:
+    image: ghcr.io/stoatchat/gifbox:v0.12.1
+    container_name: stoat-gifbox
+    restart: unless-stopped
+    env_file: secrets.env
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-app
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_GIFBOX}
+          cpus: "${CPUS_LIMIT_GIFBOX}"
+          pids: ${PIDS_LIMIT_GIFBOX}
+        reservations:
+          memory: 64m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  crond:
+    image: ghcr.io/stoatchat/crond:v0.12.1
+    container_name: stoat-crond
+    restart: unless-stopped
+    env_file: secrets.env
+    depends_on:
+      database:
+        condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
+      mongo-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_CROND}
+          cpus: "${CPUS_LIMIT_CROND}"
+          pids: ${PIDS_LIMIT_CROND}
+        reservations:
+          memory: 64m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  pushd:
+    image: ghcr.io/stoatchat/pushd:v0.12.1
+    container_name: stoat-pushd
+    restart: unless-stopped
+    env_file: secrets.env
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbit:
+        condition: service_healthy
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-data
+      - stoat-rabbit
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_PUSHD}
+          cpus: "${CPUS_LIMIT_PUSHD}"
+          pids: ${PIDS_LIMIT_PUSHD}
+        reservations:
+          memory: 64m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  voice-ingress:
+    image: ghcr.io/stoatchat/voice-ingress:v0.12.1
+    container_name: stoat-voice-ingress
+    restart: unless-stopped
+    env_file: secrets.env
+    depends_on:
+      database:
+        condition: service_healthy
+      rabbit:
+        condition: service_healthy
+    volumes:
+      - ./Revolt.toml:/Revolt.toml:ro
+    networks:
+      - stoat-app
+      - stoat-data
+      - stoat-rabbit
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_VOICE_INGRESS}
+          cpus: "${CPUS_LIMIT_VOICE_INGRESS}"
+          pids: ${PIDS_LIMIT_VOICE_INGRESS}
+        reservations:
+          memory: 96m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  # ===========================================================================
+  # Voice / frontend / router
+  # ===========================================================================
+  livekit:
+    image: ghcr.io/stoatchat/livekit-server:v1.9.13
+    container_name: stoat-livekit
+    restart: unless-stopped
+    # Image defaults to root; numeric 1000 runs nonroot with no volume so there
+    # is no ownership concern (feasibility-probe-proven).
+    user: "1000:1000"
+    command: --config /etc/livekit.yml
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      # PUBLIC by design (PRD §11.1): the WebRTC TCP signal and the UDP media
+      # range bind all interfaces so remote voice peers connect directly. No
+      # 127.0.0.1 prefix — the catalog declares these public:true.
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      # wdm-rendered livekit.yml, bind-mounted read-only (config_generation
+      # artifact; the catalog mount field names this exact bind).
+      - ./livekit.yml:/etc/livekit.yml:ro
+    networks:
+      - stoat-app
+      - stoat-voice
+      - stoat-frontend
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_LIVEKIT}
+          cpus: "${CPUS_LIMIT_LIVEKIT}"
+          pids: ${PIDS_LIMIT_LIVEKIT}
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  web:
+    # The web frontend. NOT read_only: inject.js writes /app/dist_injected at
+    # startup (matches upstream).
+    image: ghcr.io/stoatchat/for-web:0b94704
+    container_name: stoat-web
+    restart: unless-stopped
+    env_file: .env.web
+    networks:
+      - stoat-app
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_WEB}
+          cpus: "${CPUS_LIMIT_WEB}"
+          pids: ${PIDS_LIMIT_WEB}
+        reservations:
+          memory: 192m
+          cpus: "0.1"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  caddy:
+    # In-stack router. The caddy binary has file capabilities, so it runs as
+    # container root with cap_drop: ALL + only NET_BIND_SERVICE re-added to bind
+    # privileged port 80.
+    image: caddy:2.11.3
+    container_name: stoat-caddy
+    restart: unless-stopped
+    env_file: .env.web
+    ports:
+      # localhost only — front with a reverse proxy for public TLS.
+      - "127.0.0.1:8880:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      stoat-frontend:
+      stoat-app:
+        aliases:
+          - "${STOAT_DOMAIN}"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /config:size=16m
+      - /data:size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_CADDY}
+          cpus: "${CPUS_LIMIT_CADDY}"
+          pids: ${PIDS_LIMIT_CADDY}
+        reservations:
+          memory: 64m
+          cpus: "0.1"
+    depends_on:
+      - api
+      - events
+      - web
+    healthcheck:
+      # Loosened for the MIN-profile boot storm on a 2-CPU host: caddy waits on its
+      # upstreams, so a slow first boot must not trip its own service_healthy gate
+      # (memory is not the constraint).
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O /dev/null http://localhost:80/ || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  # ===========================================================================
+  # Init containers (one-shot; fixed small limits — not host-budget-sized)
+  # ===========================================================================
+  mongo-init:
+    # Seeds the cleanup-target collections crond queries on a fresh deploy.
+    # A mongosh client (user 1000, no volume) with zero added caps.
+    image: mongo:8.3.2
+    container_name: stoat-mongo-init
+    user: "1000:1000"
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - stoat-data
+    environment:
+      HOME: /tmp
+      MONGO_USER: ${MONGO_ROOT_USER}
+      MONGO_PASS: ${MONGO_ROOT_PASSWORD}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        URI="mongodb://$$MONGO_USER:$$MONGO_PASS@database:27017/revolt?authSource=admin"
+        echo "waiting for api admin_migrations to populate 'migrations' collection..."
+        timeout=300
+        while [ $$timeout -gt 0 ]; do
+          if mongosh "$$URI" --quiet --eval 'quit(db.migrations.countDocuments() > 0 ? 0 : 1)' >/dev/null 2>&1; then
+            break
+          fi
+          sleep 3
+          timeout=$$((timeout - 3))
+        done
+        if [ $$timeout -le 0 ]; then
+          echo "timeout waiting for api migration; exiting without changes (crond may restart-loop until first user activity)"
+          exit 0
+        fi
+        echo "api migration done; creating cleanup-target collections..."
+        mongosh "$$URI" --quiet --eval '
+          ["attachments","server_members"].forEach(c => {
+            try { db.createCollection(c); print("created:", c); }
+            catch(e) { print("exists:", c); }
+          });
+        '
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.25"
+          pids: 50
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+  garage-init:
+    # Bootstraps the Garage layout, bucket, and S3 key. Capless root (alpine has
+    # no nonroot user; it runs apk add and writes its own files).
+    image: alpine:3.22.4
+    container_name: stoat-garage-init
+    depends_on:
+      garage:
+        condition: service_started
+    networks:
+      - stoat-data
+      - stoat-frontend
+    environment:
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    volumes:
+      - ./init-scripts/init-garage.sh:/init-garage.sh:ro
+    entrypoint: ["sh", "/init-garage.sh"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=32m
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+          pids: 50
+    labels:
+      wdm.managed: "true"
+      wdm.app: "stoat"
+networks:
+  # Front: the only non-internal network — Caddy binds the host (127.0.0.1:8880)
+  # and reaches the internet, livekit uses it for STUN external-IP discovery, and
+  # garage-init uses it for one-shot apk egress.
+  stoat-frontend:
+    external: true
+  # App: Caddy -> the Rust app services and web frontend. wdm creates this with
+  # --internal at install time.
+  stoat-app:
+    external: true
+  # Data: MongoDB, Redis, Garage + their backend consumers, no internet egress.
+  stoat-data:
+    external: true
+  # Rabbit: the RabbitMQ broker + its message consumers, no internet egress.
+  stoat-rabbit:
+    external: true
+  # Voice: LiveKit <-> Redis (voice media coordination), no internet egress.
+  stoat-voice:
+    external: true
+volumes:
+  # MongoDB data dir. Named volume so wdm need not pre-create a host bind dir;
+  # the mongo entrypoint self-chowns it on init. wdm's remove preserves named
+  # volumes (never `docker compose down -v`) and lists them in the summary.
+  mongo_data:
+  # Redis persistence (the cache RDB). Self-chowned by the redis entrypoint.
+  redis_data:
+  # RabbitMQ Mnesia, queues, and schema. Self-chowned by the rabbitmq entrypoint.
+  rabbit_data:
+  # Garage metadata and object data. Written by garage as container root.
+  garage_meta:
+  garage_data:

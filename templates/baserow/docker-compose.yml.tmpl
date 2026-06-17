@@ -1,0 +1,186 @@
+# Baserow — Hardened Docker Compose (wdm template, no-code database)
+# Two services: postgres backend + the baserow all-in-one app container.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only — postgres adds the five init /
+#     privilege-drop caps; baserow adds NET_BIND_SERVICE (its internal Caddy
+#     binds port 80) plus the four caps its root entrypoint uses to chown the
+#     data volume and drop to PUID:PGID. No NET_* beyond NET_BIND_SERVICE.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates internal networks at install):
+#       baserow-front  (external) — reverse proxy reaches baserow here
+#       baserow-db     (internal) — baserow <-> postgres only, no internet
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for ephemeral writes; healthchecks gate startup via depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS
+#   - init-data.sh creates a non-root DB user so baserow never has DB superuser
+#   - SCRAM-SHA-256 password auth on postgres (stronger than the default md5)
+#   - postgres and baserow data dirs are named volumes (db_storage,
+#     baserow_data), not bind mounts — wdm does not pre-create bind dirs, and
+#     baserow's root entrypoint chowns its named volume on first boot
+#
+# wdm renders this template into ~/docker/baserow/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/baserow/.env (mode 0600). init-data.sh ships as a catalog
+# additional_files entry and is written verbatim
+# alongside the rendered compose + env files.
+
+name: baserow
+
+services:
+
+  postgres:
+    image: postgres:18.4
+    container_name: baserow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_NON_ROOT_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # SCRAM-SHA-256 password hashing instead of the historical md5 default.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so users upgrading from
+      # postgres:17 don't need a data migration.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): postgres self-chowns its PGDATA on
+      # init, and a named volume keeps the data inside Docker rather than in a
+      # host dir wdm would have to pre-create.
+      - db_storage:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    networks:
+      - baserow-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the postgres entrypoint init + privilege drop to
+      # postgres:postgres. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  baserow:
+    # All-in-one image: backend, frontend, celery workers, internal Caddy, and
+    # Redis are all supervised inside the container by s6-overlay.
+    image: baserow/baserow:2.2.2
+    container_name: baserow
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8086:80"  # localhost only — front with a reverse proxy
+    environment:
+      # Full external URL (scheme + host, no trailing slash — baserow appends
+      # its own). Derived from BASEROW_DOMAIN in the .env.
+      BASEROW_PUBLIC_URL: ${BASEROW_PUBLIC_URL}
+      # --- Database connection (non-root user from init-data.sh) -----------
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_USER: ${POSTGRES_NON_ROOT_USER}
+      DATABASE_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      # --- Secrets ---------------------------------------------------------
+      # Signs user-session JWTs; rotating it logs everyone out (no data loss).
+      BASEROW_JWT_SIGNING_KEY: ${BASEROW_JWT_SIGNING_KEY}
+      # Protects the Redis instance running inside the all-in-one container.
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # Django secret key (CSRF tokens, signed cookies); required in production.
+      SECRET_KEY: ${SECRET_KEY}
+      # --- File ownership (wdm-resolved built-ins) -------------------------
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the baserow entrypoint runs as
+      # container root and chowns /baserow/data (uploads, plugins, the internal
+      # Redis dump, Caddy state) to PUID:PGID on first boot. A named volume
+      # keeps that data inside Docker; wdm never pre-creates a host bind dir.
+      - baserow_data:/baserow/data
+    networks:
+      - baserow-front
+      - baserow-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # baserow's internal Caddy binds privileged port 80 inside the container.
+      - NET_BIND_SERVICE
+      # Drop privileges to the baserow / redis users for the worker processes.
+      - SETGID
+      - SETUID
+      # First-run setup chowns /baserow/data subdirs to those users.
+      - CHOWN
+      # Container root writes into the data volume on first boot; DAC_OVERRIDE
+      # covers the ownership transition while it chowns. FOWNER is NOT needed
+      # (upstream verified).
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_BASEROW}
+          cpus: "${CPUS_LIMIT_BASEROW}"
+          pids: ${PIDS_LIMIT_BASEROW}
+        reservations:
+          memory: 512m
+          cpus: "0.25"
+    healthcheck:
+      # The image's built-in healthcheck hits the backend gunicorn directly
+      # (bypasses the internal Caddy, so no Host-header matching is needed).
+      # start_period: 300s because the first boot syncs ~156 templates.
+      test: ["CMD", "/baserow/backend/docker/docker-entrypoint.sh", "backend-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+networks:
+  # Front: reverse proxy reaches baserow here (or via 127.0.0.1:8086).
+  baserow-front:
+    external: true
+  # Backend DB: baserow <-> postgres only, no internet egress. wdm creates this
+  # with --internal at install time.
+  baserow-db:
+    external: true
+
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind
+  # dir; postgres self-chowns it on init. wdm's remove preserves named volumes
+  # (never `docker compose down -v`) and lists them in the removal summary.
+  db_storage:
+  # baserow app data (uploads, plugins, internal Redis dump, Caddy state).
+  # A named volume the container-root entrypoint chowns to PUID:PGID on first
+  # boot; preserved on remove like db_storage.
+  baserow_data:

@@ -1,0 +1,147 @@
+# n8n
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/n8n-io/n8n/master/assets/n8n-logo.png" alt="n8n Logo" width="200">
+</p>
+
+<p align="center">
+  <a href="https://n8n.io/">Website</a> •
+  <a href="https://docs.n8n.io/">Documentation</a> •
+  <a href="https://github.com/n8n-io/n8n">GitHub</a> •
+  <a href="https://community.n8n.io/">Community</a>
+</p>
+
+---
+
+[n8n](https://n8n.io/) is an open-source workflow automation platform. Connect apps, automate tasks, and build complex workflows with a visual editor. A powerful, self-hosted alternative to Zapier and Make.
+
+## Features
+
+- **Visual Workflow Builder** — Drag-and-drop interface
+- **400+ Integrations** — Connect to popular services
+- **Code When Needed** — JavaScript/Python for custom logic
+- **Self-Hosted** — Full control over your data
+- **Webhooks** — Trigger workflows from external events
+- **Scheduling** — Run workflows on a schedule
+- **Error Handling** — Built-in retry and error workflows
+
+## Prerequisites
+
+- Docker and Docker Compose
+- External Docker network
+- Reverse proxy (Caddy, Nginx, Traefik)
+
+## Installation
+
+This template is managed by **wdm** — wdm renders `docker-compose.yml.tmpl` and `.env.tmpl` into your stack directory, pre-creates the `n8n-front` network plus `n8n-db` and `n8n-runners` (both `--internal`, no internet egress), generates `N8N_ENCRYPTION_KEY` and `N8N_RUNNERS_AUTH_TOKEN` via `crypto/rand`, derives `WEBHOOK_URL` from `N8N_HOST`, and runs `docker compose up -d` at install time. Both secrets are marked `regenerable=false` — rotating them post-install would either lose saved credentials (`N8N_ENCRYPTION_KEY`) or desynchronize the broker/runner pair (`N8N_RUNNERS_AUTH_TOKEN`), so wdm reuses the existing values via `state.ReadStackEnv` on every update. See the wdm documentation for the CLI surface; do not edit the rendered `.env` or `docker-compose.yml` by hand, since wdm regenerates them on update.
+
+After install, navigate to your configured domain and create an owner account. The reference content below describes the rendered stack (configuration knobs, security baseline, data layout) for troubleshooting and catalog-template work.
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Required |
+|---|---|---|
+| `POSTGRES_USER` | Postgres superuser (used only for init) | Yes |
+| `POSTGRES_PASSWORD` | Postgres superuser password | Yes |
+| `POSTGRES_DB` | Database name (default: `n8n`) | Yes |
+| `POSTGRES_NON_ROOT_USER` | n8n DB user (least privilege) | Yes |
+| `POSTGRES_NON_ROOT_PASSWORD` | n8n DB user password | Yes |
+| `N8N_ENCRYPTION_KEY` | 32-byte hex — encrypts saved credentials | Yes |
+| `N8N_RUNNERS_AUTH_TOKEN` | Shared n8n ↔ runner token | Yes |
+| `N8N_HOST` | Hostname only (no scheme) | Yes |
+| `WEBHOOK_URL` | Full external URL with trailing slash | Yes |
+| `TZ` | Container timezone | No (default: `Europe/Bratislava`) |
+
+### Reverse Proxy (Caddy)
+
+```
+n8n.example.com {
+    reverse_proxy http://localhost:5678
+}
+```
+
+## Ports
+
+| Port | Service | Description |
+|------|---------|-------------|
+| 5678 | HTTP | n8n editor & webhooks (bound to `127.0.0.1`) |
+| 5679 | RPC  | Task-runner broker (internal network only) |
+| 5680 | RPC  | Runner health (internal network only) |
+
+## Data Persistence
+
+| Storage | Description |
+|------|-------------|
+| `./db_storage` (bind mount) | PostgreSQL data (`/var/lib/postgresql/data`) — postgres self-chowns it on init |
+| `n8n_storage` (named volume) | n8n workflows, settings, encrypted credentials (`/home/node/.n8n`) |
+
+`n8n_storage` is a **named volume**, not a host bind mount. The n8n image runs
+as the unprivileged `node` user (UID 1000) with `cap_drop: ALL` and no chowning
+entrypoint, so a bind mount — whose host source Docker auto-creates root-owned —
+makes n8n crash on first boot with `EACCES` writing `/home/node/.n8n`. A named
+volume is seeded node-owned from the image, matching the official n8n-hosting
+compose examples. wdm never runs `docker compose down -v`, so removing the stack
+**preserves** `n8n_storage` (and `db_storage`): the named volume is listed in
+the removal summary (as `wdm-n8n_n8n_storage`), and `db_storage` stays inside
+the preserved stack directory the summary shows, so you know what was kept.
+
+The runner is stateless — no volume needed.
+
+## Security Features
+
+This template ships with a hardened default configuration:
+
+| Layer | Setting | Effect |
+|---|---|---|
+| Capabilities | `cap_drop: ALL` (postgres adds 5 init caps; n8n/runner add none) | No NET/SYS caps anywhere |
+| Privileges | `security_opt: no-new-privileges` on all containers | Setuid binaries cannot gain caps |
+| IPC | `ipc: private` on all containers | Isolated SysV/POSIX IPC namespace |
+| Process budget | `pids` 200 / 500 / 300 (pg / n8n / runner) | Caps fork sprawl |
+| Memory / CPU | Per-container limits | One service can't starve the others |
+| Three-network split | `n8n-db` and `n8n-runners` created with `--internal` | Postgres + runner have no internet egress |
+| Port exposure | `127.0.0.1:5678` only | Only the reverse proxy can reach n8n |
+| DB user | `POSTGRES_NON_ROOT_USER` (created by `init-data.sh`) | n8n never has Postgres superuser |
+| Task runner | Code/Function nodes execute in a separate container | Workflow JavaScript can't touch n8n's process memory |
+| Healthchecks | `pg_isready` / `wget` `/healthz` — no creds on cmdline | Built-in scripts only |
+| Telemetry | `N8N_DIAGNOSTICS_ENABLED=false` | No phone-home |
+| File perms | `N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true` | n8n refuses to start if `~/.n8n/config` is world-readable |
+
+> **Code nodes can't make outbound HTTP calls by default** because the
+> runner is on an internal network. If a workflow needs external HTTP
+> from JavaScript, use n8n's **HTTP Request node** (runs in the n8n
+> container, has internet via `n8n-front`). To allow outbound from the
+> runner anyway, drop `internal: true` on the `n8n-runners` network.
+
+> **Why `N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0`?**
+> n8n's broker defaults to `127.0.0.1`, which is only reachable inside
+> the n8n container. With the runner in a separate container, the bind
+> has to widen. `0.0.0.0` means *all interfaces of the n8n container* —
+> **not** all host interfaces. Three layers actually contain the broker:
+> 1. The `n8n-runners` network is created with `--internal`, so it has
+>    no route to the host or the internet.
+> 2. There is no `ports:` mapping for 5679, so the host kernel never
+>    sees that port — `iptables -L` won't show it, nothing from outside
+>    Docker can reach it.
+> 3. `N8N_RUNNERS_AUTH_TOKEN` authenticates every task RPC, so even a
+>    process that somehow ended up on the `n8n-runners` network couldn't
+>    dispatch work without the secret.
+>
+> The listen address inside the container is a routing concern; the
+> `--internal` network is the security boundary.
+
+> **Postgres image upgrade (optional):** swap `postgres:18.4` for
+> `dhi.io/postgres:18` (Docker Hardened Images) for a distroless base
+> with faster CVE patches. Requires a DHI subscription.
+
+## Support the Project
+
+- ☁️ [n8n Cloud](https://n8n.io/pricing) — Managed hosting
+- ⭐ [Star on GitHub](https://github.com/n8n-io/n8n)
+- 💬 [Join Community](https://community.n8n.io/)
+- 📖 [Documentation](https://docs.n8n.io/)
+
+## License
+
+n8n is released under a [Sustainable Use License](https://github.com/n8n-io/n8n/blob/master/LICENSE.md).

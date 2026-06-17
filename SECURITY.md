@@ -1,0 +1,100 @@
+# Security Policy
+
+## Reporting
+
+Please report security issues privately to the maintainers. Do not open public issues for active vulnerabilities until a fix is available.
+
+## Release Verification
+
+`wdm` release artifacts are signed with [cosign](https://github.com/sigstore/cosign)/Sigstore using keyless signing through GitHub Actions OIDC. In-product verification is Go-native; the human verification command below uses `cosign` and pins the same trust anchors the product code pins.
+
+### Trust anchors
+
+Verification pins the expected repository identity, issuer, and release workflow identity. These anchors are the human-readable quotation of the policy pinned in code at `internal/release/trustpolicy.go` — the constants there are authoritative and these values must match them verbatim:
+
+| Anchor | Value |
+|---|---|
+| OIDC issuer | `https://token.actions.githubusercontent.com` |
+| Source repository | `wnstify/wdm` (`https://github.com/wnstify/wdm`) |
+| Release workflow | `.github/workflows/release.yml` |
+| Certificate identity (tag releases) | `https://github.com/wnstify/wdm/.github/workflows/release.yml@refs/tags/<tag>` |
+
+The certificate identity for a tagged release is the repository URL and release workflow path joined to the tag ref, for example `https://github.com/wnstify/wdm/.github/workflows/release.yml@refs/tags/v1.0.0`.
+
+### Scope
+
+Real signed releases are produced only by pushing a `v*` tag to the public `wnstify/wdm` repository. Manual `workflow_dispatch` runs and branch builds are non-publishing verification runs: they do not mint release signatures and do not create GitHub Releases. The commands below describe how to verify the public release artifacts of `wnstify/wdm`.
+
+### Artifacts
+
+A release publishes the following assets (names locked in `internal/release/artifacts.go`):
+
+| Artifact | Purpose |
+|---|---|
+| `wdm-linux-amd64` | the linux/amd64 binary (payload) |
+| `catalog-stable.tar.gz` | the stable-channel catalog bundle (payload) |
+| `attestation.json` | SLSA provenance attestation, multi-subject (payload) |
+| `wdm-linux-amd64.spdx.json` | SPDX 2.3 JSON SBOM of the binary (payload) |
+| `SHA256SUMS` | GNU-coreutils checksums over the payload files only |
+| `SHA256SUMS.sig` | detached Ed25519 signature over `SHA256SUMS` (in-product) |
+| `SHA256SUMS.cosign.bundle` | keyless cosign bundle over `SHA256SUMS` (human/CI) |
+
+Trust chains from the signed `SHA256SUMS` outward: verify `SHA256SUMS` once, then the checksums verify every payload (binary, catalog bundle, attestation, SBOM). `SHA256SUMS` never lists itself or its own signatures.
+
+### Human verification (cosign)
+
+Download the release assets into one directory, then verify in this order. Set `TAG` to the release tag (e.g. `v1.0.0`).
+
+**1. Verify `SHA256SUMS` with the keyless cosign bundle.** Pin the trust anchors above:
+
+```sh
+cosign verify-blob \
+  --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity "https://github.com/wnstify/wdm/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  SHA256SUMS
+```
+
+The `--certificate-identity` value is `RepositoryURL + "/" + ReleaseWorkflowPath + "@refs/tags/" + <tag>` — the tag-form certificate SAN. The `--certificate-oidc-issuer` value is the `OIDCIssuer` constant. Both are the anchors in the table above and the constants in `internal/release/trustpolicy.go`.
+
+**2. Verify the payloads against the now-trusted `SHA256SUMS`.** This covers the binary, catalog bundle, attestation, and SBOM in one step:
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+**3. Verify the SLSA provenance attestation** of the binary (and catalog bundle) against the same workflow identity and issuer. `attestation.json` is a multi-subject statement covering both `wdm-linux-amd64` and `catalog-stable.tar.gz`:
+
+```sh
+gh attestation verify wdm-linux-amd64 \
+  --repo wnstify/wdm \
+  --bundle attestation.json \
+  --cert-identity "https://github.com/wnstify/wdm/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --cert-oidc-issuer "https://token.actions.githubusercontent.com"
+```
+
+`--repo wnstify/wdm` scopes the actor identity to the source repository; `gh attestation verify` requires `--repo` or `--owner` even in offline `--bundle` mode. The native verifier enforces the SLSA v1.0 predicate type (`https://slsa.dev/provenance/v1`) by default.
+
+Equivalently, with cosign:
+
+```sh
+cosign verify-blob-attestation wdm-linux-amd64 \
+  --bundle attestation.json \
+  --new-bundle-format \
+  --type slsaprovenance1 \
+  --certificate-identity "https://github.com/wnstify/wdm/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+```
+
+`--new-bundle-format` is required to parse the new-format Sigstore bundle that `actions/attest-build-provenance` emits (cosign v2.6+ accepts it; it is the default and a deprecated no-op in cosign v3). `--type slsaprovenance1` selects the SLSA **v1.0** predicate (`slsaprovenance` without the suffix is the v0.2 shorthand and does not match).
+
+Repeat with `catalog-stable.tar.gz` to verify the catalog bundle against the same attestation.
+
+### In-product verification
+
+`wdm` verifies releases itself, Go-native, with no external verifier (decision #56). Instead of the keyless cosign path, the binary verifies a **detached Ed25519 signature** (`SHA256SUMS.sig`, raw 64-byte signature) over the exact `SHA256SUMS` bytes against a **long-lived public key embedded in `internal/release`**, then verifies each payload against the SHA-256 checksums and verifies `attestation.json` by digest. This embedded-key path is independent of the keyless cosign identity above; both cover the same `SHA256SUMS`, so the human and the product reach the same trust decision by different routes.
+
+### Key and identity rotation
+
+- **Trust identity (keyless / cosign path).** The pinned anchors — issuer, source repository, and release workflow path — are the constants in `internal/release/trustpolicy.go`. Any change to the repository, the OIDC issuer, or the release workflow path is an identity rotation: update the trust policy constants and this document in the same change, and the new anchors take effect with the next signed release.
+- **Embedded signing key (in-product path).** The production Ed25519 private key lives as a CI secret and the matching public key is embedded from `internal/release/signing_public_key.pem`. Rotation replaces the embedded public key in a signed release. Non-publishing verification runs sign only with ephemeral in-run keys, never the production key.

@@ -1,0 +1,246 @@
+# Dockhand — Hardened Docker Compose (wdm template, Docker-management web UI)
+# Three services: a vanilla Postgres backend + a tecnativa/docker-socket-proxy
+# sidecar + the Dockhand server (web UI + API). Dockhand manages Docker through
+# the proxy, never the raw socket.
+#
+# Security baseline (PRD §11.1, §12.1, §12.2):
+#   - cap_drop: ALL on every service, re-adding only what each one provably
+#     needs (probe-verified):
+#       postgresql → CHOWN/SETUID/SETGID/DAC_OVERRIDE: the entrypoint chowns its
+#         PGDATA on init and drops to the postgres user (uid 999).
+#       dockhand → CHOWN/SETUID/SETGID/DAC_OVERRIDE: the LSIO-style entrypoint
+#         starts as root, chowns /app/data, then drops the server to PUID:PGID
+#         (uid 1000). WITHOUT PUID/PGID the image would keep running as root — a
+#         regression — so both are set from wdm's built-in .UID/.GID.
+#       socket-proxy → ZERO added caps: it runs as its image user under
+#         cap_drop: ALL with no cap_add.
+#   - Docker socket access (PRD §12.1): the socket-proxy is the SOLE service that
+#     mounts /var/run/docker.sock (read-only). Dockhand reaches the Docker API
+#     over the --internal dockhand-socket network via DOCKER_HOST=
+#     tcp://socket-proxy:2375 — it has NO direct docker.sock mount (wdm refuses
+#     one). The proxy exposes a closed, write-capable API set (containers,
+#     images, networks, volumes, info, events + POST/lifecycle/delete) so
+#     Dockhand can manage containers; SYSTEM is omitted (only /system/df needs
+#     it and Dockhand does not use it). wdm surfaces the read-AND-control posture
+#     as a DOCKER SOCKET ACCESS WARNING at install.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Three-network split (wdm creates the two internal networks with --internal
+#     at install):
+#       dockhand-frontend (external) — reverse proxy reaches the UI here
+#       dockhand-database (internal) — dockhand <-> postgres only, no egress
+#       dockhand-socket   (internal) — dockhand <-> socket-proxy only, no egress
+#     The socket-proxy attaches to dockhand-socket ONLY, so the Docker API it
+#     fronts is never reachable off-host (socket-proxy check C).
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for postgres ephemeral writes and the proxy's /run; healthchecks gate
+#     startup via depends_on
+#   - 127.0.0.1 port binding only on the Dockhand server — reverse proxy in front
+#     for TLS. Postgres and the proxy publish no host port.
+#
+# Dockhand owns its database outright: PG_USER is the Postgres superuser created
+# by POSTGRES_USER, so there is no init-data.sh / non-root-DB-user split.
+#
+# wdm renders this template into ~/docker/dockhand/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/dockhand/.env (mode 0600).
+
+name: dockhand
+services:
+  postgresql:
+    image: postgres:18.4-alpine3.23
+    container_name: dockhand-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASS}
+      POSTGRES_DB: ${PG_DB}
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so the named volume path stays
+      # stable across image bumps.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the postgres entrypoint self-chowns its
+      # PGDATA on init, and a named volume keeps the data inside Docker rather
+      # than in a host dir wdm would have to pre-create. wdm preserves named
+      # volumes on remove (never `docker compose down -v`).
+      - dockhand_postgres:/var/lib/postgresql/data
+    networks:
+      - dockhand-database
+    cap_drop:
+      - ALL
+    cap_add:
+      # The entrypoint chowns PGDATA and drops privileges to postgres:postgres
+      # (uid 999). No NET_* / SYS_*.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRESQL}
+          cpus: "${CPUS_LIMIT_POSTGRESQL}"
+          pids: ${PIDS_LIMIT_POSTGRESQL}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${PG_USER} -d ${PG_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "dockhand"
+  socket-proxy:
+    # tecnativa/docker-socket-proxy: a haproxy front for the Docker socket that
+    # exposes only the API groups enabled below. It is the ONLY service that
+    # mounts /var/run/docker.sock (read-only) and the ONLY consumer of the
+    # --internal dockhand-socket network, so the API it fronts is never reachable
+    # off-host (PRD §12.1, socket-proxy check C).
+    image: tecnativa/docker-socket-proxy:0.3
+    container_name: dockhand-socket-proxy
+    restart: unless-stopped
+    environment:
+      # The granular tecnativa flags that realize wdm's abstract allowed_api set
+      # (catalog socket_proxy.allowed_api). The read scopes Dockhand's UI needs:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      VOLUMES: "1"
+      INFO: "1"
+      EVENTS: "1"
+      # POST is wdm's umbrella write/control switch; it expands into the
+      # tecnativa write flags so Dockhand can create/start/stop/restart/remove.
+      # SYSTEM is intentionally NOT enabled (only /system/df needs it and
+      # Dockhand does not use it).
+      POST: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+      ALLOW_RESTARTS: "1"
+      DELETE: "1"
+    volumes:
+      # The SOLE Docker-socket mount in this stack, read-only. The proxy filters
+      # every call against the flags above; no other service binds the socket.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - dockhand-socket
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /run:size=8m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_SOCKET_PROXY}
+          cpus: "${CPUS_LIMIT_SOCKET_PROXY}"
+          pids: ${PIDS_LIMIT_SOCKET_PROXY}
+        reservations:
+          memory: 16m
+          cpus: "0.1"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO/dev/null http://localhost:2375/_ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "dockhand"
+  dockhand:
+    image: fnsys/dockhand:v1.0.29
+    container_name: dockhand
+    restart: unless-stopped
+    environment:
+      # The LSIO-style entrypoint starts as root, chowns /app/data, then drops
+      # the server to this uid:gid. wdm resolves PUID/PGID to the host user that
+      # owns the stack directory (built-in .UID/.GID — never user-supplied).
+      # Omitting them would keep the server running as root.
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      # Reach the Docker API through the proxy on the --internal socket network.
+      # Required: the upstream image otherwise probes a local /var/run/docker.sock
+      # that does not exist here (no direct mount).
+      DOCKER_HOST: tcp://socket-proxy:2375
+      # Dockhand connects to its own database as the superuser PG_USER.
+      DATABASE_URL: postgres://${PG_USER}:${PG_PASS}@postgresql:5432/${PG_DB}
+    volumes:
+      # Dockhand's application data (settings, stored Compose projects, scan
+      # results). A named volume: the entrypoint chowns it to PUID:PGID on first
+      # run, so a fresh volume comes up writable without the host pre-creating a
+      # directory. Preserved on remove.
+      - dockhand_data:/app/data
+    ports:
+      # Web UI / API — localhost only; front with a reverse proxy for TLS.
+      - "127.0.0.1:8080:3000"
+    networks:
+      - dockhand-frontend
+      - dockhand-database
+      - dockhand-socket
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      socket-proxy:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      # The entrypoint chowns /app/data and drops privileges to PUID:PGID. No
+      # NET_* / SYS_*.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_DOCKHAND}
+          cpus: "${CPUS_LIMIT_DOCKHAND}"
+          pids: ${PIDS_LIMIT_DOCKHAND}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD", "/usr/sbin/curl", "-sf", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "dockhand"
+networks:
+  # Front: reverse proxy reaches the UI here (or via 127.0.0.1:8080).
+  dockhand-frontend:
+    external: true
+  # Backend DB: dockhand <-> postgres only, no internet egress. wdm creates this
+  # with --internal at install time.
+  dockhand-database:
+    external: true
+  # Socket path: dockhand <-> the socket-proxy only, no internet egress. The
+  # proxy attaches to THIS network only (socket-proxy check C). wdm creates it
+  # with --internal at install time.
+  dockhand-socket:
+    external: true
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind dir;
+  # postgres self-chowns it on init. Preserved on remove.
+  dockhand_postgres:
+  # Dockhand application data (settings, stored Compose projects, scan results).
+  # Named volume, preserved on remove.
+  dockhand_data:

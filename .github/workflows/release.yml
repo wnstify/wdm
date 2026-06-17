@@ -1,0 +1,609 @@
+# RELEASE WORKFLOW — tag-gated real signing, dry-run for every other run.
+#
+# This workflow builds the release payload artifacts, the SPDX SBOM, the
+# SLSA provenance attestation, and the SHA256SUMS integrity anchor, signs
+# SHA256SUMS, and publishes the GitHub Release. It runs in two modes:
+#
+#   * Dry-run — any manual `workflow_dispatch`, any branch build, and any run
+#     on a repository other than the public `wnstify/wdm`. The build job emits
+#     ephemeral CI artifacts as evidence and signs with an in-run ephemeral
+#     Ed25519 key. The gated signed-release job is skipped, so no keyless
+#     signature, no SLSA attestation, and no Rekor/Fulcio material is minted,
+#     and no GitHub Release is created.
+#   * Real signing — a `refs/tags/v*` push on the public `wnstify/wdm`
+#     repository ONLY. The gated signed-release job signs the authoritative
+#     SHA256SUMS with the production Ed25519 key, mints the keyless cosign
+#     bundle and the SLSA attestation, and creates the GitHub Release with its
+#     seven assets.
+#
+# A manual `workflow_dispatch` run, any branch build, and any run on a
+# non-`wnstify/wdm` repository stay dry-runs: they mint no real signature and
+# create no GitHub Release. The signed-release job is the only job permitted to
+# mint keyless material or publish: it alone carries `id-token: write`,
+# `attestations: write`, and `contents: write`, and it alone is gated to the
+# public repository and the tag ref below.
+#
+# SPDX SBOM (PRD §22, §23). The build job generates wdm-linux-amd64.spdx.json
+# (ArtifactSBOM): an SPDX 2.3 JSON Software Bill of Materials describing the
+# built binary's Go module dependencies, produced by anchore/sbom-action
+# (syft, format spdx-json -> "spdxVersion": "SPDX-2.3"). The SBOM is an
+# UNSIGNED manifest with NO identity binding — it is not keyless, mints no
+# OIDC token, and writes no transparency-log entry — so it is produced in
+# the identity-agnostic build job and runs in the dry-run. It needs NO
+# `wnstify/wdm` gate and NO new write permission, unlike the keyless
+# attestation and cosign bundle. The SBOM is a RolePayload file in
+# internal/release.ChecksummedArtifactNames(), so it is a SHA256SUMS payload
+# in BOTH jobs (added to the dry-run set in the build job, and to the
+# authoritative full set — binary + catalog bundle + attestation + SBOM — in
+# the gated job). Its integrity is provided by SHA256SUMS, which the detached
+# and cosign signatures cover. It is deliberately NOT an attestation subject:
+# product code verifies the attestation only against the binary and the
+# catalog bundle, so the subject-path list stays { binary, catalog bundle }.
+#
+# Dual-sign scheme (PRD §22, §23). SHA256SUMS is signed two independent ways:
+#   1. Product-verifiable detached Ed25519 signature -> SHA256SUMS.sig: a raw
+#      64-byte Ed25519 signature over the EXACT SHA256SUMS bytes, with NO
+#      prehash. This is the encoding internal/release.VerifyDetachedSignature
+#      accepts, produced by scripts/release-signing.go, and product code
+#      verifies it in-product against the long-lived public key embedded at
+#      internal/release/signing_public_key.pem. In the dry-run it is signed
+#      with an EPHEMERAL Ed25519 key generated in-run (never a committed
+#      secret, never the production key); the ephemeral public key is uploaded
+#      as evidence so the .sig can be verified. On the publish path it is
+#      signed with the production private key (a CI secret) and verified
+#      against the embedded public key.
+#   2. Keyless cosign bundle -> SHA256SUMS.cosign.bundle (signature, Fulcio
+#      cert, Rekor entry) for human / CI `cosign verify-blob`.
+#
+# SLSA provenance attestation (PRD §23). The gated signed-release job
+# generates attestation.json with actions/attest-build-provenance: a KEYLESS
+# in-toto/DSSE SLSA provenance statement, JSON-serialized in the Sigstore
+# bundle format internal/release.LoadAttestationBundle parses and
+# VerifyAttestation checks (transparency-log inclusion + observer timestamp
+# required; certificate identity matched against DefaultTrustPolicy's
+# wnstify/wdm release-workflow SAN). It is MULTI-SUBJECT: a single
+# attestation references BOTH dist/wdm-linux-amd64 and
+# dist/catalog-stable.tar.gz (the action bundles a glob / newline path list
+# into one statement with multiple subjects). This is required because
+# product code verifies the SAME attestation.json against two different
+# artifacts by digest: internal/release.StageCandidate binds it to the
+# binary bytes (self-update) and VerifyCatalogBundle binds it to the catalog
+# bundle bytes (catalog/TUI update). VerifyAttestation matches via
+# verify.WithArtifactDigest, which passes when the supplied digest is ANY of
+# the statement's subjects, so one multi-subject attestation satisfies both
+# verifiers. Missing attestation stays a verification failure in-product
+# (PRD §23): LoadAttestationBundle fails closed on empty bytes.
+#
+# SHA256SUMS RECONCILIATION (PRD §22, §23). attestation.json is itself a
+# SHA256SUMS payload file (RolePayload in ChecksummedArtifactNames), but it
+# is keyless and only exists on the gated public path, while the detached
+# sig + cosign bundle SIGN SHA256SUMS. The two jobs therefore produce two
+# distinct SHA256SUMS, and only the second is authoritative:
+#   * The always-running build job (contents: read, identity-agnostic) emits
+#     a DRY-RUN SHA256SUMS over the payloads available at that stage (the
+#     binary, the catalog bundle, and the SBOM) and an ephemeral detached sig
+#     over it. attestation.json does not exist yet, so this SHA256SUMS
+#     legitimately covers fewer payloads. It is uploaded as `release-dry-run`
+#     EVIDENCE only, never the authoritative signed set.
+#   * The gated signed-release job re-generates SHA256SUMS over the FULL
+#     payload set INCLUDING attestation.json, then produces the REAL
+#     detached sig and the keyless cosign bundle over THAT full SHA256SUMS,
+#     and creates the GitHub Release from that authoritative set. This is the
+#     SHA256SUMS the product/human verifiers consume; it covers
+#     attestation.json as PRD §22 requires.
+# The dry-run SHA256SUMS covering fewer payloads than the publish SHA256SUMS
+# is acceptable evidence, not a defect: the gated job owns the authoritative
+# file, and where the gated job is skipped no authoritative SHA256SUMS,
+# attestation, or keyless signature is produced at all.
+#
+# KEYLESS-IDENTITY GATE (PRD §22, §23). Both keyless mints — the cosign bundle
+# and the SLSA provenance attestation — bind to this workflow's GitHub Actions
+# OIDC identity (the repository that runs the workflow) and write public
+# transparency-log entries (Rekor for cosign; the attestation's Sigstore
+# bundle for attest-build-provenance). No keyless material is ever minted
+# except on a real `refs/tags/v*` push to the public `wnstify/wdm` repository:
+# the gate skips the signed-release job for every other run, including every
+# manual `workflow_dispatch`, every branch build, and every run on any other
+# repository. The job is gated with
+# `if: github.event_name == 'push' && github.repository == 'wnstify/wdm' && startsWith(github.ref, 'refs/tags/v')`
+# AND is the ONLY job granted `id-token: write` (and `attestations: write`).
+# When that whole job is skipped, the dry-run mints ZERO keyless signatures,
+# ZERO Rekor entries, ZERO Fulcio certs, ZERO SLSA attestations, and produces
+# NO attestation.json, NO SHA256SUMS.cosign.bundle, and NO authoritative
+# SHA256SUMS. The build job has only `contents: read` (no `id-token: write`,
+# no `attestations: write`), so even an edit that un-gated a keyless step
+# there could not mint an OIDC token or an attestation. The detached Ed25519
+# signature DOES run in the dry-run build job because its ephemeral key is not
+# bound to repo identity and orphans nothing.
+#
+# The publishing posture is tag-only: a real signed release and a GitHub
+# Release are produced only by a `refs/tags/v*` push to the public
+# `wnstify/wdm` repository, enforced by the gate on the signed-release job
+# below. The triggers are therefore `workflow_dispatch` (for hand-run dry-runs
+# against a development ref) and a `push` restricted to `v*` tags. Do NOT
+# broaden the `push` trigger to branches, and do NOT add `on: pull_request` or
+# `on: release`: those would run on every commit and weaken the tag-only
+# posture. Regular push/PR CI (test/lint/security/e2e) stays in its own
+# workflows.
+#
+# Artifact names and the catalog-bundle layout are the contract locked in
+# internal/release/artifacts.go: the binary is `wdm-linux-amd64`
+# (ArtifactBinary), the catalog bundle is `catalog-stable.tar.gz`
+# (ArtifactCatalogBundle) whose archive root holds exactly `stable/` and
+# `templates/` with the manifest at `stable/catalog.yaml`, SHA256SUMS
+# (ArtifactChecksums) lists the payload files only — never itself and never a
+# signature file — the SLSA attestation is `attestation.json`
+# (ArtifactAttestation), and the two signatures over SHA256SUMS are
+# SHA256SUMS.sig (ArtifactChecksumSignature) and SHA256SUMS.cosign.bundle
+# (ArtifactCosignBundle).
+name: release
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Build, checksum, and the product-verifiable detached Ed25519 signature.
+    # This job is identity-agnostic (ephemeral key) and runs in the dry-run.
+    # It deliberately has only the top-level `contents: read` permission: no
+    # `id-token: write` and no `attestations: write`, so it is structurally
+    # incapable of minting a keyless OIDC token or a SLSA attestation even if
+    # edited (defense in depth).
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Build wdm-linux-amd64 (mirrors make build-linux)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Tag runs stamp the binary version with the tag name so PRD §14's
+          # self-update smoke can match `wdm --version` to the downloaded
+          # release; non-tag dry-runs leave the built-in "dev" default
+          # (cmd/wdm/main.go `var version = "dev"`) untouched. GITHUB_REF_TYPE
+          # and GITHUB_REF_NAME are runner-provided built-ins, so the tag name
+          # never flows through a GitHub Actions expression into the shell. The
+          # binary is compiled ONCE here; the signed-release job reuses it via
+          # the release-dry-run artifact, so this is the single version-stamp
+          # site.
+          ldflags=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            ldflags="-X main.version=${GITHUB_REF_NAME}"
+          fi
+          # Exact name must equal internal/release.ArtifactBinary.
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags "${ldflags}" -o dist/wdm-linux-amd64 ./cmd/wdm
+          test -f dist/wdm-linux-amd64
+
+      - name: Assert tag binary reports the tag version
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          # On tag runs the stamped binary must report EXACTLY the tag name
+          # (PRD §14 self-update smoke). `wdm --version` prints the bare version
+          # plus a newline (internal/cli root SetVersionTemplate "{{.Version}}\n"),
+          # so grep -qx full-line match fails closed on a stale "dev" or any
+          # suffix. ubuntu-latest is linux/amd64, so the freshly built
+          # linux/amd64 binary runs natively here.
+          dist/wdm-linux-amd64 --version | grep -qx "${GITHUB_REF_NAME}"
+          echo "version stamp OK: wdm-linux-amd64 --version == ${GITHUB_REF_NAME}"
+
+      - name: Generate SPDX SBOM of the binary
+        # Pinned to the resolved commit for anchore/sbom-action v0.24.0
+        # (lightweight tag -> e22c389904149dbc22b58101806040fa8d37a610).
+        # syft scans the built binary and emits an SPDX 2.3 JSON SBOM of its
+        # Go module dependencies (format spdx-json ->
+        # "spdxVersion": "SPDX-2.3"). The SBOM is an UNSIGNED manifest with no
+        # identity binding, so it runs in the identity-agnostic build job
+        # (no `wnstify/wdm` gate, no write permission). `output-file` writes
+        # the contract name internal/release.ArtifactSBOM
+        # (wdm-linux-amd64.spdx.json) directly into dist/ before the SHA256SUMS
+        # step hashes it. `upload-artifact: false` disables the action's own
+        # auto-upload so the SBOM rides only the explicit upload steps below.
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: dist/wdm-linux-amd64
+          format: spdx-json
+          output-file: dist/wdm-linux-amd64.spdx.json
+          upload-artifact: false
+
+      - name: Verify SBOM is present and SPDX 2.3 JSON
+        run: |
+          set -euo pipefail
+          # Fail closed if the SBOM is missing or is not SPDX 2.3 JSON, so a
+          # silent format drift cannot reach the SHA256SUMS payload set: the
+          # SBOM is wdm-linux-amd64.spdx.json, an SPDX 2.3 JSON.
+          test -f dist/wdm-linux-amd64.spdx.json
+          grep -q '"spdxVersion"[[:space:]]*:[[:space:]]*"SPDX-2.3"' \
+            dist/wdm-linux-amd64.spdx.json
+          echo "SBOM OK: dist/wdm-linux-amd64.spdx.json (SPDX-2.3 JSON)"
+
+      - name: Package catalog-stable.tar.gz
+        run: |
+          set -euo pipefail
+          # The gzip-tar archive root must hold exactly two top-level entries,
+          # `stable/` and `templates/`, mirroring the engine's catalogs-root
+          # subtree, with the manifest at `stable/catalog.yaml`. This matches
+          # internal/release.ExpectedCatalogBundleRootEntries() and
+          # internal/release.CatalogBundleManifestPath.
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/stable" "$stage/templates"
+          cp catalog/stable/catalog.yaml "$stage/stable/catalog.yaml"
+          cp -R templates/. "$stage/templates/"
+          # Deterministic where practical: stable entry order, fixed mtime,
+          # normalized ownership, and a gzip stream with no embedded mtime.
+          tar \
+            --sort=name \
+            --mtime='1970-01-01 00:00:00Z' \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$stage" -cf dist/catalog-stable.tar \
+            stable templates
+          gzip -n -f dist/catalog-stable.tar
+          test -f dist/catalog-stable.tar.gz
+
+      - name: Verify catalog bundle layout contract
+        run: |
+          set -euo pipefail
+          # Fail closed if the archive root is not exactly { stable/, templates/ }
+          # or the manifest is missing.
+          # Drain the tar listing ONCE into a variable, then run both checks
+          # against the captured listing. Piping `tar tzf ... | grep -q` lets
+          # grep -q short-circuit and SIGPIPE the still-writing tar (exit 141
+          # under pipefail) on a VALID bundle; grepping a captured value has no
+          # live producer to signal.
+          listing="$(tar tzf dist/catalog-stable.tar.gz)"
+          # Reduce EVERY entry to its first path component so a bare top-level
+          # file (no slash) stays itself and breaks the equality below. The old
+          # `awk -F/ 'NF>1'` silently dropped top-level files, so the guard was
+          # not fail-closed.
+          roots="$(printf '%s\n' "$listing" | sed -E 's@/.*@/@' | sort -u)"
+          expected="$(printf 'stable/\ntemplates/\n')"
+          if [ "$roots" != "$expected" ]; then
+            echo "unexpected catalog-bundle root entries:" >&2
+            echo "$roots" >&2
+            exit 1
+          fi
+          printf '%s\n' "$listing" | grep -qx 'stable/catalog.yaml' || {
+            echo "missing stable/catalog.yaml in catalog bundle" >&2
+            exit 1
+          }
+          echo "catalog bundle layout OK: stable/ templates/ with stable/catalog.yaml"
+
+      - name: Generate dry-run SHA256SUMS (evidence; fewer payloads than publish)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # DRY-RUN SHA256SUMS over the payloads AVAILABLE in this job: the
+          # binary, the catalog bundle, and the SBOM. The SBOM
+          # (wdm-linux-amd64.spdx.json) is a RolePayload file in
+          # internal/release.ChecksummedArtifactNames() that has no identity
+          # binding, so it is produced here in the build job and is covered by
+          # this SHA256SUMS. attestation.json is also a RolePayload file, but
+          # it is keyless and produced only by the gated signed-release job, so
+          # this build-job SHA256SUMS legitimately covers fewer payloads (no
+          # attestation). The AUTHORITATIVE SHA256SUMS — the one product/human
+          # verifiers consume — is re-generated in the gated job over the FULL
+          # payload set including attestation.json. This file is EVIDENCE only.
+          # SHA256SUMS NEVER lists itself, and never a signature file
+          # (SHA256SUMS.sig, SHA256SUMS.cosign.bundle sign SHA256SUMS, so they
+          # cannot be inside it).
+          payloads=(
+            wdm-linux-amd64
+            catalog-stable.tar.gz
+            wdm-linux-amd64.spdx.json
+          )
+          # GNU coreutils `<sha256-hex>  <name>` format, basenames only
+          # (working-directory is dist), in stable order.
+          sha256sum "${payloads[@]}" > SHA256SUMS
+          echo "--- dry-run SHA256SUMS ---"
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Build the Ed25519 signing helper
+        run: |
+          set -euo pipefail
+          # Compile the committed stdlib helper (scripts/release-signing.go)
+          # once, to an absolute path outside dist so it is never an artifact.
+          # The same binary signs and verifies the dry-run and is rebuilt in
+          # the publish job.
+          go build -o "$RUNNER_TEMP/release-signing" scripts/release-signing.go
+          test -x "$RUNNER_TEMP/release-signing"
+
+      - name: Sign dry-run SHA256SUMS (product-verifiable detached Ed25519)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # Detached raw 64-byte Ed25519 signature over the EXACT DRY-RUN
+          # SHA256SUMS bytes (NO prehash) -> SHA256SUMS.sig
+          # (ArtifactChecksumSignature). This is the encoding
+          # internal/release.VerifyDetachedSignature accepts, produced by the
+          # committed scripts/release-signing.go helper. This signs the
+          # build-job (fewer-payload) SHA256SUMS as evidence; the gated job
+          # re-signs the authoritative full SHA256SUMS with the production key.
+          #
+          # DRY-RUN KEY POSTURE: the key is EPHEMERAL, generated in this run,
+          # never committed, never the production key. The production private
+          # key signs only on the gated publish path (a CI secret), and the
+          # matching public key is embedded at
+          # internal/release/signing_public_key.pem. The ephemeral key is not
+          # bound to repo identity, so this step runs in the dry-run on any
+          # repository and orphans nothing. The ephemeral PRIVATE key is
+          # written OUTSIDE dist so it can never be uploaded; the ephemeral
+          # PUBLIC key is exported into dist as evidence so the .sig can be
+          # verified.
+          umask 077
+          "$RUNNER_TEMP/release-signing" keygen \
+            --private "$RUNNER_TEMP/ephemeral-signing-key.pem" \
+            --public SHA256SUMS.ephemeral.pub.pem
+          "$RUNNER_TEMP/release-signing" sign \
+            --private "$RUNNER_TEMP/ephemeral-signing-key.pem" \
+            --in SHA256SUMS \
+            --out SHA256SUMS.sig
+          # Local verification proof: confirm the detached signature verifies
+          # against the exported public key before upload (fail closed).
+          "$RUNNER_TEMP/release-signing" verify \
+            --public SHA256SUMS.ephemeral.pub.pem \
+            --in SHA256SUMS \
+            --sig SHA256SUMS.sig
+          # The ephemeral PRIVATE key never leaves the runner.
+          rm -f "$RUNNER_TEMP/ephemeral-signing-key.pem"
+          test -f SHA256SUMS.sig
+          test -f SHA256SUMS.ephemeral.pub.pem
+          echo "detached Ed25519 signature OK: SHA256SUMS.sig"
+
+      - name: Upload release artifacts (ephemeral, non-publishing)
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dry-run
+          path: |
+            dist/wdm-linux-amd64
+            dist/catalog-stable.tar.gz
+            dist/wdm-linux-amd64.spdx.json
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/SHA256SUMS.ephemeral.pub.pem
+          if-no-files-found: error
+          retention-days: 7
+
+  signed-release:
+    needs: build
+    runs-on: ubuntu-latest
+    # KEYLESS attestation + keyless cosign bundle + the AUTHORITATIVE full
+    # SHA256SUMS and its production-key detached signature; it is also the only
+    # job that may publish a release. This job is STRUCTURALLY incapable of
+    # running anywhere but a real tag release on the public repo: the `if` gate
+    # requires a `push` event of a `refs/tags/v*` tag on `wnstify/wdm`, so
+    # every manual `workflow_dispatch`, every branch build, and every run on
+    # any other repository skips it. It is the ONLY job granted
+    # `id-token: write` (the OIDC token both keyless mints require),
+    # `attestations: write` (the GitHub attestation store upload that
+    # actions/attest-build-provenance performs), and `contents: write` (to
+    # create the GitHub Release on the publishing path). When this job is
+    # skipped the dry-run mints no keyless signature, no SLSA attestation, no
+    # Rekor/Fulcio material, and produces no attestation.json, no
+    # SHA256SUMS.cosign.bundle, and no authoritative SHA256SUMS. The production
+    # signing secret is referenced ONLY in this job, so it is never reached on
+    # any dry-run, manual, or branch run.
+    if: github.event_name == 'push' && github.repository == 'wnstify/wdm' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the repository
+        # Needed for scripts/release-signing.go, the embedded public key
+        # (internal/release/signing_public_key.pem), and CHANGELOG.md.
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Download release payloads from the build job
+        uses: actions/download-artifact@v8
+        with:
+          name: release-dry-run
+          path: dist
+
+      - name: Drop the build job's dry-run SHA256SUMS and signature
+        run: |
+          set -euo pipefail
+          # The build job's SHA256SUMS / .sig / pubkey cover FEWER payloads
+          # (no attestation.json) and are evidence only. This job regenerates
+          # the authoritative SHA256SUMS over the full payload set and re-signs
+          # it, so remove the dry-run trust files first to avoid uploading a
+          # stale, fewer-payload SHA256SUMS in the authoritative set. The
+          # binary, catalog bundle, AND the SBOM (wdm-linux-amd64.spdx.json)
+          # are kept: they are RolePayload files the authoritative SHA256SUMS
+          # re-hashes. Only the dry-run trust trio (the checksum file and its
+          # two signature/key files) is removed — do NOT add any payload here.
+          rm -f \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.sig \
+            dist/SHA256SUMS.ephemeral.pub.pem
+          ls -1 dist
+
+      - name: Build the Ed25519 signing helper
+        run: |
+          set -euo pipefail
+          # Compile the committed stdlib helper (scripts/release-signing.go)
+          # once, to an absolute path outside dist so it is never an artifact.
+          go build -o "$RUNNER_TEMP/release-signing" scripts/release-signing.go
+          test -x "$RUNNER_TEMP/release-signing"
+
+      - name: Generate SLSA provenance attestation (keyless, multi-subject)
+        id: attest
+        # Pinned to the resolved commit for
+        # actions/attest-build-provenance v4.1.0 (lightweight tag ->
+        # a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32).
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          # Newline-separated subject paths -> ONE SLSA in-toto/DSSE statement
+          # with TWO subjects (the action bundles a path list into a single
+          # multi-subject attestation). Product code verifies the SAME
+          # attestation by digest against the binary (StageCandidate) and the
+          # catalog bundle (VerifyCatalogBundle), and VerifyAttestation's
+          # verify.WithArtifactDigest passes when the digest is ANY listed
+          # subject — so both verifiers are satisfied by this one file.
+          subject-path: |
+            dist/wdm-linux-amd64
+            dist/catalog-stable.tar.gz
+
+      - name: Place attestation.json (Sigstore bundle the product verifier parses)
+        run: |
+          set -euo pipefail
+          # actions/attest-build-provenance writes the attestation as a
+          # JSON-serialized Sigstore bundle to the bundle-path output. Copy it
+          # to the contract name internal/release.ArtifactAttestation
+          # ("attestation.json"): the bytes internal/release.
+          # LoadAttestationBundle parses (bundle.Bundle.UnmarshalJSON) and
+          # VerifyAttestation checks for transparency-log inclusion and an
+          # observer timestamp.
+          bundle="${{ steps.attest.outputs.bundle-path }}"
+          test -n "$bundle"
+          test -f "$bundle"
+          cp "$bundle" dist/attestation.json
+          test -f dist/attestation.json
+          echo "attestation.json placed from $bundle"
+
+      - name: Generate authoritative SHA256SUMS (full payload set incl. attestation)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # AUTHORITATIVE SHA256SUMS over the FULL release payload set
+          # (RolePayload in internal/release.ChecksummedArtifactNames()): the
+          # binary, the catalog bundle, attestation.json, AND the SBOM
+          # (wdm-linux-amd64.spdx.json). This is the SHA256SUMS the
+          # product/human verifiers consume; it covers attestation.json and the
+          # SBOM. The SBOM was produced in the build job and carried here via
+          # the release-dry-run download. SHA256SUMS NEVER lists itself and
+          # never a signature file.
+          payloads=(
+            wdm-linux-amd64
+            catalog-stable.tar.gz
+            attestation.json
+            wdm-linux-amd64.spdx.json
+          )
+          sha256sum "${payloads[@]}" > SHA256SUMS
+          echo "--- authoritative SHA256SUMS ---"
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Sign authoritative SHA256SUMS (production detached Ed25519)
+        working-directory: dist
+        env:
+          WDM_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.WDM_RELEASE_ED25519_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          # Detached raw 64-byte Ed25519 signature over the EXACT AUTHORITATIVE
+          # SHA256SUMS bytes (NO prehash) -> SHA256SUMS.sig
+          # (ArtifactChecksumSignature), the encoding
+          # internal/release.VerifyDetachedSignature accepts. PRODUCTION KEY
+          # POSTURE: the private key is the WDM_RELEASE_ED25519_PRIVATE_KEY CI
+          # secret (a PKCS#8 PEM); the matching public key is embedded at
+          # internal/release/signing_public_key.pem. The secret is never
+          # echoed and is written OUTSIDE dist so it can never be uploaded;
+          # it is deleted immediately after signing.
+          [ -n "${WDM_RELEASE_ED25519_PRIVATE_KEY}" ] || { echo "release signing secret is empty"; exit 1; }
+          umask 077
+          printf '%s' "$WDM_RELEASE_ED25519_PRIVATE_KEY" > "$RUNNER_TEMP/release-signing-key.pem"
+          "$RUNNER_TEMP/release-signing" sign \
+            --private "$RUNNER_TEMP/release-signing-key.pem" \
+            --in SHA256SUMS \
+            --out SHA256SUMS.sig
+          # Delete the private key immediately after signing.
+          rm -f "$RUNNER_TEMP/release-signing-key.pem"
+          # Verify against the EMBEDDED public key (fail closed): proves the
+          # secret matches the public key shipped in the product binary, so the
+          # signature the product will verify in-product is valid.
+          "$RUNNER_TEMP/release-signing" verify \
+            --public ../internal/release/signing_public_key.pem \
+            --in SHA256SUMS \
+            --sig SHA256SUMS.sig
+          test -f SHA256SUMS.sig
+          echo "production detached Ed25519 signature OK over authoritative SHA256SUMS"
+
+      - name: Install cosign
+        # Pinned to the resolved commit for sigstore/cosign-installer v4.1.2
+        # (lightweight tag -> 6f9f17788090df1f26f669e9d70d6ae9567deba6).
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign authoritative SHA256SUMS (keyless cosign bundle)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # Keyless OIDC signing over the AUTHORITATIVE SHA256SUMS: cosign
+          # requests a short-lived GitHub Actions OIDC token, mints a Fulcio
+          # certificate bound to this workflow's identity, and records a Rekor
+          # transparency-log entry. Everything a `cosign verify-blob` needs is
+          # written into the bundle file -> SHA256SUMS.cosign.bundle
+          # (ArtifactCosignBundle). `--yes` skips the interactive
+          # transparency-log consent prompt (non-destructive).
+          cosign sign-blob \
+            --yes \
+            --bundle SHA256SUMS.cosign.bundle \
+            SHA256SUMS
+          test -f SHA256SUMS.cosign.bundle
+          echo "keyless cosign bundle OK: SHA256SUMS.cosign.bundle"
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          # Pull the body of the `## v1.0.0` section (everything after its
+          # heading up to the next `## ` heading), drop the single-line HTML
+          # comment, and fail closed if no non-whitespace content remains.
+          # RELEASE_NOTES.md feeds `gh release create --notes-file`; it is NOT
+          # a release asset.
+          awk '/^## v1\.0\.0([[:space:]]|$)/{c=1;next} c&&/^## /{c=0} c{print}' CHANGELOG.md \
+            | grep -v '^<!--.*-->$' > dist/RELEASE_NOTES.md
+          grep -q '[^[:space:]]' dist/RELEASE_NOTES.md || { echo "release notes are empty"; exit 1; }
+          echo "release notes extracted: dist/RELEASE_NOTES.md"
+
+      - name: Assert the seven release assets and create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The published release carries EXACTLY these seven assets — no more,
+          # no fewer. RELEASE_NOTES.md, the helper binary, and every ephemeral
+          # or private key live outside this list and are never uploaded.
+          assets=(
+            dist/wdm-linux-amd64
+            dist/catalog-stable.tar.gz
+            dist/attestation.json
+            dist/wdm-linux-amd64.spdx.json
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+            dist/SHA256SUMS.cosign.bundle
+          )
+          # Fail closed: exactly seven assets, each present, and none a key or
+          # ephemeral file.
+          [ "${#assets[@]}" -eq 7 ] || { echo "expected 7 assets, have ${#assets[@]}"; exit 1; }
+          for a in "${assets[@]}"; do
+            test -f "$a" || { echo "missing release asset: $a"; exit 1; }
+            case "$a" in
+              *ephemeral*|*-key.pem|*signing-key*)
+                echo "refusing to publish key/ephemeral asset: $a"; exit 1 ;;
+            esac
+          done
+          # Belt-and-suspenders: abort if ANY file in dist matches a private or
+          # ephemeral name, so a stray key cannot ride a future asset edit.
+          if find dist -type f | grep -E 'ephemeral|-key\.pem|signing-key'; then
+            echo "private/ephemeral file present in dist; refusing to publish"; exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --verify-tag \
+            "${assets[@]}"
+          echo "GitHub Release published: $GITHUB_REF_NAME"

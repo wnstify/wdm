@@ -1,0 +1,8 @@
+{
+  "_comment": "Minimal embedded catalog fallback metadata. This descriptor documents the bundled-fallback contract for offline first-run; the full verified stable bundle bytes are NOT embedded here (see internal/catalog/storage.go EmbeddedFallback). Verified local catalog always takes precedence over this fallback (PRD §22).",
+  "schema_version": 1,
+  "channel": "stable",
+  "bundle_present": false,
+  "version": "",
+  "bundle_sha256": ""
+}

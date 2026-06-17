@@ -1,0 +1,168 @@
+# MeshCentral — Hardened Docker Compose (wdm template, remote management)
+# Two services: a MongoDB backend + the MeshCentral server.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only — mongodb adds the five init /
+#     privilege-drop caps its entrypoint uses to chown /data/db and gosu down
+#     to the mongodb user. MeshCentral runs as container root with ZERO added
+#     capabilities: the image is Alpine-based, ships no usable non-root user
+#     (Node and the self-signed cert generation both run as root), and binds
+#     container port 443 plus generates certs without any added cap
+#     (probe-verified). cap_drop: ALL + no-new-privileges contain the root
+#     process — it holds no capabilities and cannot acquire any.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates the networks at install):
+#       meshcentral-front (external) — reverse proxy reaches the server here
+#       meshcentral-db    (internal) — meshcentral <-> mongodb only, no internet
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for ephemeral writes; healthchecks gate startup via depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS
+#   - MongoDB runs with no authentication: it is reachable only on the
+#     --internal meshcentral-db network (no internet egress, no host port), and
+#     MeshCentral is the sole client. This matches the upstream compose and
+#     keeps the rendered config.json free of any database credential.
+#
+# Config generation (PRD §17, F6): wdm renders config.json from the placeholder
+# map at install time (the first curated app to do so) and bind-mounts it
+# read-only over the named data volume. The rendered file is authoritative — the
+# image's entrypoint only rewrites config.json when DYNAMIC_CONFIG=true or the
+# HOSTNAME / PORT / USE_MONGODB / MONGO_URL env vars are set, none of which this
+# template passes, so MeshCentral reads wdm's config verbatim.
+#
+# wdm renders this template into ~/docker/meshcentral/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/meshcentral/.env (mode 0600). config.json ships as a
+# catalog config_generation entry and is rendered alongside the compose + env
+# files (mode 0644 — it carries no secret).
+
+name: meshcentral
+
+services:
+
+  mongodb:
+    image: mongo:6
+    container_name: meshcentral-mongodb
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the mongo entrypoint runs as container
+      # root, chowns /data/db, and drops to the mongodb user via gosu. A named
+      # volume keeps the data inside Docker rather than in a host dir wdm would
+      # have to pre-create.
+      - mongo_data:/data/db
+    networks:
+      - meshcentral-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the mongo entrypoint init + privilege drop to the
+      # mongodb user. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_MONGODB}
+          cpus: "${CPUS_LIMIT_MONGODB}"
+          pids: ${PIDS_LIMIT_MONGODB}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # mongosh ships in the mongo:6 image; ping returns 1 once the server
+      # accepts connections.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  meshcentral:
+    image: ghcr.io/ylianst/meshcentral:1.2.0
+    container_name: meshcentral
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      # localhost only — front with a reverse proxy. The container serves plain
+      # HTTP on 443 in tlsOffload mode (the reverse proxy terminates TLS).
+      - "127.0.0.1:4430:443"
+    environment:
+      # Only the timezone is passed. Deliberately NOT set: DYNAMIC_CONFIG (left
+      # at the image default false), HOSTNAME, PORT, USE_MONGODB, MONGO_URL —
+      # any of those would make the entrypoint rewrite config.json and clobber
+      # wdm's rendered file. wdm's config.json is the source of truth.
+      TZ: ${TZ}
+    volumes:
+      # Named volume: MeshCentral persists its database adjuncts, generated
+      # certificates, and its own session secret here. It runs as container
+      # root with no chowning entrypoint, so a named volume (seeded writable
+      # from the image) avoids a root-owned host bind dir.
+      - meshcentral_data:/opt/meshcentral/meshcentral-data
+      # wdm-rendered config.json, bind-mounted read-only on top of the data
+      # volume. This is the F6 config_generation artifact (PRD §17); the catalog
+      # config_generation mount field names this exact bind so render verifies it
+      # exists. :ro keeps a hypothetical RCE from rewriting its own config.
+      - ./config.json:/opt/meshcentral/meshcentral-data/config.json:ro
+    networks:
+      - meshcentral-front
+      - meshcentral-db
+    cap_drop:
+      - ALL
+    # MeshCentral runs as container root with ZERO added capabilities
+    # (probe-verified): binding container port 443 and generating the
+    # self-signed cert need no cap under the image's root process. cap_drop: ALL
+    # with no cap_add; no-new-privileges below blocks any escalation.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_MESHCENTRAL}
+          cpus: "${CPUS_LIMIT_MESHCENTRAL}"
+          pids: ${PIDS_LIMIT_MESHCENTRAL}
+        reservations:
+          memory: 192m
+          cpus: "0.25"
+    healthcheck:
+      # /health.ashx returns 200 with body "ok" once the server is ready. wget
+      # is BusyBox (the image is Alpine-based); --spider issues a HEAD without
+      # downloading. start_period covers first-boot cert generation.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:443/health.ashx"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  # Front: reverse proxy reaches MeshCentral here (or via 127.0.0.1:4430).
+  meshcentral-front:
+    external: true
+  # Backend DB: meshcentral <-> mongodb only, no internet egress. wdm creates
+  # this with --internal at install time.
+  meshcentral-db:
+    external: true
+
+volumes:
+  # MongoDB data dir. A named volume so wdm need not pre-create a host bind dir;
+  # the mongo entrypoint self-chowns it on init. wdm's remove preserves named
+  # volumes (never `docker compose down -v`) and lists them in the removal
+  # summary.
+  mongo_data:
+  # MeshCentral data dir: database adjuncts, generated TLS certificates, and the
+  # auto-persisted session secret. Named volume, preserved on remove like
+  # mongo_data.
+  meshcentral_data:

@@ -1,0 +1,12 @@
+{
+  "settings": {
+    "cert": "mesh.test.example",
+    "port": 4430
+  },
+  "domains": {
+    "": {
+      "title": "MeshCentral",
+      "loginKey": "TESTONLY-FAKE-SECRET-LOGIN-KEY-0000000000000000000000000000"
+    }
+  }
+}

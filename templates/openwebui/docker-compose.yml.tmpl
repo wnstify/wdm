@@ -1,0 +1,95 @@
+# Open WebUI — Hardened Docker Compose (wdm template, self-hosted LLM front-end)
+# Single-container web UI for chatting with local or remote model providers:
+# https://github.com/open-webui/open-webui
+#
+# Open WebUI is only a front-end: it needs a model provider to chat — either a
+# local Ollama instance (OLLAMA_BASE_URL) or an external model API key (e.g.
+# OPENAI_API_KEY). See README "Connecting a model provider". On first boot the
+# container downloads a small sentence-transformers embedding model over the
+# network for its built-in retrieval features, then comes up healthy.
+#
+# Security baseline:
+#   - cap_drop: ALL with ZERO added capabilities (probe-verified healthy)
+#   - security_opt: no-new-privileges; ipc: private
+#   - Runs as container-root: the upstream image ships no non-root user and
+#     stores its SQLite DB under /app/backend/data; forcing a non-root UID
+#     breaks the DB ("unable to open database file"). No `user:` directive —
+#     all caps dropped + no-new-privileges keep the blast radius small.
+#   - Data is a named volume (openwebui_data), not a bind mount — see the
+#     volumes: note below.
+#   - tmpfs for /tmp; deploy.resources limits incl. pids
+#   - 127.0.0.1 port binding — reverse proxy in front for TLS
+#   - Healthcheck hits /health via curl (preinstalled in the image)
+#
+# wdm renders this template into ~/docker/openwebui/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/openwebui/.env (mode 0600).
+
+name: openwebui
+
+services:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:0.9.5
+    container_name: openwebui
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8071:8080"  # localhost only — front with a reverse proxy
+    environment:
+      # Signs session cookies. regenerable=false: rotation logs every user out
+      # (no data loss). wdm reuses the value from .env on update.
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      # Authentication is on by default; the first account created becomes the
+      # admin. Fixed literal in .env (WEBUI_AUTH=true), not a placeholder.
+      WEBUI_AUTH: ${WEBUI_AUTH}
+      TZ: ${TZ}
+    env_file:
+      # Picks up the optional model-provider hints (OLLAMA_BASE_URL,
+      # OPENAI_API_KEY, …) a user uncomments in .env without needing a
+      # corresponding `environment:` line here.
+      - .env
+    volumes:
+      - openwebui_data:/app/backend/data
+    networks:
+      - openwebui
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_OPENWEBUI}
+          cpus: "${CPUS_LIMIT_OPENWEBUI}"
+          pids: ${PIDS_LIMIT_OPENWEBUI}
+        reservations:
+          memory: 512m
+          cpus: "0.25"
+    healthcheck:
+      # /health returns 200 once the app is up. curl is preinstalled in the
+      # image. start_period is generous: first boot downloads the embedding
+      # model over the network before the endpoint reports healthy.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+networks:
+  # Front: reverse proxy reaches Open WebUI here (or via 127.0.0.1:8071).
+  # Needs internet egress for the first-boot embedding-model download and to
+  # reach any external model provider (OpenAI-compatible APIs).
+  openwebui:
+    external: true
+
+volumes:
+  # Open WebUI's data dir (SQLite DB + bundled vector store). A named volume,
+  # not a bind mount: the image runs as container-root and a bind mount's host
+  # source is auto-created root-owned, which works but leaves root-owned files
+  # on the host. Docker initializes a named volume from the image instead, so
+  # ownership stays self-contained (mirrors n8n's n8n_storage rationale). wdm's
+  # remove preserves named volumes (never `docker compose down -v`) and lists
+  # them in the removal summary, so your chats and settings survive a remove.
+  openwebui_data:

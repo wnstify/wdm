@@ -1,0 +1,199 @@
+# wg-adguard — Hardened Docker Compose (wdm template, VPN + DNS filtering)
+# Two services: wg-easy (WireGuard VPN with a web UI) + AdGuard Home (the DNS
+# resolver wg-easy hands its clients). Tunnel clients resolve DNS through
+# AdGuard over the shared vpn_net, so ad/tracker filtering follows them
+# everywhere.
+#
+# Security baseline (PRD §11.1, §12.2):
+#   - cap_drop: ALL on both services, re-adding only what each one provably
+#     needs (probe-verified):
+#       wg-easy → NET_ADMIN + NET_RAW: configure the wg0 interface, the routing
+#         table, and the iptables NAT/forward rules wg-quick installs. SYS_MODULE
+#         is NOT granted — the wireguard kernel module is loaded on the host
+#         (a `sudo modprobe wireguard` prerequisite) and the host module tree is
+#         bind-mounted read-only at /lib/modules (PRD §12.2 host_module_mount).
+#       adguard → NET_BIND_SERVICE + DAC_OVERRIDE: the AdGuardHome binary ships
+#         the file capability cap_net_bind_service=eip to bind privileged DNS
+#         port 53, so NET_BIND_SERVICE must stay in the bounding set or the exec
+#         is refused; DAC_OVERRIDE lets its root process create and write the
+#         work/conf data dirs on the named volumes. With no usable non-root user
+#         in the image it runs as container root, contained by cap_drop: ALL +
+#         no-new-privileges so it can hold nothing beyond those two caps.
+#   - DISABLE_IPV6=true on wg-easy: without it wg-quick's IPv6 PostUp tries to
+#     load ip6tables NAT modules, which needs SYS_MODULE (excluded) and fails the
+#     boot (probe-verified). IPv4-only keeps the cap set minimal.
+#   - security_opt: no-new-privileges; ipc: private on both containers
+#   - Single network with static IPAM (wdm creates it with --subnet/--gateway at
+#     install): vpn_net is NOT --internal — wg-easy routes client egress and
+#     AdGuard reaches its upstream resolvers, so both need internet. AdGuard
+#     holds the fixed 10.0.0.100 that wg-easy hands clients as their DNS server.
+#   - deploy.resources limits incl. pids on both containers
+#   - Web UIs bind 127.0.0.1 only — front both with a reverse proxy for TLS.
+#     wg-easy serves plain HTTP (INSECURE=true) so the proxy terminates TLS;
+#     AdGuard's setup wizard + admin UI is on localhost:3000.
+#   - The WireGuard UDP listener (51820/udp) is the ONE public surface: remote
+#     clients connect to it directly, so it binds all interfaces by design
+#     (PRD §11.1 public-port exception, declared public:true in the signed
+#     catalog). The DNS port (53) is NOT host-published — it is reached only
+#     through the tunnel via AdGuard's static IP on vpn_net.
+#
+# wg-easy is fully headless: the INIT_* env seeds the admin account, endpoint
+# host/port, and client DNS on first boot, so no setup wizard is needed.
+# AdGuard uses its OWN first-run setup wizard — wdm pre-seeds no admin and
+# renders no config (the wizard writes AdGuardHome.yaml into the conf volume).
+#
+# wdm renders this template into ~/docker/wg-adguard/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/wg-adguard/.env (mode 0600).
+
+name: wg-adguard
+
+services:
+
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:15
+    container_name: wg-easy
+    restart: unless-stopped
+    environment:
+      # Public WireGuard endpoint hostname clients dial. INIT_HOST seeds the same
+      # value into the generated client configs on first boot.
+      WG_HOST: ${WG_HOST}
+      INIT_ENABLED: "true"
+      INIT_USERNAME: ${WG_EASY_ADMIN_USER}
+      INIT_PASSWORD: ${WG_EASY_PASSWORD}
+      INIT_HOST: ${WG_HOST}
+      INIT_PORT: "51820"
+      # Clients resolve DNS through AdGuard's fixed address on vpn_net so the
+      # tunnel carries ad/tracker filtering with it.
+      INIT_DNS: "10.0.0.100"
+      INIT_ALLOWED_IPS: "0.0.0.0/0"
+      # Web UI listen address/port inside the container; the host side stays
+      # 127.0.0.1 (see ports). INSECURE serves plain HTTP for the reverse proxy
+      # to front with TLS.
+      PORT: "51821"
+      HOST: "0.0.0.0"
+      INSECURE: "true"
+      # IPv4-only — see the DISABLE_IPV6 note in the header.
+      DISABLE_IPV6: "true"
+      TZ: ${TZ}
+    volumes:
+      # WireGuard server keys, the wg0 config, and the wg-easy SQLite database
+      # (clients, the hashed admin credential) live here. Named volume so the
+      # server identity survives a recreate; wdm preserves named volumes on
+      # remove (never `docker compose down -v`).
+      - wg_easy_config:/etc/wireguard
+      # Host kernel-module tree, read-only. The wireguard module is loaded on the
+      # host (modprobe prerequisite); the container reads it but cannot load
+      # modules (SYS_MODULE is not granted). PRD §12.2 host_module_mount.
+      - /lib/modules:/lib/modules:ro
+    ports:
+      # WireGuard listener — PUBLIC by design so remote clients connect directly
+      # (PRD §11.1 public-port exception). Bound on all interfaces; declared
+      # public:true in the signed catalog.
+      - "51820:51820/udp"
+      # Web UI — localhost only; front with a reverse proxy (plain HTTP behind it).
+      - "127.0.0.1:51821:51821/tcp"
+    networks:
+      vpn_net:
+        ipv4_address: 10.0.0.2
+    cap_drop:
+      - ALL
+    cap_add:
+      # Configure the wg0 interface, routes, and the iptables NAT/forward rules
+      # wg-quick installs. No SYS_MODULE — the module is host-loaded.
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      # Route packets between the tunnel and the host's outbound interface.
+      net.ipv4.ip_forward: "1"
+      # Keep WireGuard's reverse-path mark handling working when forwarding.
+      net.ipv4.conf.all.src_valid_mark: "1"
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_WG_EASY}
+          cpus: "${CPUS_LIMIT_WG_EASY}"
+          pids: ${PIDS_LIMIT_WG_EASY}
+        reservations:
+          memory: 192m
+          cpus: "0.1"
+    healthcheck:
+      # The web UI redirects to the login page (HTTP 302) once it is serving;
+      # --spider issues a request without downloading. wget is BusyBox in the
+      # image (no curl). start_period covers WireGuard interface bring-up.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:51821/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  adguard:
+    image: adguard/adguardhome:v0.107.77
+    container_name: adguard
+    restart: unless-stopped
+    volumes:
+      # AdGuard's runtime work dir (filter lists, query log, statistics) and its
+      # config dir (AdGuardHome.yaml — written by the first-run wizard). Named
+      # volumes seeded from the image; preserved on remove.
+      - adguard_work:/opt/adguardhome/work
+      - adguard_conf:/opt/adguardhome/conf
+    ports:
+      # Setup wizard + admin UI — localhost only; front with a reverse proxy.
+      # DNS (53) is deliberately NOT host-published: it is reached through the
+      # tunnel via this service's static IP on vpn_net.
+      - "127.0.0.1:3000:3000/tcp"
+    networks:
+      vpn_net:
+        ipv4_address: 10.0.0.100
+    cap_drop:
+      - ALL
+    cap_add:
+      # NET_BIND_SERVICE: the AdGuardHome binary carries the file capability
+      # cap_net_bind_service=eip to bind privileged port 53; without it in the
+      # bounding set the exec is refused (probe-verified). DAC_OVERRIDE: its root
+      # process creates and writes the work/conf data dirs on the named volumes.
+      # No NET_* beyond NET_BIND_SERVICE, no SYS_*.
+      - NET_BIND_SERVICE
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_ADGUARD}
+          cpus: "${CPUS_LIMIT_ADGUARD}"
+          pids: ${PIDS_LIMIT_ADGUARD}
+        reservations:
+          memory: 96m
+          cpus: "0.1"
+    healthcheck:
+      # AdGuard serves the setup wizard (and, post-wizard, the admin UI) on
+      # 3000; a request returns 200/302 in both states. wget is BusyBox in the
+      # image (no curl).
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  # Single shared network with static IPAM (wdm creates it with --subnet and
+  # --gateway at install). NOT --internal: wg-easy routes client egress and
+  # AdGuard reaches its upstream resolvers, so both need internet. AdGuard's
+  # fixed 10.0.0.100 is the DNS address wg-easy hands clients.
+  vpn_net:
+    external: true
+
+volumes:
+  # WireGuard server keys, wg0 config, and the wg-easy SQLite database (clients,
+  # hashed admin credential). Named volume — preserved on remove.
+  wg_easy_config:
+  # AdGuard runtime work dir (filter lists, query log, statistics). Named
+  # volume, preserved on remove.
+  adguard_work:
+  # AdGuard config dir (AdGuardHome.yaml, written by the first-run wizard).
+  adguard_conf:

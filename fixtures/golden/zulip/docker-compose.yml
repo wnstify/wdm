@@ -1,0 +1,390 @@
+# Zulip — Hardened Docker Compose (wdm template, team chat)
+# Five services: a Postgres backend, a SASL-authenticated memcached session
+# cache, a RabbitMQ event queue, a password-protected redis rate-limit store,
+# and the all-in-one zulip server (Django + Tornado + nginx + supervisor in one
+# upstream image). Zulip owns its database outright (POSTGRES_USER=zulip), so
+# there is no non-root-DB-user split.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only. postgres adds the four init /
+#     privilege-drop caps (CHOWN/SETUID/SETGID/DAC_OVERRIDE) — FOWNER is not
+#     needed (probe-verified). The zulip server adds six caps: the same drop
+#     set plus FOWNER (the supervisor entrypoint chowns/cp -p's the data dir and
+#     rm's old upload symlinks) and NET_BIND_SERVICE (nginx binds port 80 inside
+#     the container); supervisor then drops every long-running worker to uid
+#     1000. memcached (user 11211), rabbitmq (user 999), and redis (user
+#     999:1000) run as their image users and need ZERO added caps (probe-
+#     verified), so each carries cap_drop: ALL with no cap_add.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates internal networks at install):
+#       zulip-front (external) — reverse proxy reaches the server here, and it
+#         is the egress path for outbound SMTP and mobile push notifications
+#       zulip-db    (internal) — postgres + memcached + rabbitmq + redis +
+#         zulip backend chatter only, no internet egress
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for ephemeral writes; healthchecks gate startup via depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS. The zulip
+#     server runs http_only=True so it serves plain HTTP to its proxy.
+#   - postgres + rabbitmq + redis + the zulip data dir are named volumes
+#     (zulip_postgres, zulip_rabbitmq, zulip_redis, zulip_data), not bind mounts
+#     — wdm does not pre-create bind dirs. Each service's entrypoint self-chowns
+#     its volume to the running uid on first boot.
+#
+# Vanilla postgres (no pgroonga): Zulip Server 12 supports Postgres 14-18, so
+# this template runs vanilla postgres:18.4 with SETTING_USING_PGROONGA=False and
+# lets Zulip use the built-in tsvector full-text search. Latin-script teams need
+# nothing more; CJK / non-Latin search would need the pgroonga image swap.
+#
+# wdm renders this template into ~/docker/zulip/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/zulip/.env (mode 0600).
+
+name: zulip
+services:
+  postgres:
+    # Vanilla postgres:18.4 — no pgroonga; Zulip uses built-in tsvector search.
+    image: postgres:18.4
+    container_name: zulip-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zulip
+      POSTGRES_USER: zulip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # SCRAM-SHA-256 password hashing instead of the historical md5 default.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so users upgrading from
+      # postgres:17 don't need a data migration.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): postgres self-chowns its PGDATA on
+      # init, and a named volume keeps the data inside Docker rather than in a
+      # host dir wdm would have to pre-create.
+      - zulip_postgres:/var/lib/postgresql/data
+    networks:
+      - zulip-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the postgres entrypoint init + privilege drop to
+      # postgres:postgres. FOWNER is NOT needed here (probe-verified). No
+      # NET_* / SYS_*.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zulip -d zulip"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "zulip"
+  memcached:
+    # SASL-authenticated session cache. Runs as the image's memcache user
+    # (11211) and binds the unprivileged port 11211, so it needs no added
+    # capabilities (probe-verified). The command block writes the SASL password
+    # DB to /tmp (writable for the non-root user); $$ escapes the shell vars so
+    # Compose passes them through to the container shell unsubstituted.
+    image: memcached:1.6.42-alpine3.23
+    container_name: zulip-memcached
+    restart: unless-stopped
+    user: "11211:11211"
+    command:
+      - sh
+      - -euc
+      - |
+        echo 'mech_list: plain' > "$$SASL_CONF_PATH"
+        echo "zulip@$$HOSTNAME:$$MEMCACHED_PASSWORD" > "$$MEMCACHED_SASL_PWDB"
+        echo "zulip@localhost:$$MEMCACHED_PASSWORD" >> "$$MEMCACHED_SASL_PWDB"
+        exec memcached -S
+    environment:
+      # /tmp is writable for the non-root memcache user; /home/memcache is not.
+      SASL_CONF_PATH: /tmp/memcached.conf
+      MEMCACHED_SASL_PWDB: /tmp/memcached-sasl-db
+      MEMCACHED_PASSWORD: ${MEMCACHED_PASSWORD}
+    networks:
+      - zulip-db
+    cap_drop:
+      - ALL
+    # memcached runs as the image's memcache user and binds the unprivileged
+    # port 11211; it needs no added capabilities. cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_MEMCACHED}
+          cpus: "${CPUS_LIMIT_MEMCACHED}"
+          pids: ${PIDS_LIMIT_MEMCACHED}
+        reservations:
+          memory: 64m
+          cpus: "0.25"
+    healthcheck:
+      # SASL-only memcached rejects unauth'd stats commands; a TCP connect
+      # confirms the listener is up. Zulip itself does the deeper auth check.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 11211"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "zulip"
+  rabbitmq:
+    # Event queue for the Tornado/Django message bus. Runs as the image's
+    # rabbitmq user (999) and needs no added capabilities (probe-verified).
+    image: rabbitmq:4.2.6
+    container_name: zulip-rabbitmq
+    restart: unless-stopped
+    user: "999:999"
+    environment:
+      RABBITMQ_DEFAULT_USER: zulip
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      # rabbitmq writes its Erlang cookie / data under $HOME — point that at the
+      # persistent volume instead of root's home (which the non-root user can't
+      # write to).
+      HOME: /var/lib/rabbitmq
+    volumes:
+      - zulip_rabbitmq:/var/lib/rabbitmq
+    networks:
+      - zulip-db
+    cap_drop:
+      - ALL
+    # rabbitmq runs as the image's rabbitmq user; it needs no added
+    # capabilities. cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_RABBITMQ}
+          cpus: "${CPUS_LIMIT_RABBITMQ}"
+          pids: ${PIDS_LIMIT_RABBITMQ}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "zulip"
+  redis:
+    # Rate-limit counter store with requirepass auth. Runs as the image's redis
+    # user (999:1000) and needs no added capabilities (probe-verified). The
+    # command block writes the requirepass config to /tmp; $$ escapes the shell
+    # var so Compose passes it through unsubstituted.
+    image: redis:7.4.9-alpine3.21
+    container_name: zulip-redis
+    restart: unless-stopped
+    user: "999:1000"
+    command:
+      - sh
+      - -euc
+      - |
+        echo "requirepass $$REDIS_PASSWORD" > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - zulip_redis:/data
+    networks:
+      - zulip-db
+    cap_drop:
+      - ALL
+    # redis runs as the image's redis user and binds the unprivileged port
+    # 6379; it needs no added capabilities. cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_REDIS}
+          cpus: "${CPUS_LIMIT_REDIS}"
+          pids: ${PIDS_LIMIT_REDIS}
+        reservations:
+          memory: 64m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "zulip"
+  zulip:
+    # The all-in-one Zulip server: Django + Tornado + nginx + supervisor in one
+    # upstream image. It runs as container root for the supervisor-based init,
+    # then drops every long-running worker to uid 1000. Only the four backing
+    # services gate its start via depends_on healthchecks.
+    image: ghcr.io/zulip/zulip-server:12.0-0
+    container_name: zulip-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      memcached:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      # localhost only — front with a reverse proxy for public TLS. Port 80 is
+      # what nginx inside the container binds to.
+      - "127.0.0.1:8080:80"
+    environment:
+      # --- Service discovery (matches the service names above) --------------
+      SETTING_REMOTE_POSTGRES_HOST: postgres
+      SETTING_REMOTE_POSTGRES_PORT: "5432"
+      SETTING_MEMCACHED_LOCATION: memcached:11211
+      SETTING_RABBITMQ_HOST: rabbitmq
+      SETTING_REDIS_HOST: redis
+      # --- Secrets ---------------------------------------------------------
+      SECRETS_postgres_password: ${POSTGRES_PASSWORD}
+      SECRETS_memcached_password: ${MEMCACHED_PASSWORD}
+      SECRETS_rabbitmq_password: ${RABBITMQ_DEFAULT_PASS}
+      SECRETS_redis_password: ${REDIS_PASSWORD}
+      # SECRETS_secret_key is the Django signing key (session cookies, CSRF,
+      # password-reset links). Zulip reads the lowercase env-var name; the .env
+      # supplies it under the uppercase ZULIP_SECRET_KEY key (placeholder names
+      # are uppercase by schema). Required.
+      SECRETS_secret_key: ${ZULIP_SECRET_KEY}
+      SECRETS_email_password: ${SECRETS_email_password}
+      # --- Public-facing identity ------------------------------------------
+      # Zulip rejects a dotless hostname at boot (E002), so this must be a real
+      # FQDN — wdm's domain placeholder supplies one.
+      SETTING_EXTERNAL_HOST: ${SETTING_EXTERNAL_HOST}
+      SETTING_ZULIP_ADMINISTRATOR: ${SETTING_ZULIP_ADMINISTRATOR}
+      ZULIP_AUTH_BACKENDS: ${ZULIP_AUTH_BACKENDS}
+      # Vanilla postgres (no pgroonga); Zulip falls back to the built-in
+      # postgres tsvector full-text search.
+      SETTING_USING_PGROONGA: ${SETTING_USING_PGROONGA}
+      # http_only=True: Zulip serves plain HTTP, the reverse proxy terminates
+      # TLS.
+      http_only: ${ZULIP_HTTP_ONLY}
+      # --- Reverse-proxy trust list ----------------------------------------
+      # Comma-separated IPs/CIDRs allowed to set X-Forwarded-* headers. Required
+      # when http_only=True so Zulip honors X-Forwarded-Proto.
+      LOADBALANCER_IPS: ${LOADBALANCER_IPS}
+      # --- Optional outbound email (blank SETTING_EMAIL_HOST disables it) ---
+      SETTING_EMAIL_HOST: ${SETTING_EMAIL_HOST}
+      SETTING_EMAIL_HOST_USER: ${SETTING_EMAIL_HOST_USER}
+      SETTING_EMAIL_PORT: ${SETTING_EMAIL_PORT}
+      SETTING_EMAIL_USE_TLS: ${SETTING_EMAIL_USE_TLS}
+      SETTING_EMAIL_USE_SSL: ${SETTING_EMAIL_USE_SSL}
+      # The From: address Zulip uses for system mail. Upstream's
+      # NOREPLY_EMAIL_ADDRESS is ignored with a warning; the SETTING_-prefixed
+      # name is the one Zulip reads.
+      SETTING_NOREPLY_EMAIL_ADDRESS: ${SETTING_NOREPLY_EMAIL_ADDRESS}
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the supervisor entrypoint runs as
+      # container root and initializes /data (uploads, custom emoji, secrets
+      # cache) on first boot, so a root-owned named volume is correct.
+      - zulip_data:/data
+    ulimits:
+      # Upstream-required for Tornado's many simultaneous long-poll connections.
+      nofile:
+        soft: 1000000
+        hard: 1048576
+    networks:
+      - zulip-front
+      - zulip-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # nginx inside the image listens on port 80 in the container.
+      - NET_BIND_SERVICE
+      # The supervisor / entrypoint chowns $DATA_DIR/uploads to zulip:zulip on
+      # boot and uses `su zulip -c` to drop migrations and long-running workers
+      # to the unprivileged user.
+      - CHOWN
+      - SETGID
+      - SETUID
+      # The entrypoint copies system files (cp -p) and rm's old upload symlinks
+      # whose owners differ from the running uid.
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=512m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_ZULIP}
+          cpus: "${CPUS_LIMIT_ZULIP}"
+          pids: ${PIDS_LIMIT_ZULIP}
+        reservations:
+          memory: 1g
+          cpus: "0.5"
+    healthcheck:
+      # With http_only=True Zulip serves /health on port 80; the https fallback
+      # covers a self-terminating TLS deployment.
+      test: ["CMD-SHELL", "curl -fs http://127.0.0.1/health || curl -fsk https://127.0.0.1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      # 5 min first-boot budget for ~280 Django migrations on a fresh DB.
+      start_period: 300s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "zulip"
+networks:
+  # Front: reverse proxy reaches the server here (or via 127.0.0.1:8080), and
+  # the server uses it for outbound egress (SMTP, mobile push notifications).
+  zulip-front:
+    external: true
+  # Backend DB/cache/queue: postgres + memcached + rabbitmq + redis + the zulip
+  # server's backend chatter only, no internet egress. wdm creates this with
+  # --internal at install time.
+  zulip-db:
+    external: true
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind
+  # dir; postgres self-chowns it on init. wdm's remove preserves named volumes
+  # (never `docker compose down -v`) and lists them in the removal summary.
+  zulip_postgres:
+  # RabbitMQ Mnesia, queues, and schema. Self-chowned by the rabbitmq user.
+  zulip_rabbitmq:
+  # Redis persistence (rate-limit counters).
+  zulip_redis:
+  # Zulip uploads, custom emoji, and secrets cache (/data). Populated by the
+  # supervisor entrypoint on first boot. Preserved on remove like the others.
+  zulip_data:

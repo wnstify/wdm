@@ -1,0 +1,338 @@
+# Nextcloud — Hardened Docker Compose (wdm template, self-hosted cloud)
+# Five services: postgres backend + redis cache + the nextcloud-fpm app
+# (PHP-FPM) + an nginx front that serves static files and proxies PHP to the
+# app + a cron sidecar that runs Nextcloud's background jobs.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only — postgres, the app, and cron each
+#     add the five init / privilege-drop caps (CHOWN/SETGID/SETUID/DAC_OVERRIDE/
+#     FOWNER). FOWNER is required on the app/cron pair: the image's first-boot
+#     rsync into /var/www/html touches the directory's sticky bit and fails
+#     without it. redis and nginx run as their own image users (user: redis /
+#     user: nginx) and need ZERO added caps, so each carries cap_drop: ALL with
+#     no cap_add. No NET_* / SYS_* anywhere.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates internal networks at install):
+#       nextcloud-front (external) — reverse proxy reaches nginx here, and the
+#         app/cron use it for outbound egress (app store, federation, updates)
+#       nextcloud-db    (internal) — postgres + redis + app + cron only, no
+#         internet egress
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for postgres ephemeral writes; healthchecks gate startup via
+#     depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS
+#   - init-data.sh creates a non-root DB user so nextcloud never has DB
+#     superuser; the app role OWNS its database
+#   - SCRAM-SHA-256 password auth on postgres (stronger than the default md5)
+#   - redis requires a password (--requirepass); the app reaches it with the
+#     same secret over the internal-only db network
+#   - postgres + nextcloud data dirs are named volumes (pg_data, redis_data,
+#     nc_data), not bind mounts — wdm does not pre-create bind dirs; nginx
+#     mounts the shared nc_data read-only to serve static assets
+#
+# nginx runs as the unprivileged nginx user, so the bundled nginx.conf sidecar
+# moves all temp paths and the pid file under /tmp (writable for that user) and
+# listens on the unprivileged port 8080. wdm ships nginx.conf as a catalog
+# additional_files entry, written verbatim alongside the
+# rendered compose + env files and init-data.sh.
+#
+# wdm renders this template into ~/docker/nextcloud/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/nextcloud/.env (mode 0600).
+
+name: nextcloud
+services:
+  postgres:
+    # Postgres 17 (alpine): Nextcloud 31 supports Postgres up to 17 — do NOT
+    # bump to 18, which Nextcloud 31 does not yet certify.
+    image: postgres:17-alpine
+    container_name: nextcloud-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_NON_ROOT_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # SCRAM-SHA-256 password hashing instead of the historical md5 default.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): postgres self-chowns its data dir on
+      # init, and a named volume keeps the data inside Docker rather than in a
+      # host dir wdm would have to pre-create.
+      - pg_data:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    networks:
+      - nextcloud-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the postgres entrypoint init + privilege drop to
+      # postgres:postgres. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "nextcloud"
+  redis:
+    # Redis cache + file lock backend. Runs as the image's redis user so no
+    # privilege-drop caps are needed (user: redis means the entrypoint never
+    # attempts a setpriv drop). Password-protected via --requirepass.
+    image: redis:7-alpine
+    container_name: nextcloud-redis
+    restart: unless-stopped
+    user: redis
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - nextcloud-db
+    cap_drop:
+      - ALL
+    # redis runs as the image's redis user and binds the unprivileged port
+    # 6379; it needs no added capabilities. cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_REDIS}
+          cpus: "${CPUS_LIMIT_REDIS}"
+          pids: ${PIDS_LIMIT_REDIS}
+        reservations:
+          memory: 64m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "nextcloud"
+  app:
+    # Nextcloud PHP-FPM application server. The image entrypoint runs as
+    # container root, rsyncs the app into /var/www/html on first boot, then
+    # drops to www-data for php-fpm. It serves only FastCGI on port 9000 —
+    # nginx is the HTTP front. The admin account is auto-created on first boot
+    # from NEXTCLOUD_ADMIN_USER / NEXTCLOUD_ADMIN_PASSWORD via occ.
+    image: nextcloud:31-fpm
+    container_name: nextcloud-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # --- Database connection (non-root user from init-data.sh) -----------
+      # The app connects as the least-privilege role that OWNS its database.
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # --- Redis cache + locking -------------------------------------------
+      REDIS_HOST: redis
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+      # --- Admin auto-install (first boot only) ----------------------------
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      # Space-separated trusted domains. 127.0.0.1 lets the localhost
+      # healthcheck reach /status.php with a matching Host header; the real
+      # domain is what the reverse proxy forwards.
+      NEXTCLOUD_TRUSTED_DOMAINS: 127.0.0.1 ${NEXTCLOUD_DOMAIN}
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the image entrypoint runs as container
+      # root and populates /var/www/html on first boot, so a root-owned named
+      # volume is correct. nginx mounts this same volume read-only to serve
+      # static assets, and cron mounts it read-write to run background jobs.
+      - nc_data:/var/www/html
+    networks:
+      - nextcloud-front
+      - nextcloud-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # The container-root entrypoint chowns /var/www/html and drops to
+      # www-data for php-fpm. FOWNER is REQUIRED: the first-boot rsync into
+      # /var/www/html touches the directory's sticky bit and fails (exit 23)
+      # without it. No NET_* / SYS_*.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_APP}
+          cpus: "${CPUS_LIMIT_APP}"
+          pids: ${PIDS_LIMIT_APP}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # The fpm image ships no php-fpm-healthcheck / cgi-fcgi / nc, so probe the
+      # FastCGI listener directly with a tiny PHP socket open. start_period:
+      # 180s covers the first-boot rsync + occ maintenance:install.
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\",9000)?0:1);'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "nextcloud"
+  nginx:
+    # HTTP front: serves Nextcloud's static assets from the shared data volume
+    # and proxies PHP requests to the app's FastCGI listener. Runs as the
+    # image's nginx user; the bundled nginx.conf keeps all temp paths + the pid
+    # file under /tmp and listens on the unprivileged port 8080.
+    image: nginx:stable-alpine
+    container_name: nextcloud-nginx
+    restart: unless-stopped
+    user: nginx
+    depends_on:
+      app:
+        condition: service_started
+    ports:
+      - "127.0.0.1:8081:8080" # localhost only — front with a reverse proxy
+    volumes:
+      # Read-only mount of the app's data volume so nginx can serve static
+      # files, and the bundled nginx.conf as the server config.
+      - nc_data:/var/www/html:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - nextcloud-front
+    cap_drop:
+      - ALL
+    # nginx runs as the image's nginx user and binds the unprivileged port
+    # 8080; it needs no added capabilities. cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_NGINX}
+          cpus: "${CPUS_LIMIT_NGINX}"
+          pids: ${PIDS_LIMIT_NGINX}
+        reservations:
+          memory: 32m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/status.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "nextcloud"
+  cron:
+    # Background-job sidecar: the same nextcloud-fpm image with /cron.sh as the
+    # entrypoint, which runs Nextcloud's cron tasks on a loop. It shares the
+    # app's data volume and DB/redis connection but NOT the admin/trusted-domain
+    # install env (those drive only the app's first-boot install).
+    image: nextcloud:31-fpm
+    container_name: nextcloud-cron
+    restart: unless-stopped
+    entrypoint: /cron.sh
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      # --- Database connection (non-root user from init-data.sh) -----------
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # --- Redis cache + locking -------------------------------------------
+      REDIS_HOST: redis
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - nc_data:/var/www/html
+    networks:
+      - nextcloud-front
+      - nextcloud-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Same five-cap set as the app: cron shares the data volume and the image
+      # runs upgrade rsyncs that touch the directory's sticky bit (FOWNER), then
+      # drops to www-data. No NET_* / SYS_*.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_CRON}
+          cpus: "${CPUS_LIMIT_CRON}"
+          pids: ${PIDS_LIMIT_CRON}
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+    labels:
+      wdm.managed: "true"
+      wdm.app: "nextcloud"
+networks:
+  # Front: reverse proxy reaches nginx here (or via 127.0.0.1:8081), and the
+  # app/cron use it for outbound egress (app store, federation, updates).
+  nextcloud-front:
+    external: true
+  # Backend DB/cache: postgres + redis + app + cron only, no internet egress.
+  # wdm creates this with --internal at install time.
+  nextcloud-db:
+    external: true
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind
+  # dir; postgres self-chowns it on init. wdm's remove preserves named volumes
+  # (never `docker compose down -v`) and lists them in the removal summary.
+  pg_data:
+  # Redis persistence (cache + file locks).
+  redis_data:
+  # Nextcloud application + user data (/var/www/html). Populated by the app's
+  # container-root entrypoint on first boot; shared read-only with nginx and
+  # read-write with cron. Preserved on remove like the other named volumes.
+  nc_data:

@@ -1,0 +1,670 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wnstify/wdm/main/catalog/schema.json",
+  "title": "wdm catalog.yaml",
+  "description": "Catalog manifest validated by internal/catalog. Loaded from ~/.local/share/wdm/catalogs/<channel>/catalog.yaml. PRD §22. The render-metadata contract: placeholder.type is a closed enum; placeholder.encoding carries the generated-secret output format; risk_classification is an array of PRD §20 risk tags; networks and additional_files are optional arrays describing out-of-band Docker resources and sidecar template artifacts the renderer writes alongside the Compose/.env pair; placeholder.regenerable carries the per-secret rotation policy; the SQL identifier denylist prevents init-script-bearing apps from declaring placeholders whose names would interpolate as SQL identifiers inside docker-entrypoint-initdb.d/*.sh/*.sql. Every nesting level uses additionalProperties:false so any future field addition must update this schema atomically.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "channel", "generated_at", "apps"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "enum": [1, 2],
+      "description": "Catalog schema version. Version 2 adds optional declaration fields over version 1: public-port intent and ranges, the per-service container-privilege allow-list (capabilities, sysctls, devices, privileged, ulimits, host_module_mount), the docker-socket-proxy declaration, multi-artifact config generation, and network IPAM. Every version-2 field is optional and additionalProperties:false, so a version-1 manifest still validates against this schema and the loader accepts both versions (PRD §30). A manifest sets 2 only when it uses a version-2 field."
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["stable"],
+      "description": "Catalog channel this manifest belongs to. v1 ships 'stable' only; 'verified' is reserved for a future premium channel. PRD §22."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp at which this catalog manifest was generated."
+    },
+    "apps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/app" },
+      "description": "Curated app templates available in this channel. PRD §15 lists v1 eligibility rules."
+    }
+  },
+  "$defs": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "app_id",
+        "name",
+        "summary",
+        "description",
+        "template_name",
+        "template_version",
+        "compose_template",
+        "env_template",
+        "placeholders",
+        "supported_versions",
+        "ports",
+        "image_pins",
+        "pangolin_guidance",
+        "risk_classification"
+      ],
+      "properties": {
+        "app_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$",
+          "description": "Stable identifier. Used as default stack subdirectory name (~/docker/<app_id>) and Compose project suffix (wdm-<app_id>). PRD §9, §17."
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "template_name": { "type": "string", "minLength": 1 },
+        "template_version": { "type": "string", "minLength": 1 },
+        "compose_template": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference to the Compose template the renderer uses. Resolved relative to the repo root."
+        },
+        "env_template": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference to the .env template. Same resolution semantics as compose_template."
+        },
+        "placeholders": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/placeholder" }
+        },
+        "supported_versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["docker", "compose"],
+          "properties": {
+            "docker": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Docker engine version constraint, e.g. '>=20.10'. PRD §2."
+            },
+            "compose": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Compose plugin version constraint. PRD §2 requires Compose V2."
+            }
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/port" },
+          "description": "Local ports the rendered stack binds. PRD §9."
+        },
+        "image_pins": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/image_pin" },
+          "description": "Pinned images per service. Tag is mandatory; digest is captured in .wdm.lock at install/update time. PRD §9."
+        },
+        "networks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/network" },
+          "description": "Docker networks the stack expects to exist before 'docker compose up -d'. wdm creates each via 'docker network create [--internal] <name>' before deploy (idempotent skip-if-exists) and leaves them in place on safe-remove. Optional — apps with no external networks omit this field."
+        },
+        "additional_files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/additional_file" },
+          "description": "Sidecar template artifacts the renderer writes to the stack directory alongside docker-compose.yml and .env. Covers DB init scripts, web-server configs (nginx.conf, Caddyfile), TOML/YAML/JSON configs, and any nested-path file. Each declared 'mount' (optional) must already appear in the Compose template — render verifies, never injects. Optional — apps without sidecars omit this field."
+        },
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resource_profile" },
+          "description": "Per-service resource sizing bands. Each entry declares the floor (wdm refuses install below it), the recommended default for a typical small VPS (selected when host budget fits, falls back to min with a warning otherwise), and the ceiling (user overrides above it are rejected — no silent clamping). internal/system probes host CPU + total memory at install planning time; internal/core selects per-service values against the host budget and rejects out-of-band overrides. Optional — apps without explicit sizing fall back to template-declared deploy.resources.limits at render time, which removes wdm's ability to refuse install or reject overrides safely."
+        },
+        "service_hardening": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/service_hardening" },
+          "description": "Schema version 2. Per-service container-privilege declarations validated against wdm's closed allow-list (PRD §12.2). Absent → every service keeps the cap_drop: ALL baseline with no added capabilities, sysctls, devices, ulimits, or host module mount, and runs unprivileged. Optional — apps needing no elevation omit it."
+        },
+        "socket_proxy": { "$ref": "#/$defs/socket_proxy" },
+        "config_generation": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/config_generation_artifact" },
+          "description": "Schema version 2. Config artifacts wdm renders from the placeholder map at install (PRD §17), distinct from additional_files static sidecars. Absent → only additional_files sidecars are written. wdm generates these itself and never invokes an upstream generate-config.sh."
+        },
+        "local_target_url_template": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Install-finish local URL template (PRD §16, §17 step 14). May carry Go template placeholder references resolved against the install placeholder map (e.g. 'http://127.0.0.1:{{ .PORT_3008 }}/'). Optional — absent falls back to 'http://127.0.0.1:<first ports[] host port>'."
+        },
+        "pangolin_guidance": { "$ref": "#/$defs/pangolin_guidance" },
+        "first_run_notes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Optional first-run checklist lines surfaced on the install finish screen. README prose is never parsed; the catalog carries the structured lines directly."
+        },
+        "completed_services": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Optional list of Compose service names that complete by design after running to success (one-shot init containers that exit 0). Status logic treats these as done rather than needs_attention. Additive optional field — a schema_version-1 manifest still validates, so no version bump."
+        },
+        "risk_classification": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/risk_tag" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Risk tags surfaced on the install finish screen and gating database-risk confirmation (PRD §20). Array form is required — bare strings are rejected. Allowed values: 'safe', 'major', 'database', 'complex'."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "SQL identifier safety: when additional_files declares an init script (docker-entrypoint-initdb.d-style .sh/.sql), no placeholder may be named after a SQL identifier the init script could interpolate as such. Catalog authors must declare those identifiers as catalog-fixed literals in .env.tmpl, not as user-modifiable placeholders. The denylist lives in #/$defs/sql_identifier_denylist.",
+          "if": {
+            "type": "object",
+            "required": ["additional_files"],
+            "properties": {
+              "additional_files": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "required": ["src"],
+                  "properties": {
+                    "src": {
+                      "type": "string",
+                      "pattern": "\\.(sh|sql)$"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "placeholders": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "not": { "$ref": "#/$defs/sql_identifier_denylist" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "placeholder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "required"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Placeholder identifier as it appears in .env/Compose templates (uppercase snake)."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["string", "domain", "port", "secret", "timezone", "path", "bool"],
+          "description": "Placeholder leaf type. Closed set — extension requires a schema-bump."
+        },
+        "required": { "type": "boolean" },
+        "encoding": {
+          "type": "string",
+          "enum": ["base64url", "hex", "base64std", "argon2id"],
+          "description": "Generated secret output format. Required when type='secret' and rejected on non-secret placeholders. Password-like secrets use base64url; token-like secrets use hex. 'base64std' emits a 44-char standard-base64 (alphabet A-Za-z0-9+/ with padding) encoding of 32 random bytes, for consumers whose strict standard-base64 decoder rejects the URL-safe alphabet and that require an exact 32-byte decoded key. 'argon2id' stores a one-way argon2id PHC hash in .env and surfaces the random plaintext to the operator once; it must be regenerable:false because the plaintext cannot be re-derived on update."
+        },
+        "default": {
+          "description": "Optional default value. Concrete type mirrors the leaf type of 'type'; the schema accepts string/number/boolean/null and internal/render validates the type match at render time.",
+          "type": ["string", "number", "boolean", "null"]
+        },
+        "regenerable": {
+          "type": "boolean",
+          "description": "Per-secret rotation policy. Only allowed when type='secret' — the allOf branch below rejects this field on non-secret placeholders so catalog authors cannot pretend the field has any effect there. Defaults to true when absent: install always generates fresh values; update regenerates only when true (false-marked secrets are read from the existing .env via state.ReadStackEnv)."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "encoding is required for type:secret placeholders; regenerable is meaningful only there.",
+          "if": {
+            "type": "object",
+            "required": ["type"],
+            "properties": { "type": { "const": "secret" } }
+          },
+          "then": {
+            "required": ["encoding"]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["encoding"] },
+                { "required": ["regenerable"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "container", "host"],
+      "dependentRequired": {
+        "host_range": ["container_range"],
+        "container_range": ["host_range"]
+      },
+      "properties": {
+        "service": { "type": "string", "minLength": 1 },
+        "container": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "host": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Default host-side port. May be overridden during install."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["tcp", "udp"],
+          "default": "tcp"
+        },
+        "public": {
+          "type": "boolean",
+          "description": "Schema version 2. When true, wdm binds this port on all interfaces (0.0.0.0) instead of the 127.0.0.1 default. Absent or false binds localhost (PRD §11). A public bind is honored only from a signed catalog and only for ports whose function requires it; internal/core refuses a public declaration for a management, admin, or web-UI port and surfaces a warning plus confirmation before install (PRD §11.1)."
+        },
+        "host_range": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,4}-[1-9][0-9]{0,4}$",
+          "description": "Schema version 2. Inclusive host-side port range '<lo>-<hi>' for apps that publish a contiguous span (for example WebRTC media). When set, host is the range's low end and container_range must accompany it. internal/core validates lo<=hi, the 1-65535 bounds, and that the host and container spans match."
+        },
+        "container_range": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,4}-[1-9][0-9]{0,4}$",
+          "description": "Schema version 2. Inclusive container-side port range paired with host_range. Same low-end, bounds, and span rules, validated in internal/core."
+        }
+      }
+    },
+    "image_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "image", "tag"],
+      "properties": {
+        "service": { "type": "string", "minLength": 1 },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Image reference without tag, e.g. 'vaultwarden/server'."
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tag, e.g. '1.30.1'."
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "Optional resolved digest. Captured into .wdm.lock at install/update time. PRD §9."
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "internal"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+          "description": "Docker network name passed to 'docker network create'. Lowercase ASCII + digits + underscore + hyphen, starting with a letter, length 1-63 (Docker's network-name constraint)."
+        },
+        "internal": {
+          "type": "boolean",
+          "description": "When true, wdm passes '--internal' to 'docker network create', isolating the network from internet egress. Backend DB/cache networks set this to true; user-facing 'front' networks set false."
+        },
+        "ipam": { "$ref": "#/$defs/network_ipam" }
+      }
+    },
+    "additional_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["src", "dest", "mode"],
+      "properties": {
+        "src": {
+          "type": "string",
+          "minLength": 1,
+          "allOf": [
+            { "pattern": "^[a-zA-Z0-9._][a-zA-Z0-9._/-]*$" },
+            { "not": { "pattern": "\\.\\." } }
+          ],
+          "description": "Path to the template-side source file, relative to the app's template directory. May contain nested subdirectories (e.g. 'init-scripts/init-garage.sh'). Absolute paths and parent-directory traversal ('..') are rejected at schema validation."
+        },
+        "dest": {
+          "type": "string",
+          "minLength": 1,
+          "allOf": [
+            { "pattern": "^[a-zA-Z0-9._][a-zA-Z0-9._/-]*$" },
+            { "not": { "pattern": "\\.\\." } }
+          ],
+          "description": "Path to the stack-side destination file, relative to the stack directory. May contain nested subdirectories — the writer creates intermediate directories with mode 0o755."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0[0-7]{3}$",
+          "description": "POSIX file mode in octal notation, leading zero required (e.g. '0644' for configs, '0755' for executable scripts)."
+        },
+        "mount": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional documentation/validation field. When set, the Compose template MUST already declare a matching volume mount (e.g. './init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro'). internal/render walks the parsed YAML and fails if the declared mount is absent. Render NEVER injects mounts — the template is the source of truth."
+        }
+      }
+    },
+    "pangolin_guidance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target_url": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Local service URL a reverse proxy should point at (e.g. 'http://127.0.0.1:3008')."
+        },
+        "recommended_subdomain": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Suggested public subdomain label (e.g. 'status' for status.<your-domain>)."
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Optional operator guidance lines (guide links, own-reverse-proxy pointers)."
+        }
+      },
+      "description": "Structured reverse-proxy guidance shown on the install finish screen (PRD §16). InstallResult.PostInstallGuidance populates from these fields at the end of protocol step 6."
+    },
+    "risk_tag": {
+      "type": "string",
+      "enum": ["safe", "major", "database", "complex"],
+      "description": "Canonical risk tag from PRD §20. 'database' triggers the database-risk warning + explicit --accept-database-risk confirmation."
+    },
+    "resource_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "memory", "cpus", "pids", "allow_override"],
+      "properties": {
+        "service": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Compose service name this entry sizes (e.g. 'app', 'postgres', 'runner')."
+        },
+        "memory": { "$ref": "#/$defs/memory_band" },
+        "cpus": { "$ref": "#/$defs/cpu_band" },
+        "pids": { "$ref": "#/$defs/pids_band" },
+        "allow_override": {
+          "type": "boolean",
+          "description": "When false, any InstallRequest override targeting this service is rejected by internal/core install planning with *types.Error{Code: ErrCodeUsageValidation} rather than silently substituted — the user learns about the constraint instead of being surprised by an ignored flag. Useful for services with hard runtime requirements where allowing the user to undersize would silently break the app (e.g. voice / WebRTC services needing minimum CPU)."
+        }
+      }
+    },
+    "memory_band": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "recommended", "max"],
+      "properties": {
+        "min": {
+          "$ref": "#/$defs/docker_memory_value",
+          "description": "Floor: below this, wdm refuses install with *types.Error{Code: ErrCodeUsageValidation, Hint: 'host resources below minimum for <app>/<service>'} before writing files or calling Docker. PRD §27 reserves exit codes 0–9 so host-resources-below-min reuses ErrCodeUsageValidation rather than introducing a new exit code. Compared against host MemTotal minus the 1 GiB OS-and-reverse-proxy reserve minus already-installed stacks' recommended memory totals."
+        },
+        "recommended": {
+          "$ref": "#/$defs/docker_memory_value",
+          "description": "Normal default for a typical small VPS — NOT the current maintainer machine's value. wdm selects this value when it fits the detected host memory budget; falls back to min with a warning (StepInstallResourceDegraded progress step) if it doesn't fit but min does; refuses install if min doesn't fit either. Drives the .env-rendered MEMORY_LIMIT_<SERVICE_KEY> value Compose substitutes at up -d time. SERVICE_KEY is derived from the service field."
+        },
+        "max": {
+          "$ref": "#/$defs/docker_memory_value",
+          "description": "Override ceiling AND placeholder for an optional future 'large' profile — wdm does NOT auto-select max as the install default. User overrides above this are rejected with *types.Error{Code: ErrCodeUsageValidation} — no silent clamping. Catalog cap protects against fat-fingering (e.g. a typo turning '2g' into '20g' that would over-commit the host)."
+        }
+      }
+    },
+    "cpu_band": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "recommended", "max"],
+      "properties": {
+        "min": {
+          "$ref": "#/$defs/docker_cpu_value",
+          "description": "Floor: below this, wdm refuses install with *types.Error{Code: ErrCodeUsageValidation, Hint: 'host resources below minimum for <app>/<service>'} — same install-time-validation framing as memory.min. Compared against runtime.NumCPU() minus already-installed stacks' recommended cpu totals."
+        },
+        "recommended": {
+          "$ref": "#/$defs/docker_cpu_value",
+          "description": "Normal default for a typical small VPS — NOT the maintainer machine's value. Same fit-fallback-refuse algorithm as memory.recommended (selected when host CPU budget fits; falls back to min with warning; refuses if min doesn't fit). Drives the .env-rendered CPUS_LIMIT_<SERVICE_KEY> value. SERVICE_KEY is derived from the service field."
+        },
+        "max": {
+          "$ref": "#/$defs/docker_cpu_value",
+          "description": "Override ceiling AND future-large-profile placeholder — NOT auto-selected as default. User overrides above this are rejected, no silent clamping."
+        }
+      }
+    },
+    "pids_band": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "max"],
+      "properties": {
+        "default": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "Catalog-fixed containment cap applied at install. wdm does NOT autoscale pids from host resources — pids is defense-in-depth against fork bombs / runaway worker spawning, not a sizing requirement. No 'min' field for the same reason: there is no concept of 'the host is too small for this pids value'. Drives the .env-rendered PIDS_LIMIT_<SERVICE_KEY> value Compose substitutes at up -d time. SERVICE_KEY is derived from the service field."
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "Override ceiling: user overrides above this are rejected (no silent clamping). Catalog cap matches the highest pids value the app legitimately needs under load."
+        }
+      }
+    },
+    "docker_memory_value": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[bkmg]$",
+      "description": "Docker memory format: non-zero integer followed by a required lowercase unit suffix b/k/m/g (e.g. '256m', '1g', '4g'). The unit is required so the catalog cannot accidentally ship ambiguous '1' meaning 1 byte."
+    },
+    "docker_cpu_value": {
+      "type": "string",
+      "pattern": "^(0\\.0*[1-9][0-9]*|[1-9][0-9]*(\\.[0-9]+)?)$",
+      "description": "Docker CPU quota as decimal string (e.g. '0.25', '1.0', '2.5'). Represents fractional CPUs. String form (not numeric) so YAML preserves '1.0' as '1.0' rather than collapsing to the integer 1. Must be strictly positive — '0', '0.0', '0.00' (and any all-zero magnitude) are rejected at schema validation since a zero CPU quota is nonsensical for a sizing band. Allowed shapes: 0.<one-or-more-digits-with-at-least-one-non-zero> (e.g. '0.25', '0.001') OR <non-zero-int>[.digits] (e.g. '1', '1.0', '16.5')."
+    },
+    "sql_identifier_denylist": {
+      "$comment": "SQL identifiers commonly used inside postgres docker-entrypoint-initdb.d / mariadb init scripts as unquoted CREATE USER / GRANT / CREATE DATABASE targets. Identifiers cannot be SQL-parameterized, so user-modifiable values would allow injection inside the DB container's superuser context. When the app declares an init script via additional_files (.sh/.sql), no placeholder may carry one of these names; the catalog must instead encode them as fixed literals in .env.tmpl.",
+      "enum": [
+        "POSTGRES_USER",
+        "POSTGRES_DB",
+        "POSTGRES_DATABASE",
+        "POSTGRES_USERNAME",
+        "POSTGRES_NON_ROOT_USER",
+        "POSTGRES_NON_ROOT_DB",
+        "POSTGRES_NON_ROOT_DATABASE",
+        "POSTGRES_NON_ROOT_USERNAME",
+        "MARIADB_USER",
+        "MARIADB_DATABASE",
+        "MARIADB_USERNAME",
+        "MYSQL_USER",
+        "MYSQL_DATABASE",
+        "MYSQL_USERNAME"
+      ]
+    },
+    "linux_capability": {
+      "type": "string",
+      "enum": ["NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "NET_ADMIN", "NET_RAW"],
+      "$comment": "Closed capability allow-list from PRD §12.2. SYS_MODULE is deliberately excluded: an app needing a kernel module uses a host-side modprobe prerequisite plus a /lib/modules:ro mount (service_hardening.host_module_mount), not the capability.",
+      "description": "A Linux capability wdm permits a service to add on top of the cap_drop: ALL baseline. Closed set per PRD §12.2."
+    },
+    "allowed_sysctl_name": {
+      "type": "string",
+      "enum": ["net.ipv4.ip_forward", "net.ipv4.conf.all.src_valid_mark"],
+      "description": "A sysctl wdm permits a service to set. Closed allow-list per PRD §12.2."
+    },
+    "service_hardening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service"],
+      "properties": {
+        "service": { "type": "string", "minLength": 1, "description": "Compose service name this declaration hardens." },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["add"],
+          "properties": {
+            "add": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/linux_capability" },
+              "minItems": 1,
+              "uniqueItems": true,
+              "description": "Capabilities re-added on top of cap_drop: ALL. Each must be in the PRD §12.2 allow-list."
+            }
+          },
+          "description": "Linux capabilities to re-add. The renderer always applies cap_drop: ALL as the baseline; this lists only additions."
+        },
+        "sysctls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "value"],
+            "properties": {
+              "name": { "$ref": "#/$defs/allowed_sysctl_name" },
+              "value": { "type": "string", "minLength": 1 }
+            }
+          },
+          "minItems": 1,
+          "description": "sysctls to set, each name drawn from the PRD §12.2 allow-list."
+        },
+        "devices": {
+          "type": "array",
+          "maxItems": 0,
+          "$comment": "PRD §12.2 device allow-list is empty: no device map is permitted in the curated set. The field exists for schema completeness and fails closed (maxItems:0) so any declared device is rejected until the allow-list is amended.",
+          "description": "Device maps. The PRD §12.2 device allow-list is currently empty, so this array must be empty."
+        },
+        "privileged": {
+          "type": "boolean",
+          "description": "Whether the service runs privileged. Absent → false. privileged: true stays default-false and is refused by internal/core absent a recorded PRD amendment; the renderer surfaces elevated privilege on the finish screen."
+        },
+        "ulimits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nofile": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["soft", "hard"],
+              "properties": {
+                "soft": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+                "hard": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+              },
+              "description": "Open-file-descriptor limit (RLIMIT_NOFILE). Both soft and hard are required."
+            }
+          },
+          "description": "Per-service ulimits. Absent → image defaults. Only nofile is modeled in schema version 2; another ulimit requires a schema bump."
+        },
+        "host_module_mount": {
+          "type": "boolean",
+          "description": "When true, the renderer expects a /lib/modules:ro read-only host mount for a service that needs a host-loaded kernel module (for example wg-easy's WireGuard module). Absent → no host mount. Pairs with a host-side modprobe prerequisite per PRD §12.2 and replaces the excluded SYS_MODULE capability."
+        }
+      },
+      "description": "Container-privilege declaration for one service, validated against the PRD §12.2 closed allow-list."
+    },
+    "socket_proxy_permission": {
+      "type": "string",
+      "enum": ["CONTAINERS", "IMAGES", "NETWORKS", "VOLUMES", "INFO", "EVENTS", "PING", "VERSION", "POST"],
+      "$comment": "Recognized docker-socket-proxy permission flags for wdm's single-host scope. CONTAINERS/IMAGES/NETWORKS/VOLUMES/INFO/EVENTS/PING/VERSION are read-scoped (the baseline); POST is the write/control switch declared explicitly per app (e.g. dockhand full management). Membership is intentionally minimal and may be refined via a sanctioned schema correction.",
+      "description": "A docker-socket-proxy API permission an app may declare. Read-scoped flags are the baseline; POST is write/control (PRD §12.1)."
+    },
+    "socket_proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "service", "allowed_api", "network"],
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Whether the socket-proxy sidecar is active for this app." },
+        "service": { "type": "string", "minLength": 1, "description": "Compose service name of the docker-socket-proxy sidecar. An image_pins entry must pin this service's image (cross-checked in internal/core)." },
+        "allowed_api": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/socket_proxy_permission" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Closed set of Docker API permissions the proxy exposes. Read-scoped baseline; any write/control flag (POST) is declared explicitly (PRD §12.1)."
+        },
+        "network": { "type": "string", "minLength": 1, "description": "Name of the network the proxy and its consumer share. Must reference a networks[] entry with internal: true (cross-checked in internal/core); the proxy is never reachable off-host." }
+      },
+      "description": "docker-socket-proxy declaration (PRD §12.1). Docker API access reaches the app only through this sidecar on an --internal network; wdm refuses any direct /var/run/docker.sock bind."
+    },
+    "config_generation_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dest", "mode", "template"],
+      "properties": {
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "allOf": [
+            { "pattern": "^[a-zA-Z0-9._][a-zA-Z0-9._/-]*$" },
+            { "not": { "pattern": "\\.\\." } }
+          ],
+          "description": "Path to the template-side source, relative to the app's template directory. wdm renders it from the placeholder map at install. Absolute paths and parent-directory traversal ('..') are rejected."
+        },
+        "dest": {
+          "type": "string",
+          "minLength": 1,
+          "allOf": [
+            { "pattern": "^[a-zA-Z0-9._][a-zA-Z0-9._/-]*$" },
+            { "not": { "pattern": "\\.\\." } }
+          ],
+          "description": "Stack-side destination path, relative to the stack directory. Intermediate directories are created with mode 0o755. Absolute paths and parent-directory traversal ('..') are rejected."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0[0-7]{3}$",
+          "description": "POSIX file mode in octal notation, leading zero required (for example '0640')."
+        },
+        "mount": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional validation field. When set, the Compose template MUST already declare a matching volume mount; internal/render verifies and never injects it."
+        }
+      },
+      "description": "One config artifact wdm renders deterministically from the placeholder map (PRD §17). Distinct from additional_file: the source is a template wdm renders, not a static file it copies."
+    },
+    "network_ipam": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subnet"],
+      "properties": {
+        "subnet": {
+          "type": "string",
+          "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(3[0-2]|[12]?[0-9])$",
+          "description": "IPv4 CIDR for static addressing (for example '10.0.0.0/24'). internal/core validates the octet bounds."
+        },
+        "gateway": {
+          "type": "string",
+          "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$",
+          "description": "Optional IPv4 gateway within the subnet."
+        },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["service", "ipv4_address"],
+            "properties": {
+              "service": { "type": "string", "minLength": 1 },
+              "ipv4_address": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$" }
+            }
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Optional per-service static IPv4 assignments within the subnet."
+        }
+      },
+      "description": "Schema version 2. Static IPAM for a network (PRD §9). Absent → Docker's default bridge addressing. Needed by wg-adguard's fixed-IP layout."
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# wdm
+
+> wdm (Webnestify Docker Manager) is a Go terminal application — a Bubble Tea TUI and a CLI over one engine — for installing, updating, and checking a curated set of Docker Compose self-hosting templates. It targets Linux amd64 (Debian 12/13, Ubuntu 24.04/26.04) with Docker 20.10+ and Compose V2.
+
+wdm runs without root or sudo, binds generated stacks to localhost by default, preserves volumes on removal, and verifies signed catalog and release artifacts — failing closed when a signature, checksum, or attestation is missing or invalid.
+
+## Docs
+
+- [README](README.md): overview, requirements, install-and-verify flow, the safety model, and the curated app list.
+- [Usage](USAGE.md): full CLI reference — commands, flags, exit codes, and the runtime file layout.
+- [Security](SECURITY.md): release verification procedure, trust anchors, the seven release assets, and how to report issues.
+- [Contributing](CONTRIBUTING.md): prerequisites, build-and-test targets, project layout, and the pull-request flow.
+- [Changelog](CHANGELOG.md): release notes.

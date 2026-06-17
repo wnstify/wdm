@@ -1,0 +1,89 @@
+# Navidrome — Hardened Docker Compose (wdm template, upstream-official image)
+# Self-hosted music server and streamer: https://www.navidrome.org/
+#
+# Security baseline:
+#   - cap_drop: ALL with ZERO added capabilities (verified healthy by probe)
+#   - security_opt: no-new-privileges; ipc: private
+#   - Runs as container-root: deluan/navidrome is a distroless image that
+#     ships no non-root user and no shell/chown to drop privileges with, so
+#     there is no `user:` directive to set. cap_drop: ALL + no-new-privileges
+#     contain the root process — it holds no capabilities and cannot acquire
+#     any. The :ro music mount means a hypothetical RCE cannot tamper with
+#     the library.
+#   - tmpfs for /tmp; deploy.resources limits incl. pids
+#   - 127.0.0.1 port binding — reverse proxy in front for TLS
+#   - Healthcheck hits navidrome's unauthenticated /ping endpoint (no creds
+#     on the command line); wget is provided by the image's busybox.
+#
+# wdm renders this template into ~/docker/navidrome/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/navidrome/.env (mode 0600). MUSIC_PATH is an absolute
+# user-host path validated by internal/core (must be
+# absolute, must exist, must not be inside the stack dir — symlinks resolved
+# before that check); navidrome mounts it read-only.
+
+name: navidrome
+services:
+  navidrome:
+    image: deluan/navidrome:0.61.2
+    container_name: navidrome
+    restart: unless-stopped
+    environment:
+      # /music and /data are fixed container paths matched by the volumes
+      # below — never templated.
+      ND_MUSICFOLDER: /music
+      ND_DATAFOLDER: /data
+      ND_LOGLEVEL: ${ND_LOGLEVEL}
+      ND_SCANSCHEDULE: ${ND_SCANSCHEDULE}
+      ND_SESSIONTIMEOUT: ${ND_SESSIONTIMEOUT}
+      TZ: ${TZ}
+    volumes:
+      # Navidrome's database, cache, and artwork. A named volume (not a bind
+      # mount): the image is distroless and runs as container-root with no
+      # chowning entrypoint, so a bind mount's host source — auto-created
+      # root-owned — would work but is unnecessary host clutter; a named
+      # volume keeps the data dir self-contained. wdm's remove preserves
+      # named volumes (never `docker compose down -v`) and lists them in the
+      # removal summary, so the library index survives a remove.
+      - navidrome_data:/data
+      # Music library mounted :ro so a hypothetical navidrome RCE cannot
+      # tamper with the user's files. Navidrome only ever reads the library.
+      - ${MUSIC_PATH}:/music:ro
+    ports:
+      - "127.0.0.1:4533:4533" # localhost only — front with a reverse proxy
+    networks:
+      - navidrome
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_NAVIDROME}
+          cpus: "${CPUS_LIMIT_NAVIDROME}"
+          pids: ${PIDS_LIMIT_NAVIDROME}
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+    healthcheck:
+      # /ping is unauthenticated and returns 200 once navidrome is ready.
+      # wget is busybox, preinstalled in the image.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:4533/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "navidrome"
+networks:
+  navidrome:
+    external: true
+volumes:
+  # Navidrome's data dir (SQLite DB, cache, artwork). Named volume — see the
+  # navidrome service `volumes:` note above. Preserved on remove.
+  navidrome_data:
