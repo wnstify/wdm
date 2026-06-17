@@ -1,0 +1,190 @@
+# Vaultwarden — Hardened Docker Compose (wdm template, Bitwarden server)
+# Two services: postgres backend + the vaultwarden app container.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only — postgres adds the five init /
+#     privilege-drop caps; vaultwarden runs as container root and needs ZERO
+#     added caps (probe-verified), so it carries cap_drop: ALL with no cap_add.
+#     It binds the unprivileged port 8080, so no NET_BIND_SERVICE is needed.
+#   - vaultwarden runs with read_only: true (immutable rootfs): only /tmp
+#     (tmpfs) and the /data named volume are writable. Probe-verified that
+#     vaultwarden boots healthy under read_only with exactly those two writable
+#     paths and the bundled /healthcheck.sh exits 0.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates internal networks at install):
+#       vaultwarden-front  (external) — reverse proxy reaches vaultwarden here
+#       vaultwarden-db     (internal) — vaultwarden <-> postgres only, no internet
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for ephemeral writes; healthchecks gate startup via depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS
+#   - init-data.sh creates a non-root DB user so vaultwarden never has DB
+#     superuser
+#   - SCRAM-SHA-256 password auth on postgres (stronger than the default md5)
+#   - postgres and vaultwarden data dirs are named volumes (db_storage,
+#     vaultwarden_data), not bind mounts — wdm does not pre-create bind dirs,
+#     and a host bind would be created root-owned and break the app's writes
+#
+# wdm renders this template into ~/docker/vaultwarden/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/vaultwarden/.env (mode 0600). init-data.sh ships as a
+# catalog additional_files entry and is written verbatim
+# alongside the rendered compose + env files.
+
+name: vaultwarden
+
+services:
+
+  postgres:
+    image: postgres:18.4
+    container_name: vaultwarden-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_NON_ROOT_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # SCRAM-SHA-256 password hashing instead of the historical md5 default.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so users upgrading from
+      # postgres:17 don't need a data migration.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): postgres self-chowns its PGDATA on
+      # init, and a named volume keeps the data inside Docker rather than in a
+      # host dir wdm would have to pre-create.
+      - db_storage:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    networks:
+      - vaultwarden-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the postgres entrypoint init + privilege drop to
+      # postgres:postgres. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  vaultwarden:
+    # Unofficial, lightweight Bitwarden-compatible server written in Rust.
+    # Single process; no bundled database — wdm points it at the external
+    # Postgres above via DATABASE_URL instead of the image's default SQLite.
+    image: vaultwarden/server:1.36.0
+    container_name: vaultwarden
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"  # localhost only — front with a reverse proxy
+    environment:
+      # --- Database connection (non-root user from init-data.sh) -----------
+      # vaultwarden switches off its default SQLite to the external Postgres via
+      # this single connection URL. The non-root user is created by
+      # init-data.sh; the password is base64url-encoded so it carries no
+      # ':' / '@' / '$' that would break the URL.
+      DATABASE_URL: postgresql://${POSTGRES_NON_ROOT_USER}:${POSTGRES_NON_ROOT_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # --- Admin credential ------------------------------------------------
+      # ADMIN_TOKEN gates the /admin panel. It is an argon2id PHC hash, not a
+      # plaintext token: wdm generates a strong random plaintext, persists only
+      # the PHC here, and surfaces the plaintext to the operator once on the
+      # install finish screen (it cannot be recovered later).
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      # --- Public URL ------------------------------------------------------
+      # Full external URL with scheme (no trailing slash). Required for
+      # WebAuthn/U2F two-factor, push notifications, and emitted links.
+      # Derived from VAULTWARDEN_DOMAIN in the .env.
+      DOMAIN: ${DOMAIN}
+      # Internal listen port. 8080 is unprivileged, so vaultwarden binds it
+      # without NET_BIND_SERVICE.
+      ROCKET_PORT: ${ROCKET_PORT}
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): vaultwarden persists its RSA keys,
+      # attachments, icon cache, and (with Postgres) its config under /data. A
+      # host bind would be created root-owned by Docker and break the app's
+      # writes, so wdm uses a named volume that stays inside Docker.
+      - vaultwarden_data:/data
+    networks:
+      - vaultwarden-front
+      - vaultwarden-db
+    cap_drop:
+      - ALL
+    # vaultwarden runs as container root and needs no added capabilities
+    # (probe-verified): it binds the unprivileged port 8080 and writes only its
+    # named /data volume and the /tmp tmpfs, neither of which requires a
+    # chown/setuid cap. cap_drop: ALL with no cap_add.
+    read_only: true
+    # Immutable rootfs (probe-verified): vaultwarden boots healthy with only
+    # /tmp (tmpfs) and the /data named volume writable. read_only blocks any
+    # write outside those two mounts, so a compromised process cannot tamper
+    # with the container's own binaries or config.
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_VAULTWARDEN}
+          cpus: "${CPUS_LIMIT_VAULTWARDEN}"
+          pids: ${PIDS_LIMIT_VAULTWARDEN}
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+    healthcheck:
+      # The image ships /healthcheck.sh, which curls the /alive endpoint. It
+      # exits 0 under read_only (probe-verified) and reports healthy in <10s,
+      # so a 30s start_period leaves comfortable headroom.
+      test: ["CMD-SHELL", "/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+networks:
+  # Front: reverse proxy reaches vaultwarden here (or via 127.0.0.1:8080).
+  vaultwarden-front:
+    external: true
+  # Backend DB: vaultwarden <-> postgres only, no internet egress. wdm creates
+  # this with --internal at install time.
+  vaultwarden-db:
+    external: true
+
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind
+  # dir; postgres self-chowns it on init. wdm's remove preserves named volumes
+  # (never `docker compose down -v`) and lists them in the removal summary.
+  db_storage:
+  # vaultwarden app data (RSA keys, attachments, icon cache, sends). A named
+  # volume so wdm need not pre-create a host bind dir the root-running app would
+  # otherwise fail to write; preserved on remove like db_storage.
+  vaultwarden_data:

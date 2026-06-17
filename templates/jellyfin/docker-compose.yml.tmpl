@@ -1,0 +1,99 @@
+# Jellyfin — Hardened Docker Compose (wdm template, LSIO image kept by choice)
+# Self-hosted media server: https://jellyfin.org/
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps for s6-overlay's PUID/PGID swap
+#   - security_opt: no-new-privileges; ipc: private
+#   - non-root long-running process (s6 drops to PUID:PGID)
+#   - tmpfs for /tmp (transcoding scratch), deploy.resources limits incl. pids
+#   - Media volumes mounted :ro — metadata kept inside /config (default)
+#   - 127.0.0.1 port binding — reverse proxy in front for TLS
+#   - Healthcheck hits jellyfin's /health endpoint (no creds in cmdline)
+#
+# wdm renders this template into ~/docker/jellyfin/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/jellyfin/.env (mode 0600). MEDIA_PATH / MOVIES_PATH /
+# SHOWS_PATH are absolute user-host paths validated by internal/core per
+# Validated to be absolute, to exist, and not inside the
+# stack dir — symlinks resolved before that check).
+
+name: jellyfin
+
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:10.11.8
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      UMASK: ${UMASK}
+      # Optional: tells jellyfin its external URL so client redirects work.
+      # JELLYFIN_PublishedServerUrl: https://jellyfin.example.com
+    volumes:
+      - ./config:/config
+      # Media libraries — :ro so a hypothetical jellyfin RCE can't tamper
+      # with files. Jellyfin still works fully; metadata lives in /config.
+      - ${MEDIA_PATH}:/data/media:ro
+      - ${MOVIES_PATH}:/data/movies:ro
+      - ${SHOWS_PATH}:/data/shows:ro
+    ports:
+      - "127.0.0.1:8096:8096"  # localhost only — front with a reverse proxy
+    networks:
+      - jellyfin
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps s6-overlay needs at startup to chown /config and
+      # drop privileges to PUID:PGID via s6-setuidgid. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      # ffmpeg scratch; jellyfin's main transcode dir is /config/transcodes
+      # (persistent) so /tmp doesn't need to be huge.
+      - /tmp:size=512m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_JELLYFIN}
+          cpus: "${CPUS_LIMIT_JELLYFIN}"
+          pids: ${PIDS_LIMIT_JELLYFIN}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # /health is unauthenticated and returns 200 OK when ready.
+      # curl is preinstalled in the LSIO image.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8096/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # === Hardware acceleration (optional) ==================================
+    # Intel/AMD VAAPI/QSV: uncomment devices + group_add. Find your render
+    # group GID on the host with:  getent group render | cut -d: -f3
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+    #   - /dev/dri/card0:/dev/dri/card0
+    # group_add:
+    #   - "104"  # Replace with your host's `render` group GID
+    #
+    # NVIDIA NVENC: requires nvidia-container-toolkit on the host. Use
+    # the dedicated runtime instead of the devices block above:
+    # runtime: nvidia
+    # environment:
+    #   NVIDIA_VISIBLE_DEVICES: all
+    #   NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    # =====================================================================
+
+networks:
+  jellyfin:
+    external: true

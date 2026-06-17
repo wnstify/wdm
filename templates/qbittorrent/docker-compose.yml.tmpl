@@ -1,0 +1,116 @@
+# qBittorrent — Hardened Docker Compose (wdm template, upstream-official image)
+# Self-hosted BitTorrent client with a web UI: https://www.qbittorrent.org/
+#
+# Security baseline:
+#   - cap_drop: ALL with the four caps the entrypoint needs to chown /config
+#     and drop privileges to PUID:PGID; zero caps EXITS the container.
+#   - security_opt: no-new-privileges; ipc: private
+#   - Runs container-root only at startup: the image's entrypoint chowns the
+#     fresh /config volume and then drops the qbittorrent-nox process to uid
+#     1000 (probe-confirmed via `docker top`). There is no `user:` directive —
+#     forcing user: 1000 against a fresh named volume EACCESes the first
+#     mkdir; the entrypoint must start as root to chown the volume, after
+#     which cap_drop: ALL + no-new-privileges contain the dropped process.
+#   - deploy.resources limits incl. pids
+#   - WebUI bound to 127.0.0.1 — reverse proxy in front for TLS. The
+#     BitTorrent listen port (6881 tcp+udp) binds all interfaces ON PURPOSE
+#     so peers can reach this client; it is the only public surface and is
+#     declared public:true in the signed catalog (PRD §11.1).
+#   - Healthcheck hits the WebUI root via busybox wget (no creds on cmdline).
+#
+# stop_grace_period: 30m is REQUIRED, not tuning. qBittorrent flushes the DHT
+# routing table and checkpoints every active torrent on shutdown; a truncated
+# stop corrupts in-progress downloads. Keep the full window.
+#
+# wdm renders this template into ~/docker/qbittorrent/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/qbittorrent/.env (mode 0600). DOWNLOADS_PATH is an
+# absolute user-host path validated by internal/core
+# (must be absolute, must exist, must not be inside the stack dir — symlinks
+# resolved before that check); qbittorrent mounts it read-write at /downloads.
+
+name: qbittorrent
+
+services:
+  qbittorrent:
+    image: qbittorrentofficial/qbittorrent-nox:5.2.1-1
+    container_name: qbittorrent
+    restart: unless-stopped
+    environment:
+      # The entrypoint chowns /config and drops the qbittorrent-nox process to
+      # this uid:gid. wdm resolves PUID/PGID to the host user that owns the
+      # stack directory (built-in .UID/.GID — never user-supplied).
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+      # Fixed literals the image requires (see .env). QBT_LEGAL_NOTICE=confirm
+      # accepts the legal notice non-interactively; the WebUI/torrenting ports
+      # match the binds below.
+      QBT_LEGAL_NOTICE: ${QBT_LEGAL_NOTICE}
+      QBT_WEBUI_PORT: ${QBT_WEBUI_PORT}
+      QBT_TORRENTING_PORT: ${QBT_TORRENTING_PORT}
+    volumes:
+      # qBittorrent's config, session state, and the DHT checkpoint. A named
+      # volume (not a bind): the entrypoint chowns it to PUID:PGID on first
+      # run, so a fresh volume comes up writable without the host pre-creating
+      # a directory. wdm's remove preserves named volumes (never
+      # `docker compose down -v`) and lists them in the removal summary, so
+      # settings and the torrent session survive a remove.
+      - qbittorrent_config:/config
+      # Completed and in-progress downloads — a read-WRITE user-host bind so
+      # qBittorrent can write files here. Absolute path outside the stack dir,
+      # validated by internal/core at install planning time.
+      - ${DOWNLOADS_PATH}:/downloads
+    ports:
+      # WebUI — localhost only; front with a reverse proxy for TLS.
+      - "127.0.0.1:8090:8080"
+      # BitTorrent listen port — bound on ALL interfaces (no host IP) so the
+      # swarm can reach this client for inbound peer connections. Public by
+      # design (PRD §11.1); declared public:true in the catalog for both
+      # protocols. Forward 6881/tcp + 6881/udp in your router/firewall.
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    networks:
+      - qbittorrent
+    cap_drop:
+      - ALL
+    cap_add:
+      # The entrypoint needs these to chown the fresh /config volume and drop
+      # privileges to PUID:PGID. Zero added caps EXITS the container (code 1,
+      # probe-verified). No NET_* / SYS_* caps.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    # qBittorrent flushes DHT state and checkpoints active torrents on
+    # shutdown; truncating that corrupts in-progress downloads. Required.
+    stop_grace_period: 30m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_QBITTORRENT}
+          cpus: "${CPUS_LIMIT_QBITTORRENT}"
+          pids: ${PIDS_LIMIT_QBITTORRENT}
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+    healthcheck:
+      # The WebUI root returns 200 once qBittorrent is serving. wget is
+      # busybox, preinstalled in the image; no credentials on the command line.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  qbittorrent:
+    external: true
+
+volumes:
+  # qBittorrent's config + session + DHT checkpoint. Named volume — see the
+  # qbittorrent service `volumes:` note above. Preserved on remove.
+  qbittorrent_config:

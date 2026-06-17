@@ -1,0 +1,4077 @@
+# wdm stable catalog — the curated nineteen-app v1 stable catalog
+#
+# Validated against catalog/schema.json (draft 2020-12). Loaded from
+# ~/.local/share/wdm/catalogs/stable/catalog.yaml at runtime (PRD §22).
+#
+# Anchors:
+#   - PRD §15 names the curated v1 app set (nineteen apps): Uptime Kuma, FreshRSS,
+#     Jellyfin, n8n, Navidrome, OpenWebUI, SerpBear, qBittorrent, Syncthing,
+#     Baserow, Nextcloud, DocuSeal, Vaultwarden, Authentik, MeshCentral,
+#     wg-adguard (WireGuard + AdGuard), Zulip, Dockhand, Stoat.
+#   - PRD §16 fixes the install-finish-screen format used for pangolin_guidance.
+#   - PRD §20 enumerates the risk tags (safe, major, database, complex).
+#   - PRD §11 enforces 127.0.0.1 host port binding (carried by the Compose template,
+#     not the catalog — port records here describe host/container pairs only).
+#   - compose_template / env_template paths resolve relative to the repo root
+#     ("templates/<app>/docker-compose.yml.tmpl" and ".env.tmpl").
+#   - TZ semantics: an empty timezone triggers a system lookup at install
+#     planning time; there is no Compose-level default fallback.
+#   - regenerable=false secrets are reused on update (rotation = data loss).
+#   - PUID/PGID are never declared as placeholders — they come from
+#     wdm-resolved built-in template vars (.UID / .GID).
+#   - SQL-identifier placeholder names are forbidden in apps whose
+#     additional_files declare a .sh/.sql init script (n8n).
+#   - The resources band shape pins the small-VPS "recommended" benchmark —
+#     recommended is the typical install default, not the upstream template
+#     maintainer's machine value; max is an override ceiling, never the
+#     auto-selected default.
+
+schema_version: 2
+channel: stable
+generated_at: "2026-05-21T00:00:00Z"
+
+apps:
+
+  # ============================================================================
+  # Uptime Kuma — self-hosted monitoring with an external MariaDB backend.
+  # Two services on two networks (front + internal DB). Owns its own database,
+  # so any update path that touches mariadb is database-risk.
+  # ============================================================================
+  - app_id: uptime-kuma
+    name: Uptime Kuma
+    summary: Self-hosted uptime monitoring with status pages and 90+ notification channels.
+    description: |
+      Self-hosted monitoring tool for tracking uptime of websites, APIs, and
+      services. Beautiful UI, multiple notification channels, public status
+      pages, and a hardened MariaDB backend on an internal-only network. The
+      MariaDB container exposes no internet egress; only the uptime-kuma app
+      container reaches it across the kuma-db network.
+    template_name: uptime-kuma
+    template_version: "2026-05-20"
+    compose_template: templates/uptime-kuma/docker-compose.yml.tmpl
+    env_template: templates/uptime-kuma/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"   # PRD §2
+      compose: ">=2.0"    # PRD §2 — Compose V2
+
+    placeholders:
+      # MariaDB root password — required for MARIADB_ROOT_PASSWORD on first-run
+      # init. regenerable=false: rotating a MariaDB root password post-install
+      # requires ALTER USER inside the container, which wdm does not
+      # orchestrate. Update path reuses the value from .env via
+      # state.ReadStackEnv.
+      - name: MARIADB_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — same rotation cost as the root password
+      # (ALTER USER required). regenerable=false.
+      - name: UPTIME_KUMA_DB_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Timezone placeholder. Empty → wdm system lookup at install planning
+      # time. No Compose-level default — wdm is the authoritative resolver,
+      # no hardcoded fallback.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      - service: uptime-kuma
+        container: 3001     # uptime-kuma's internal HTTP port
+        host: 3008          # default host port — installer may override
+
+    image_pins:
+      - service: mariadb
+        image: docker.io/mariadb
+        tag: 11.8.6
+      - service: uptime-kuma
+        image: docker.io/louislam/uptime-kuma
+        tag: 2.3.2
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity. mariadb needs the minimal
+    # caps the entrypoint uses for first-run chown + privilege drop to
+    # mysql:mysql; uptime-kuma needs NET_RAW for the ICMP ping monitor.
+    service_hardening:
+      - service: mariadb
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+      - service: uptime-kuma
+        capabilities:
+          add:
+            - NET_RAW
+
+    networks:
+      # Front: reverse proxy reaches uptime-kuma here (or via 127.0.0.1:3008).
+      - name: kuma
+        internal: false
+      # Backend: kuma <-> mariadb only; created with --internal so MariaDB
+      # has no internet egress.
+      - name: kuma-db
+        internal: true
+
+    resources:
+      # mariadb: small relational DB sized for an uptime-monitoring workload.
+      # Recommended 512m / 0.5 cpu fits a 2-4 GiB VPS; min covers the
+      # mariadb 11 startup footprint with no spare; max is the override
+      # ceiling for larger users (NOT the auto-selected default).
+      - service: mariadb
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # uptime-kuma: Node.js app — lightweight outside of ping fan-out spikes.
+      # Recommended 256m / 0.5 cpu suits a small VPS with 10-50 monitors.
+      - service: uptime-kuma
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20: stack contains a MariaDB instance the user owns. Database-tag
+    # triggers the §20 warning + explicit --accept-database-risk confirmation
+    # on every update path.
+    risk_classification:
+      - database
+
+    local_target_url_template: "http://127.0.0.1:3008"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:3008"
+      recommended_subdomain: status
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:3008"
+
+  # ============================================================================
+  # FreshRSS — single-container RSS aggregator, SQLite default.
+  # No external DB process, no inter-service auth, no secrets. The simplest
+  # entry in the curated set.
+  # ============================================================================
+  - app_id: freshrss
+    name: FreshRSS
+    summary: Self-hosted RSS feed aggregator with multi-user support and a built-in refresh scheduler.
+    description: |
+      Free, self-hosted RSS aggregator. Lightweight, fast, and privacy-focused.
+      Apache + PHP single-process container (upstream-official image, not LSIO)
+      with SQLite as the default database — the FreshRSS project endorses
+      SQLite "for most cases". Supports Google Reader and Fever APIs for
+      mobile clients.
+    template_name: freshrss
+    template_version: "2026-05-20"
+    compose_template: templates/freshrss/docker-compose.yml.tmpl
+    env_template: templates/freshrss/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+      # Built-in cron minute field. The Compose template carries no
+      # ${CRON_MIN:-3,33} default; the catalog supplies the default here so
+      # wdm renders a concrete value into .env.
+      - name: CRON_MIN
+        type: string
+        required: false
+        default: "3,33"
+
+    ports:
+      - service: freshrss
+        container: 80        # Apache inside the container
+        host: 8088           # default host port — installer may override
+
+    image_pins:
+      - service: freshrss
+        image: freshrss/freshrss
+        tag: 1.29.0-alpine
+
+    # PRD §12.2: the capabilities freshrss re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity. NET_BIND_SERVICE lets Apache
+    # bind port 80 inside the container; SETUID/SETGID let the Apache master
+    # spawn workers as the apache user; CHOWN lets first-run init chgrp the data
+    # dir. DAC_OVERRIDE / FOWNER are deliberately NOT added (verified by test).
+    service_hardening:
+      - service: freshrss
+        capabilities:
+          add:
+            - NET_BIND_SERVICE
+            - SETUID
+            - SETGID
+            - CHOWN
+
+    networks:
+      - name: freshrss
+        internal: false
+
+    resources:
+      # freshrss: PHP + Apache single process; ~50 MiB resident under a
+      # hundred feeds. Recommended 256m / 0.5 cpu is generous for a typical
+      # personal install on a 2 GiB VPS.
+      - service: freshrss
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20: SQLite lives inside the container's data volume; no separate
+    # DB process; no inter-service auth. Update path is a tag bump + recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:8088"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8088"
+      recommended_subdomain: rss
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8088"
+
+  # ============================================================================
+  # Jellyfin — single-container media server, LSIO image.
+  # User-host bind mounts for media libraries (read-only); PUID/PGID resolved
+  # from wdm's built-in .UID / .GID, never declared here.
+  # ============================================================================
+  - app_id: jellyfin
+    name: Jellyfin
+    summary: Self-hosted media server for movies, TV, and music with hardware-accelerated transcoding.
+    description: |
+      Free and open-source media server for movies, TV shows, music, and
+      photos. Single LSIO container with s6-overlay handling the PUID/PGID
+      swap so the long-running process drops to the host user. Media
+      libraries mount read-only by default — a hypothetical Jellyfin RCE
+      cannot tamper with the user's library; metadata lives in /config
+      inside the stack directory.
+    template_name: jellyfin
+    template_version: "2026-05-20"
+    compose_template: templates/jellyfin/docker-compose.yml.tmpl
+    env_template: templates/jellyfin/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+      # File-creation mask — string so YAML preserves "022" as octal, not
+      # decimal 22. The Compose template carries no default; the catalog
+      # default fills in for users who do not override.
+      - name: UMASK
+        type: string
+        required: false
+        default: "022"
+
+      # User-host bind mounts: absolute paths outside the
+      # stack directory. internal/core validates each path at install
+      # planning time (must be absolute, must exist, must not be inside
+      # the stack dir — symlinks resolved before the check). The :ro mount
+      # mode lives in the Compose template's volume line per the schema's
+      # "compose owns the mount declaration" pattern (mirrors how
+      # additional_files.mount documents an existing compose mount).
+      - name: MEDIA_PATH
+        type: path
+        required: true
+      - name: MOVIES_PATH
+        type: path
+        required: true
+      - name: SHOWS_PATH
+        type: path
+        required: true
+
+    ports:
+      - service: jellyfin
+        container: 8096
+        host: 8096
+
+    image_pins:
+      - service: jellyfin
+        image: lscr.io/linuxserver/jellyfin
+        tag: 10.11.8
+
+    # PRD §12.2: the capabilities jellyfin re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity. These are the minimal caps
+    # s6-overlay needs at startup to chown /config and drop privileges to
+    # PUID:PGID via s6-setuidgid; no NET_* / SYS_* caps.
+    service_hardening:
+      - service: jellyfin
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      - name: jellyfin
+        internal: false
+
+    resources:
+      # jellyfin: idle ~150 MiB; one direct-play stream <50 MiB extra; one
+      # 1080p software transcode ~600 MiB and ~1.5 cpu. Recommended 1g / 2
+      # cpu covers a small VPS doing one transcode + browsing; min covers
+      # idle + metadata; max is the override ceiling for multi-stream
+      # transcoding hosts (NOT auto-selected). pids cap matches ffmpeg
+      # thread sprawl observed under load.
+      - service: jellyfin
+        memory:
+          min: 512m
+          recommended: 1g
+          max: 8g
+        cpus:
+          min: "0.5"
+          recommended: "2.0"
+          max: "8.0"
+        pids:
+          default: 500
+          max: 1000
+        allow_override: true
+
+    # PRD §20: single-service, no DB, media files are :ro. Update path is
+    # a tag bump + recreate; metadata stored in /config survives recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:8096"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8096"
+      recommended_subdomain: jellyfin
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8096"
+
+  # ============================================================================
+  # n8n — three-service workflow automation: Postgres + editor + isolated runner.
+  # Two of three networks are --internal; init-data.sh creates a non-root
+  # postgres user so n8n never has DB superuser access. SQL-identifier
+  # placeholders (POSTGRES_USER, POSTGRES_DB, POSTGRES_NON_ROOT_USER) are
+  # forbidden by the SQL-identifier denylist — they live as catalog-fixed
+  # literals in .env.tmpl, not as placeholders here.
+  # ============================================================================
+  - app_id: n8n
+    name: n8n
+    summary: Self-hosted workflow automation platform with 400+ integrations and a visual builder.
+    description: |
+      Open-source workflow automation platform — a self-hosted alternative
+      to Zapier and Make. Three-container split: a Postgres backend, the
+      n8n editor / webhook server, and a separate task-runner container
+      that executes user Code/Function nodes in isolation. Two of the three
+      networks are created --internal: the database network has no internet
+      egress, and the runner network has no internet egress (Code nodes
+      cannot make outbound calls from JavaScript — use the HTTP Request
+      node for that). N8N_RUNNERS_AUTH_TOKEN secures the broker RPC; the
+      encryption key cannot be rotated without losing saved credentials.
+    template_name: n8n
+    template_version: "2026-06-11"
+    compose_template: templates/n8n/docker-compose.yml.tmpl
+    env_template: templates/n8n/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres superuser password — used by the postgres entrypoint on
+      # first-run init. regenerable=false because the init-data.sh script
+      # that creates the non-root user runs once on fresh DB init; rotating
+      # the superuser password later would require ALTER USER orchestration
+      # wdm does not perform.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — n8n connects with this. The init-data.sh
+      # script interpolates this value as a SQL string literal (single-quoted
+      # inside CREATE USER ... WITH PASSWORD '${VAR}'), which is safe.
+      # Identifier safety is enforced separately: the user name itself is
+      # catalog-fixed in .env.tmpl, never user-modifiable. regenerable=false:
+      # rotation would require ALTER USER inside the postgres container.
+      - name: POSTGRES_NON_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # n8n encryption key — encrypts saved workflow credentials in the
+      # database. regenerable=false: rotating this key after credentials have
+      # been saved makes those credentials unrecoverable (data loss).
+      - name: N8N_ENCRYPTION_KEY
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Shared n8n <-> runner authentication token. regenerable=false: the
+      # token must match in both containers, and rotation without a
+      # coordinated restart of both processes leaves the runner unable to
+      # claim tasks. wdm does not orchestrate this dance.
+      - name: N8N_RUNNERS_AUTH_TOKEN
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Public hostname. The .env.tmpl derives WEBHOOK_URL from this single
+      # placeholder via env templating: WEBHOOK_URL=https://{{ .N8N_HOST }}/.
+      # No separate WEBHOOK_URL placeholder — one input, two env vars.
+      - name: N8N_HOST
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      - service: n8n
+        container: 5678
+        host: 5678
+        # Note: 5679 (broker RPC) and 5680 (runner health) are intentionally
+        # NOT declared here — they have no host:port mapping in the Compose
+        # template (host kernel never sees them), and the n8n-runners network
+        # is --internal. Catalog ports declare host-exposed ports only.
+
+    image_pins:
+      - service: postgres
+        image: postgres
+        tag: "18.4"
+      - service: n8n
+        image: docker.n8n.io/n8nio/n8n
+        tag: 2.21.4
+      - service: runner
+        image: n8nio/runners
+        tag: 2.21.4
+
+    # PRD §12.2: the capabilities postgres re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity. These are the minimal caps
+    # the postgres entrypoint uses for first-run init + privilege drop to
+    # postgres:postgres. The n8n and runner services add no capabilities.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches n8n here (or via 127.0.0.1:5678).
+      - name: n8n-front
+        internal: false
+      # Backend DB: n8n <-> postgres only, no internet egress.
+      - name: n8n-db
+        internal: true
+      # Backend runner: n8n <-> runner only, no internet egress. Code nodes
+      # therefore cannot make outbound HTTP calls by default — that is the
+      # security boundary, not the listen address.
+      - name: n8n-runners
+        internal: true
+
+    additional_files:
+      # Postgres init-data.sh creates the non-root user and grants privileges.
+      # This declaration triggers the schema's SQL-identifier denylist:
+      # no placeholder above may be named POSTGRES_USER, POSTGRES_DB,
+      # POSTGRES_NON_ROOT_USER, or any other entry in the denylist — those
+      # values live as catalog-fixed literals in .env.tmpl. The script
+      # interpolates user identifiers from env vars at first-run init;
+      # identifier values are catalog-controlled, password values flow
+      # through as quoted SQL string literals.
+      - src: init-data.sh
+        dest: init-data.sh
+        mode: "0755"
+        mount: ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+
+    resources:
+      # postgres: workflow execution metadata + history; modest write rate
+      # for personal automation. Recommended 512m / 0.5 cpu suffices on a
+      # small VPS; min covers postgres 18 idle; max is the override ceiling
+      # for users with thousands of executions per day.
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # n8n: editor + webhook server; main process holds compiled workflows.
+      # Recommended 1g / 1.0 cpu handles a personal automation set; min
+      # covers the Node.js runtime + small workflow set; max is the override
+      # ceiling for users with hundreds of active triggers.
+      - service: n8n
+        memory:
+          min: 512m
+          recommended: 1g
+          max: 4g
+        cpus:
+          min: "0.25"
+          recommended: "1.0"
+          max: "4.0"
+        pids:
+          default: 500
+          max: 1000
+        allow_override: true
+
+      # runner: Code/Function node sandbox; spikes only when workflows
+      # execute JavaScript. Recommended 512m / 0.5 cpu absorbs typical
+      # burst load; min is the idle Node.js process; max is the override
+      # ceiling for users running heavy in-process JS.
+      - service: runner
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+    # PRD §20: stack contains a Postgres instance the user owns (database
+    # tag — triggers the warning + explicit --accept-database-risk
+    # confirmation), and the three-service split with an init script + a
+    # task-runner broker is non-trivial coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:5678"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:5678"
+      recommended_subdomain: n8n
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:5678"
+
+  # ============================================================================
+  # Navidrome — single-container music server, upstream-official image.
+  # SQLite lives inside a named data volume; the music library is a read-only
+  # user-host bind mount (MUSIC_PATH, type: path). The distroless image ships
+  # no non-root user, so the container runs as root with cap_drop: ALL and no
+  # added capabilities (navidrome itself declares no service_hardening).
+  # ============================================================================
+  - app_id: navidrome
+    name: Navidrome
+    summary: Self-hosted music server and streamer with a modern web UI and broad Subsonic-client support.
+    description: |
+      Free and open-source music server and streamer. Stream your personal
+      music collection from any browser or Subsonic/OpenSubsonic client, with
+      on-the-fly transcoding, multi-user accounts, and optional Last.fm and
+      Spotify integration. Single upstream-official container with SQLite in a
+      named data volume; the music library mounts read-only — a hypothetical
+      Navidrome RCE cannot tamper with the user's files. The distroless image
+      provides no non-root user, so the container runs as root contained by
+      cap_drop: ALL (zero added capabilities) and no-new-privileges.
+    template_name: navidrome
+    template_version: "2026-06-14"
+    compose_template: templates/navidrome/docker-compose.yml.tmpl
+    env_template: templates/navidrome/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # User-host bind mount: absolute path outside the stack
+      # directory. internal/core validates it at install planning time (must
+      # be absolute, must exist, must not be inside the stack dir — symlinks
+      # resolved before the check). The :ro mount mode lives in the Compose
+      # template's volume line per the schema's "compose owns the mount
+      # declaration" pattern.
+      - name: MUSIC_PATH
+        type: path
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      - service: navidrome
+        container: 4533     # navidrome's internal HTTP + Subsonic-API port
+        host: 4533          # default host port — installer may override
+
+    image_pins:
+      - service: navidrome
+        image: deluan/navidrome
+        tag: 0.61.2
+
+    networks:
+      - name: navidrome
+        internal: false
+
+    resources:
+      # navidrome: single Go binary; idles ~21 MiB / 9 pids, spikes only on
+      # transcode and library scans. Recommended 256m / 0.5 cpu is generous
+      # for a typical personal install on a 2 GiB VPS; min covers idle with
+      # spare for one scan; max is the override ceiling for large libraries
+      # with concurrent transcoding (NOT the auto-selected default).
+      - service: navidrome
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20: single-service, SQLite inside a named volume, no separate DB
+    # process, no inter-service auth, music files are :ro. Update path is a
+    # tag bump + recreate; the data volume survives recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:4533"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:4533"
+      recommended_subdomain: music
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:4533"
+
+  # ============================================================================
+  # Open WebUI — single-container self-hosted LLM front-end.
+  # SQLite + a bundled vector store live on a named volume. Runs as
+  # container-root (the upstream image ships no non-root user; a forced UID
+  # breaks the SQLite DB) with cap_drop: ALL and no added caps. Open WebUI is a
+  # front-end only — it needs a model provider (a local Ollama instance or an
+  # external model API key, both config-only via env_file) to actually chat.
+  # ============================================================================
+  - app_id: openwebui
+    name: Open WebUI
+    summary: Self-hosted web interface for local and remote large language models with multi-user chat and RAG.
+    description: |
+      Extensible, self-hosted web front-end for large language models — a
+      private chat UI for a local Ollama instance or any OpenAI-compatible
+      API. Single container with SQLite and a bundled vector store on a named
+      volume, so chats, settings, and retrieval data survive a recreate. Open
+      WebUI is a front-end only: it boots and serves the UI without a provider,
+      but cannot chat until one is connected. The container runs as
+      container-root (the upstream image provides no non-root user and forcing a
+      non-root UID breaks its SQLite database) with cap_drop: ALL, no added
+      capabilities, and no-new-privileges. First boot downloads a small
+      embedding model over the network for built-in retrieval, so the front
+      network keeps internet egress.
+    template_name: openwebui
+    template_version: "2026-06-14"
+    compose_template: templates/openwebui/docker-compose.yml.tmpl
+    env_template: templates/openwebui/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Session-cookie signing key. regenerable=false:
+      # rotating it logs every user out (no data loss), so the update path
+      # reuses the existing value from .env via state.ReadStackEnv (Residual
+      # #31) rather than churning everyone's session. Token-like secret → hex.
+      - name: WEBUI_SECRET_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      - service: openwebui
+        container: 8080        # Open WebUI's internal HTTP port
+        host: 8071             # default host port — installer may override
+
+    image_pins:
+      - service: openwebui
+        image: ghcr.io/open-webui/open-webui
+        tag: 0.9.5
+
+    networks:
+      # Front: reverse proxy reaches Open WebUI here (or via 127.0.0.1:8071).
+      # NOT --internal: the app needs egress for the first-boot embedding-model
+      # download and to reach external model providers.
+      - name: openwebui
+        internal: false
+
+    resources:
+      # openwebui: idle ~1.0 GiB resident once the embedding model is loaded
+      # (measured at idle), ~20 pids. Recommended 2g / 1.0 cpu suits a
+      # small VPS browsing + light chat; min 1536m sits above the resident
+      # footprint with headroom so a min-fallback install does not OOM on the
+      # first-boot model load (a flat 1g floor is below the measured resident
+      # set); max is the override ceiling for heavier local workloads (NOT the
+      # auto-selected default).
+      - service: openwebui
+        memory:
+          min: 1536m
+          recommended: 2g
+          max: 4g
+        cpus:
+          min: "0.5"
+          recommended: "1.0"
+          max: "4.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+    # PRD §20: single service, SQLite + vector store inside a named volume, no
+    # separate DB process, no inter-service auth. Update path is a tag bump +
+    # recreate; the named volume survives recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:8071"
+
+    # Open WebUI is a front-end only; surfaced on the install finish screen so
+    # the user knows a model provider is the next step.
+    first_run_notes:
+      - "Open WebUI needs a model provider to chat — connect a local Ollama instance or an external model API key. See the template README."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8071"
+      recommended_subdomain: chat
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8071"
+
+  # ============================================================================
+  # SerpBear — single-container SEO keyword rank tracker, SQLite default.
+  # Clean non-root: the image's built-in `nextjs` user (UID 1001) owns /app,
+  # so the template adds NO caps and sets no `user:` override (forcing a UID
+  # breaks the SQLite open — verified in testing). Data lives in a named
+  # volume so Docker seeds it nextjs-owned. NEXT_PUBLIC_APP_URL is derived
+  # from the single SERPBEAR_DOMAIN input.
+  # ============================================================================
+  - app_id: serpbear
+    name: SerpBear
+    summary: Self-hosted search-engine keyword rank tracker with a REST API and Search Console integration.
+    description: |
+      Free, open-source SEO rank tracker. Track keyword positions on Google
+      over time, group keywords by domain, and read ranking data through a
+      built-in REST API — all self-hosted with no per-keyword fees. Single
+      Next.js container with SQLite under /app/data; the image runs as its
+      built-in non-root `nextjs` user (UID 1001), so the stack drops all
+      capabilities and adds none. The data dir is a named volume so Docker
+      seeds it nextjs-owned and SQLite opens cleanly. Optional Google Search
+      Console and SMTP integrations are config-only env hints.
+    template_name: serpbear
+    template_version: "2026-06-14"
+    compose_template: templates/serpbear/docker-compose.yml.tmpl
+    env_template: templates/serpbear/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Public hostname. The .env.tmpl derives NEXT_PUBLIC_APP_URL from this
+      # single placeholder via env templating:
+      # NEXT_PUBLIC_APP_URL=https://{{ .SERPBEAR_DOMAIN }}.
+      # serpbear uses it for the CSRF origin, OAuth callbacks, and emails,
+      # so it must be the public reverse-proxy host. One input, one URL.
+      - name: SERPBEAR_DOMAIN
+        type: domain
+        required: true
+
+      # Dashboard login username (maps to USER_NAME). User-configurable;
+      # defaults to admin. Not a secret — the matching password is.
+      - name: SERPBEAR_USER
+        type: string
+        required: false
+        default: admin
+
+      # Admin login password (maps to PASSWORD) — wdm generates it via
+      # crypto/rand. regenerable=false: rotating it
+      # invalidates the current login (no data loss), so wdm reuses the
+      # existing value from .env via state.ReadStackEnv.
+      - name: SERPBEAR_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Session JWT signing secret (maps to SECRET). regenerable=false:
+      # rotating it logs everyone out (no data loss); the value is reused
+      # from .env on update.
+      - name: SERPBEAR_SECRET
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # REST API bearer token (maps to APIKEY). regenerable=false: rotating
+      # it breaks existing API clients (no data loss); the value is reused
+      # from .env on update.
+      - name: SERPBEAR_APIKEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      - service: serpbear
+        container: 3000     # Next.js inside the container
+        host: 3009          # default host port — installer may override
+
+    image_pins:
+      - service: serpbear
+        image: towfiqi/serpbear
+        tag: 3.1.0
+
+    networks:
+      # Front: reverse proxy reaches serpbear here (or via 127.0.0.1:3009).
+      # Egress is required for serpbear's scraping/search APIs.
+      - name: serpbear
+        internal: false
+
+    first_run_notes:
+      - "Your SerpBear admin login is the configured username (USER_NAME, default 'admin'); the generated password is the PASSWORD= line in ~/docker/serpbear/.env."
+
+    resources:
+      # serpbear: single Next.js process backed by SQLite; idle ~110 MiB /
+      # ~40 pids, with brief spikes during keyword scrapes.
+      # Recommended 512m / 0.5 cpu fits a typical small VPS; min covers the
+      # idle Node.js + SQLite footprint; max is the override ceiling for
+      # users tracking many domains (NOT the auto-selected default).
+      - service: serpbear
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20: single-service, SQLite inside a named volume, no separate DB
+    # process, no inter-service auth. Update path is a tag bump + recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:3009"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:3009"
+      recommended_subdomain: seo
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:3009"
+
+  # ============================================================================
+  # qBittorrent — single-container BitTorrent client.
+  # Config + DHT checkpoint live on a named volume; downloads are a read-write
+  # user-host bind (DOWNLOADS_PATH, type: path). The image entrypoint starts as
+  # container-root, chowns the fresh /config volume, then drops the
+  # qbittorrent-nox process to uid 1000 — so the template runs container-root
+  # (no `user:` override; forcing one EACCESes the first run) with cap_drop: ALL
+  # re-adding only the four caps the entrypoint needs (zero caps EXITS). This is
+  # the first app to use port.public: the WebUI (8080) stays localhost-only,
+  # while the BitTorrent listen port (6881 tcp+udp) binds all interfaces by
+  # design (PRD §11.1) so the swarm can reach the client.
+  # ============================================================================
+  - app_id: qbittorrent
+    name: qBittorrent
+    summary: Self-hosted BitTorrent client with a web UI, RSS auto-downloading, and a search-plugin system.
+    description: |
+      Free and open-source BitTorrent client managed entirely from the browser.
+      Download and seed torrents, subscribe to RSS feeds for auto-downloading,
+      and search across indexers — all self-hosted with no ads or tracking.
+      Single upstream-official headless (`-nox`) container: config and the DHT
+      checkpoint live in a named volume, and the downloads directory is a
+      read-write user-host bind. The entrypoint starts as container-root to
+      chown the fresh /config volume, then drops the qbittorrent-nox process to
+      the host user (uid 1000) contained by cap_drop: ALL — re-adding only the
+      four capabilities the entrypoint needs — plus no-new-privileges. The WebUI
+      stays bound to localhost behind a reverse proxy; the BitTorrent listen
+      port (6881, both TCP and UDP) binds all interfaces on purpose so peers can
+      connect inbound, the one public surface in this stack.
+    template_name: qbittorrent
+    template_version: "2026-06-14"
+    compose_template: templates/qbittorrent/docker-compose.yml.tmpl
+    env_template: templates/qbittorrent/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # User-host bind mount: absolute path outside the stack
+      # directory. internal/core validates it at install planning time (must
+      # be absolute, must exist, must not be inside the stack dir — symlinks
+      # resolved before the check). The mount mode lives in the Compose
+      # template's volume line (read-write) per the schema's "compose owns the
+      # mount declaration" pattern.
+      - name: DOWNLOADS_PATH
+        type: path
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # WebUI — localhost only (NOT public). This is the admin/web-UI surface;
+      # a public declaration here would be refused per PRD §11.1(d).
+      - service: qbittorrent
+        container: 8080     # qBittorrent's internal WebUI port
+        host: 8090          # default host port — installer may override
+      # BitTorrent listen port — public on all interfaces, both protocols, so
+      # the swarm can open inbound peer connections (PRD §11.1). The rendered
+      # compose binds 6881/tcp and 6881/udp with no host IP; the public-bind
+      # scan requires these declarations to match those binds exactly.
+      - service: qbittorrent
+        container: 6881
+        host: 6881
+        protocol: tcp
+        public: true
+      - service: qbittorrent
+        container: 6881
+        host: 6881
+        protocol: udp
+        public: true
+
+    image_pins:
+      - service: qbittorrent
+        image: qbittorrentofficial/qbittorrent-nox
+        tag: 5.2.1-1
+
+    # PRD §12.2: the capabilities qbittorrent re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity. The entrypoint needs these
+    # to chown the fresh /config volume and drop privileges to PUID:PGID; zero
+    # added caps EXITS the container (probe-verified). No NET_* / SYS_* caps.
+    service_hardening:
+      - service: qbittorrent
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+
+    networks:
+      # Front: reverse proxy reaches the WebUI here (or via 127.0.0.1:8090).
+      # The public BitTorrent port is published on the host directly, not via
+      # this network.
+      - name: qbittorrent
+        internal: false
+
+    first_run_notes:
+      - "qBittorrent prints a temporary admin password to the container logs on first run: read it with `docker logs qbittorrent | grep \"temporary password\"`, sign in as admin, then set your own password in the WebUI (Tools -> Options -> Web UI)."
+      - "The BitTorrent port 6881 (tcp+udp) is published on all interfaces by design; forward it in your router/firewall so inbound peers and DHT can reach this client."
+
+    resources:
+      # qbittorrent: single headless process backed by libtorrent; idle ~14.5
+      # MiB, with the piece cache and peer connections growing
+      # memory as active torrents increase. Recommended 512m / 0.5 cpu fits a
+      # typical small VPS seeding a modest set; min covers idle with spare; max
+      # is the override ceiling for users running many active torrents (NOT the
+      # auto-selected default).
+      - service: qbittorrent
+        memory:
+          min: 128m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+    # PRD §20: single-service, config + DHT state inside a named volume, no
+    # separate DB process, no inter-service auth. Update path is a tag bump +
+    # recreate; the named volume survives recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:8090"
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8090"
+      recommended_subdomain: qbittorrent
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8090"
+
+  # ============================================================================
+  # Syncthing — single-container continuous peer-to-peer file sync.
+  # Config + device keys + SQLite index live on a named volume; the
+  # synced folder is a read-write user bind. Runs as container-root that drops
+  # to uid 1000 (the entrypoint chowns /var/syncthing and switches to PUID:PGID;
+  # zero caps exits on boot — probe-verified), with cap_drop: ALL re-adding only
+  # the four drop-to-user caps and no-new-privileges. The GUI (8384) is
+  # localhost-only — it has no auth on first boot — while the BEP sync port
+  # (22000 tcp+udp) is the one deliberately public surface so remote peers can
+  # connect directly (PRD §11.1 public-port exception).
+  # ============================================================================
+  - app_id: syncthing
+    name: Syncthing
+    summary: Self-hosted continuous file synchronization between your devices over an encrypted peer-to-peer connection.
+    description: |
+      Free and open-source continuous file-synchronization program. Keep
+      folders in sync across two or more devices over a direct, encrypted
+      peer-to-peer connection — no cloud, no central account, your data never
+      passes through a third-party server. Single upstream-official container
+      with the config, device keys, TLS certificate, and SQLite index in a
+      named volume so the device identity survives a recreate; the synced
+      folder is a read-write host bind. The container runs as container-root
+      that drops to the host user (the entrypoint chowns its home dir and
+      switches to PUID:PGID), contained by cap_drop: ALL with only the four
+      drop-to-user capabilities re-added and no-new-privileges. The web UI has
+      no authentication on first boot, so it binds localhost only; the BEP sync
+      port (22000, tcp and udp) is published publicly so remote peers can
+      connect directly.
+    template_name: syncthing
+    template_version: "2026-06-14"
+    compose_template: templates/syncthing/docker-compose.yml.tmpl
+    env_template: templates/syncthing/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # User-host bind mount: absolute path outside the stack
+      # directory. internal/core validates it at install planning time (must
+      # be absolute, must exist, must not be inside the stack dir — symlinks
+      # resolved before the check). Mounted read-write at /data so Syncthing
+      # can apply changes received from peers (bidirectional by design); the
+      # mount mode lives in the Compose template's volume line per the schema's
+      # "compose owns the mount declaration" pattern.
+      - name: SYNC_PATH
+        type: path
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # GUI / REST API — localhost only (no auth on first boot; front with a
+      # reverse proxy). NOT public: it is the web-UI/admin surface (PRD §11.1).
+      - service: syncthing
+        container: 8384     # Syncthing's internal GUI + REST port
+        host: 8384          # default host port — installer may override
+
+      # BEP sync protocol — PUBLIC by design so remote peers connect directly
+      # (PRD §11.1 public-port exception). Both transports are published on all
+      # interfaces; the Compose template binds 22000 without a 127.0.0.1 prefix.
+      - service: syncthing
+        container: 22000
+        host: 22000
+        protocol: tcp
+        public: true
+      - service: syncthing
+        container: 22000
+        host: 22000
+        protocol: udp
+        public: true
+
+    image_pins:
+      - service: syncthing
+        image: syncthing/syncthing
+        tag: 2.1.1
+
+    # PRD §12.2: the capabilities syncthing re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). These are
+    # the minimum caps the entrypoint needs to chown /var/syncthing and drop
+    # privileges to PUID:PGID; zero caps exits on boot (probe-verified). No
+    # NET_* / SYS_* caps.
+    service_hardening:
+      - service: syncthing
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+
+    networks:
+      # Front: reverse proxy reaches the GUI here (or via 127.0.0.1:8384), and
+      # the public BEP port is published from this network. NOT --internal:
+      # Syncthing needs egress to reach peers and the public relay/discovery
+      # network.
+      - name: syncthing
+        internal: false
+
+    resources:
+      # syncthing: single Go binary; idles ~25 MiB / a handful of pids, with
+      # CPU and memory spiking during initial folder hashing and large rescans.
+      # Recommended 256m / 0.5 cpu fits a typical personal install on a small
+      # VPS; min covers idle with spare for a modest hash pass; max is the
+      # override ceiling for very large folders with heavy concurrent transfer
+      # (NOT the auto-selected default).
+      - service: syncthing
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20 / Decision #77: single-service, SQLite index inside a named
+    # volume, no separate DB process, no inter-service auth. Update path is a
+    # tag bump + recreate; the config volume (device identity + index) survives
+    # recreate.
+    risk_classification:
+      - safe
+
+    local_target_url_template: "http://127.0.0.1:8384"
+
+    # The GUI ships with no authentication and the BEP port is public; surfaced
+    # on the install finish screen so the user secures the UI before exposing it.
+    first_run_notes:
+      - "Syncthing's web UI has NO password on first boot — set a GUI username and password (Actions -> Settings -> GUI) before exposing it via a reverse proxy."
+      - "The BEP sync port 22000 (tcp + udp) is published on all interfaces; forward it at your firewall so remote peers can connect directly."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8384"
+      recommended_subdomain: syncthing
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8384"
+
+  # ============================================================================
+  # Baserow — two-service no-code database (Airtable alternative). The first
+  # plain-Postgres app with an init script: an official postgres:18.4 backend
+  # plus the baserow/baserow all-in-one app container (backend + frontend +
+  # celery + internal Caddy + Redis, all supervised by s6-overlay). init-data.sh
+  # creates a non-root DB user (the SQL-identifier denylist applies);
+  # baserow connects as that user. Container-root on both services drops to a
+  # non-root user under cap_drop: ALL. No public port — the web UI binds
+  # localhost only. Long first boot (~156 templates) gates the healthcheck.
+  # ============================================================================
+  - app_id: baserow
+    name: Baserow
+    summary: Self-hosted no-code database platform with a spreadsheet UI and a full REST API.
+    description: |
+      Open-source, no-code database platform — a self-hosted alternative to
+      Airtable. Two-container split: an official Postgres backend and the
+      baserow all-in-one app container, which runs the backend, frontend,
+      celery workers, an internal Caddy, and Redis under s6-overlay. The
+      database network is created --internal, so Postgres has no internet
+      egress. baserow connects to Postgres as a non-root user created by
+      init-data.sh (least privilege — the app never holds the Postgres
+      superuser). Both data dirs are named volumes; the baserow container
+      runs its entrypoint as root and drops to PUID:PGID after chowning its
+      volume on first boot. The web UI binds localhost only (front it with a
+      reverse proxy). The first boot syncs ~156 built-in templates and can
+      take several minutes before the app reports healthy.
+    template_name: baserow
+    template_version: "2026-06-14"
+    compose_template: templates/baserow/docker-compose.yml.tmpl
+    env_template: templates/baserow/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres superuser password — used by the postgres entrypoint on
+      # first-run init. regenerable=false: the init-data.sh script that creates
+      # the non-root user runs once on fresh DB init; rotating the superuser
+      # password later would require ALTER USER orchestration wdm does not do.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — baserow connects with this. init-data.sh
+      # interpolates this value as a SQL string literal (single-quoted inside
+      # CREATE USER ... WITH PASSWORD '${VAR}'), which is safe.
+      # Identifier safety is enforced separately: the user name itself is
+      # catalog-fixed in .env.tmpl, never user-modifiable. regenerable=false:
+      # rotation would require ALTER USER inside the postgres container.
+      - name: POSTGRES_NON_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # JWT signing key — signs user-session JWTs. regenerable=false:
+      # rotating it logs every user out (no data loss, but a surprise
+      # session reset wdm should not trigger on a routine update).
+      - name: BASEROW_JWT_SIGNING_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Internal Redis password — protects the Redis instance running inside
+      # the all-in-one container. regenerable=false: rotation
+      # without a coordinated restart of the supervised processes breaks the
+      # app's queue/cache layer.
+      - name: REDIS_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Django SECRET_KEY — CSRF tokens and signed cookies. regenerable=false:
+      # rotating it invalidates outstanding signed cookies and tokens (forces
+      # re-auth), so wdm reuses the existing value.
+      - name: SECRET_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Public domain. The .env.tmpl derives BASEROW_PUBLIC_URL from this single
+      # placeholder via env templating:
+      # BASEROW_PUBLIC_URL=https://{{ .BASEROW_DOMAIN }} — NO trailing slash,
+      # baserow appends its own. One input, one derived env var.
+      - name: BASEROW_DOMAIN
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI — localhost only (no public port; front with a reverse proxy).
+      # The Compose template binds 127.0.0.1:8086 -> container 80.
+      - service: baserow
+        container: 80
+        host: 8086
+
+    image_pins:
+      - service: postgres
+        image: postgres
+        tag: "18.4"
+      - service: baserow
+        image: baserow/baserow
+        tag: 2.2.2
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres
+    # adds the five minimal init / privilege-drop caps; baserow adds
+    # NET_BIND_SERVICE (its internal Caddy binds port 80) plus the four caps its
+    # root entrypoint uses to chown the data volume and drop to PUID:PGID.
+    # FOWNER is NOT in baserow's set (upstream verified). No NET_* beyond
+    # NET_BIND_SERVICE, no SYS_*.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+      - service: baserow
+        capabilities:
+          add:
+            - NET_BIND_SERVICE
+            - SETGID
+            - SETUID
+            - CHOWN
+            - DAC_OVERRIDE
+
+    networks:
+      # Front: reverse proxy reaches baserow here (or via 127.0.0.1:8086).
+      - name: baserow-front
+        internal: false
+      # Backend DB: baserow <-> postgres only, no internet egress.
+      - name: baserow-db
+        internal: true
+
+    additional_files:
+      # Postgres init-data.sh creates the non-root user and grants privileges.
+      # This declaration triggers the schema's SQL-identifier denylist
+      # The SQL-identifier denylist applies: no placeholder above may be named POSTGRES_USER,
+      # POSTGRES_DB, POSTGRES_NON_ROOT_USER, or any other denylist entry —
+      # those values live as catalog-fixed literals in .env.tmpl. The script
+      # interpolates user identifiers from env vars at first-run init;
+      # identifier values are catalog-controlled, password values flow through
+      # as quoted SQL string literals.
+      - src: init-data.sh
+        dest: init-data.sh
+        mode: "0755"
+        mount: ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+
+    resources:
+      # postgres: baserow's relational store; modest write rate for a personal
+      # no-code workspace. Recommended 512m / 0.5 cpu suffices on a small VPS;
+      # min covers postgres 18 idle; max is the override ceiling for larger
+      # workspaces (NOT the auto-selected default).
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # baserow: the all-in-one container runs Django + celery + Caddy + Redis
+      # together, so it is the heavy service. Recommended 2g / 1.0 cpu fits a
+      # typical personal install on a 4 GiB VPS; min covers a small workspace;
+      # max is the override ceiling (upstream caps the limit at 4g).
+      - service: baserow
+        memory:
+          # The all-in-one container (gunicorn + celery workers + Caddy + Redis
+          # under s6) idles ~2.0 GiB (probe peak 2014 MiB during
+          # the ~156-template first boot). min is set above that floor so a
+          # resource-downgraded install does not OOM during the sync;
+          # recommended adds headroom for real use.
+          min: 2g
+          recommended: 3g
+          max: 4g
+        cpus:
+          min: "0.25"
+          recommended: "1.0"
+          max: "2.0"
+        pids:
+          default: 500
+          max: 1000
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation). NOT complex: two services, a standard init script, no
+    # inter-service broker or task-runner coordination.
+    risk_classification:
+      - database
+
+    local_target_url_template: "http://127.0.0.1:8086"
+
+    # The first boot is long and account creation is manual; surfaced on the
+    # install finish screen so the user knows to wait and what to do next.
+    first_run_notes:
+      - "Open Baserow at its configured domain (BASEROW_PUBLIC_URL) through your reverse proxy and create your admin account on first load. Baserow serves only that hostname, so a direct request to 127.0.0.1 returns a \"Site not found\" 404 by design."
+      - "The first boot syncs ~156 built-in templates and can take several minutes before the UI is ready."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8086"
+      recommended_subdomain: baserow
+      notes:
+        - "Guide: https://youtu.be/tTyq9xGy1pM"
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8086"
+
+  # ============================================================================
+  # Nextcloud — five-service self-hosted content-collaboration platform (Google
+  # Drive / Dropbox alternative). A Postgres 17 backend, a Redis cache + file
+  # lock backend, the Nextcloud app (PHP-FPM), an nginx front that serves static
+  # assets and proxies PHP to the app, and a cron sidecar for background jobs.
+  # init-data.sh creates a non-root DB user that OWNS the database (the
+  # SQL-identifier denylist applies). Three services add the five init /
+  # privilege-drop caps (FOWNER is required on the app/cron pair for the
+  # first-boot rsync's sticky-bit handling); redis and nginx run as their image
+  # users with zero added caps. nginx is the only published service (localhost
+  # only). The admin account is auto-installed on first boot with a generated
+  # plaintext password the user reads from the .env (the install command needs
+  # the plaintext, so it is NOT a one-way hash). Postgres MUST stay <= 17:
+  # Nextcloud 31 does not yet certify Postgres 18.
+  # ============================================================================
+  - app_id: nextcloud
+    name: Nextcloud
+    summary: Self-hosted content-collaboration platform for file sync, share, and groupware.
+    description: |
+      Open-source content-collaboration platform — a self-hosted alternative to
+      Google Drive, Dropbox, and Microsoft 365. Five-container split: a Postgres
+      backend, a Redis cache + file-lock backend, the Nextcloud app (PHP-FPM),
+      an nginx front that serves static assets and proxies PHP requests to the
+      app, and a cron sidecar that runs Nextcloud's background jobs. The database
+      network is created --internal, so Postgres and Redis have no internet
+      egress. Nextcloud connects to Postgres as a non-root user created by
+      init-data.sh that OWNS its database (least privilege — the app never holds
+      the Postgres superuser). The app and cron run the image's container-root
+      entrypoint (which drops to www-data for php-fpm); redis and nginx run as
+      their own image users. Only nginx publishes a port, on localhost (front it
+      with a reverse proxy). The admin account is auto-created on first boot from
+      a generated password stored in ~/docker/nextcloud/.env — read it there,
+      sign in, and change it in the UI. First boot rsyncs the app into the data
+      volume and runs the install, so it typically takes two minutes or less
+      before the app reports healthy. Postgres is pinned to major 17: Nextcloud
+      31 does not yet certify Postgres 18.
+    template_name: nextcloud
+    template_version: "2026-06-15"
+    compose_template: templates/nextcloud/docker-compose.yml.tmpl
+    env_template: templates/nextcloud/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres superuser password — used by the postgres entrypoint on
+      # first-run init. base64url so it carries no shell-special characters.
+      # regenerable=false: the init-data.sh script that creates the non-root
+      # user runs once on fresh DB init; rotating the superuser password later
+      # would require ALTER USER orchestration wdm does not do.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — nextcloud connects with this; the user OWNS
+      # its database. init-data.sh interpolates this value as a SQL string
+      # literal (single-quoted inside CREATE USER ... WITH PASSWORD '${VAR}'),
+      # which is safe. Identifier safety is enforced separately:
+      # the user name itself is catalog-fixed in .env.tmpl, never user-modifiable.
+      # regenerable=false: rotation would require ALTER USER inside the postgres
+      # container.
+      - name: POSTGRES_NON_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Redis password — protects the cache + file-lock backend. The app and
+      # cron reach redis with this over the internal-only db network.
+      # regenerable=false: rotation without a coordinated
+      # restart of the app/cron processes breaks the cache/locking layer.
+      - name: REDIS_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Admin login password — the image entrypoint runs
+      # `occ maintenance:install --admin-pass` with this on first boot, so it
+      # MUST be plaintext (not a one-way hash). wdm generates it via crypto/rand
+      # and surfaces it once at install; it is stored plaintext in the .env.
+      # regenerable=false: rotating it here does not change the
+      # already-installed account (change it in the Nextcloud UI), so wdm reuses
+      # the existing value from .env via state.ReadStackEnv.
+      - name: NEXTCLOUD_ADMIN_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Admin login username. User-configurable; defaults to admin. Not a secret
+      # — the matching password is.
+      - name: NEXTCLOUD_ADMIN_USER
+        type: string
+        required: false
+        default: admin
+
+      # Public domain. Rendered into the app's space-separated
+      # NEXTCLOUD_TRUSTED_DOMAINS alongside 127.0.0.1 so the localhost
+      # healthcheck and the reverse-proxied real host both validate.
+      - name: NEXTCLOUD_DOMAIN
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI via nginx — localhost only (no public port; front with a reverse
+      # proxy). The Compose template binds 127.0.0.1:8081 -> container 8080 on
+      # nginx. The app's php-fpm listener (9000) and redis (6379) stay on the
+      # internal db network and are never published.
+      - service: nginx
+        container: 8080
+        host: 8081
+
+    image_pins:
+      # postgres:17-alpine index digest
+      # sha256:979c4379dd698aba0b890599a6104e082035f98ef31d9b9291ec22f2b13059ca.
+      # Pinned to major 17: Nextcloud 31 certifies PostgreSQL up to 17 — do NOT
+      # bump to 18.
+      - service: postgres
+        image: postgres
+        tag: 17-alpine
+      # redis:7-alpine index digest
+      # sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99.
+      - service: redis
+        image: redis
+        tag: 7-alpine
+      # nextcloud:31-fpm index digest
+      # sha256:236e20aedaef1586e8fc9ca73f8d953695b7beecc55df4a931ada2bf1c82a9e1
+      # (Nextcloud 31.0.14, PHP 8.3). The app and cron share this one image; both
+      # pins are declared so the rendered image refs on both services stay in
+      # parity with the catalog.
+      - service: app
+        image: nextcloud
+        tag: 31-fpm
+      - service: cron
+        image: nextcloud
+        tag: 31-fpm
+      # nginx:stable-alpine index digest
+      # sha256:5f979dcfed4ce6461873f087e8c980d6e29b084b9e8776d9704a7e989b5f4898.
+      - service: nginx
+        image: nginx
+        tag: stable-alpine
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres,
+    # the app, and cron each add the five minimal init / privilege-drop caps —
+    # FOWNER is required on the app/cron pair because the first-boot rsync into
+    # /var/www/html touches the directory's sticky bit and fails (exit 23)
+    # without it. redis and nginx run as their image users (user: redis /
+    # user: nginx) with ZERO added caps, so they declare no service_hardening
+    # entry — every cap stays dropped under cap_drop: ALL. No NET_* / SYS_*.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+      - service: app
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+            - FOWNER
+      - service: cron
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches nginx here (or via 127.0.0.1:8081), and the
+      # app/cron use it for outbound egress (app store, federation, updates).
+      - name: nextcloud-front
+        internal: false
+      # Backend DB/cache: postgres + redis + app + cron only, no internet egress.
+      - name: nextcloud-db
+        internal: true
+
+    additional_files:
+      # Postgres init-data.sh creates the non-root user (which OWNS the database)
+      # and grants privileges. This declaration triggers the schema's
+      # SQL-identifier denylist: no placeholder above may be named
+      # POSTGRES_USER, POSTGRES_DB, POSTGRES_NON_ROOT_USER, or any other denylist
+      # entry — those values live as catalog-fixed literals in .env.tmpl. The
+      # script interpolates user identifiers from env vars at first-run init;
+      # identifier values are catalog-controlled, password values flow through as
+      # quoted SQL string literals.
+      - src: init-data.sh
+        dest: init-data.sh
+        mode: "0755"
+        mount: ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+      # nginx.conf is the server config for the zero-cap nginx front: it moves
+      # all temp paths + the pid file under /tmp (writable for the unprivileged
+      # nginx user) and listens on the unprivileged port 8080. mode 0644: it
+      # carries no secret, so it passes the rendered-non-secret-artifact scan.
+      # The mount field names the exact bind the Compose template declares so
+      # render verifies it exists (never injects it).
+      - src: nginx.conf
+        dest: nginx.conf
+        mode: "0644"
+        mount: ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+    resources:
+      # postgres: Nextcloud's relational store (files metadata, shares, users,
+      # activity). Recommended 256m / 0.5 cpu suffices on a small VPS; min covers
+      # postgres 17 idle; max is the override ceiling for larger installs (NOT the
+      # auto-selected default).
+      - service: postgres
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 512m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # redis: cache + file-lock backend; small footprint.
+      - service: redis
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 256m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+
+      # app: the PHP-FPM application server — the heavy service. Recommended
+      # 512m / 1.0 cpu fits a typical personal install; min (384m) clears the
+      # first-boot install peak with headroom — the smoke pinned a 256m min at
+      # its ceiling; max is the override ceiling for many concurrent users.
+      - service: app
+        memory:
+          min: 384m
+          recommended: 512m
+          max: 1024m
+        cpus:
+          min: "0.25"
+          recommended: "1.0"
+          max: "2.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+      # nginx: the static-file + FastCGI front; very small footprint.
+      - service: nginx
+        memory:
+          min: 32m
+          recommended: 64m
+          max: 128m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # cron: the background-job sidecar (same image as the app). Recommended
+      # 256m / 0.5 cpu absorbs typical job load; min covers a light schedule;
+      # max is the override ceiling for heavy background processing.
+      - service: cron
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 512m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation), and the five-service split (postgres + redis + app + nginx +
+    # cron, with the app's first-boot install gating the front) is non-trivial
+    # coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:8081"
+
+    # The admin password lives in the .env and first boot takes a couple of
+    # minutes; surfaced on the install finish screen so the user knows where to
+    # sign in and what to wait for.
+    first_run_notes:
+      - "Open Nextcloud through your reverse proxy and sign in as the admin user. The generated admin password is stored in ~/docker/nextcloud/.env (NEXTCLOUD_ADMIN_PASSWORD) — read it there and change it in Settings after first login."
+      - "Set your reverse proxy's forwarded Host to match the domain you configured (NEXTCLOUD_DOMAIN); it is added to the app's trusted domains."
+      - "First boot rsyncs the application into the data volume and runs the install, so it typically takes two minutes or less before the app reports healthy."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8081"
+      recommended_subdomain: nextcloud
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8081"
+
+  # ============================================================================
+  # DocuSeal — two-service document-signing platform (DocuSign alternative). An
+  # official postgres:18.4 backend plus the docuseal/docuseal all-in-one app
+  # container (Rails web app + a bundled Redis + the Sidekiq worker in one
+  # process tree). init-data.sh creates a non-root DB user (the
+  # SQL-identifier denylist applies); docuseal connects as that user via a
+  # single DATABASE_URL. docuseal runs as container root and needs ZERO added
+  # caps under cap_drop: ALL. No public port — the web UI binds localhost only.
+  # First boot runs Rails migrations + warms Redis/Sidekiq, gating the
+  # healthcheck (~40-60s). The image ships wget but not curl, so the healthcheck
+  # uses wget against Rails' /up endpoint.
+  # ============================================================================
+  - app_id: docuseal
+    name: DocuSeal
+    summary: Self-hosted document-signing platform with a PDF form builder and a full REST API.
+    description: |
+      Open-source document-signing platform — a self-hosted alternative to
+      DocuSign. Build fillable PDF forms, route documents through multiple
+      signers, and collect legally binding e-signatures. Two-container split:
+      an official Postgres backend and the docuseal all-in-one app container,
+      which runs the Rails web app, a bundled Redis, and the Sidekiq
+      background-job worker in a single process tree (no separate Redis
+      service). The database network is created --internal, so Postgres has no
+      internet egress. docuseal connects to Postgres as a non-root user created
+      by init-data.sh (least privilege — the app never holds the Postgres
+      superuser) via a single DATABASE_URL. Both data dirs are named volumes;
+      docuseal runs as container root with zero added capabilities. The web UI
+      binds localhost only (front it with a reverse proxy). The first boot runs
+      Rails database migrations and warms the bundled Redis/Sidekiq, so the app
+      can take ~40-60s before it reports healthy.
+    template_name: docuseal
+    template_version: "2026-06-14"
+    compose_template: templates/docuseal/docker-compose.yml.tmpl
+    env_template: templates/docuseal/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres superuser password — used by the postgres entrypoint on
+      # first-run init. base64url so it carries no ':' / '@' / '$' that would
+      # break the DATABASE_URL docuseal connects with. regenerable=false: the
+      # init-data.sh script that creates the non-root user runs once on fresh
+      # DB init; rotating the superuser password later would require ALTER USER
+      # orchestration wdm does not do.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — docuseal connects with this inside
+      # DATABASE_URL. base64url keeps it URL-safe (no ':' / '@' / '$').
+      # init-data.sh interpolates this value as a SQL string literal
+      # (single-quoted inside CREATE USER ... WITH PASSWORD '${VAR}'), which is
+      # safe. Identifier safety is enforced separately: the
+      # user name itself is catalog-fixed in .env.tmpl, never user-modifiable.
+      # regenerable=false: rotation would require ALTER USER inside the postgres
+      # container.
+      - name: POSTGRES_NON_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Rails SECRET_KEY_BASE — session/cookie signing secret; required in
+      # production. hex (upstream generates it with `openssl rand -hex 64`).
+      # regenerable=false: rotating it invalidates outstanding
+      # signed cookies and sessions (forces re-auth), so wdm reuses the existing
+      # value on every update.
+      - name: SECRET_KEY_BASE
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Public domain. The .env.tmpl derives DOCUSEAL_HOST from this single
+      # placeholder via env templating:
+      # DOCUSEAL_HOST={{ .DOCUSEAL_DOMAIN }} — bare hostname (no scheme, no
+      # trailing slash). The Compose template binds both HOST and FORCE_SSL to
+      # that one value, so the user supplies a single input.
+      - name: DOCUSEAL_DOMAIN
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI — localhost only (no public port; front with a reverse proxy).
+      # The Compose template binds 127.0.0.1:3000 -> container 3000.
+      - service: docuseal
+        container: 3000
+        host: 3000
+
+    image_pins:
+      - service: postgres
+        image: postgres
+        tag: "18.4"
+      - service: docuseal
+        image: docuseal/docuseal
+        tag: 3.0.3
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres
+    # adds the five minimal init / privilege-drop caps. docuseal runs as
+    # container root and needs ZERO added caps (probe-verified), so it declares
+    # no service_hardening entry — every cap stays dropped under cap_drop: ALL.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches docuseal here (or via 127.0.0.1:3000).
+      - name: docuseal-front
+        internal: false
+      # Backend DB: docuseal <-> postgres only, no internet egress.
+      - name: docuseal-db
+        internal: true
+
+    additional_files:
+      # Postgres init-data.sh creates the non-root user and grants privileges.
+      # This declaration triggers the schema's SQL-identifier denylist
+      # The SQL-identifier denylist applies: no placeholder above may be named POSTGRES_USER,
+      # POSTGRES_DB, POSTGRES_NON_ROOT_USER, or any other denylist entry —
+      # those values live as catalog-fixed literals in .env.tmpl. The script
+      # interpolates user identifiers from env vars at first-run init;
+      # identifier values are catalog-controlled, password values flow through
+      # as quoted SQL string literals.
+      - src: init-data.sh
+        dest: init-data.sh
+        mode: "0755"
+        mount: ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+
+    resources:
+      # postgres: docuseal's relational store; modest write rate for a personal
+      # document-signing workspace. Recommended 512m / 0.5 cpu suffices on a
+      # small VPS; min covers postgres 18 idle; max is the override ceiling for
+      # larger workspaces (NOT the auto-selected default).
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # docuseal: the all-in-one container runs the Rails app + bundled Redis +
+      # Sidekiq together. Idle footprint is ~153 MiB; PDF
+      # rendering and signing sessions add transient memory. Recommended
+      # 512m / 0.5 cpu fits a typical personal install on a small VPS; min
+      # covers idle with spare; max is the override ceiling for busy workspaces.
+      - service: docuseal
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 1g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 512
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation). NOT complex: two services, a standard init script, no
+    # inter-service broker or task-runner coordination (the Redis/Sidekiq
+    # worker is bundled inside the single app container).
+    risk_classification:
+      - database
+
+    local_target_url_template: "http://127.0.0.1:3000"
+
+    # The first boot runs migrations and account creation is manual; surfaced on
+    # the install finish screen so the user knows to wait and what to do next.
+    first_run_notes:
+      - "Open DocuSeal at its configured domain (HOST) through your reverse proxy and create your administrator account on first load."
+      - "The first boot runs Rails database migrations and warms the bundled Redis/Sidekiq, so the app can take ~40-60s before the UI is ready."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:3000"
+      recommended_subdomain: sign
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:3000"
+
+  # ============================================================================
+  # Vaultwarden — two-service password manager (a Bitwarden-compatible server).
+  # An official postgres:18.4 backend plus the vaultwarden/server app container
+  # (a single lightweight Rust binary). init-data.sh creates a non-root DB user
+  # (the SQL-identifier denylist applies); vaultwarden connects as that
+  # user via a single DATABASE_URL instead of its default SQLite. vaultwarden
+  # runs as container root and needs ZERO added caps under cap_drop: ALL, and
+  # additionally runs with read_only: true (only /tmp tmpfs + the /data named
+  # volume writable). No public port — the web UI binds localhost only. The
+  # /admin panel is gated by ADMIN_TOKEN, an argon2id PHC: wdm generates the
+  # plaintext, stores only the hash, and surfaces the plaintext once at install.
+  # The image ships /healthcheck.sh (curls /alive), which exits 0 under
+  # read_only and reports healthy in <10s.
+  # ============================================================================
+  - app_id: vaultwarden
+    name: Vaultwarden
+    summary: Self-hosted, Bitwarden-compatible password manager — a lightweight Rust server.
+    description: |
+      Unofficial, lightweight Bitwarden-compatible server written in Rust — a
+      self-hosted password manager that works with the official Bitwarden
+      browser, desktop, and mobile clients. Two-container split: an official
+      Postgres backend and the vaultwarden app container (a single Rust
+      binary). The database network is created --internal, so Postgres has no
+      internet egress. vaultwarden connects to Postgres as a non-root user
+      created by init-data.sh (least privilege — the app never holds the
+      Postgres superuser) via a single DATABASE_URL, switching off its default
+      SQLite. Both data dirs are named volumes; vaultwarden runs as container
+      root with zero added capabilities AND an immutable read_only rootfs (only
+      /tmp and the /data volume are writable). The web UI binds localhost only
+      (front it with a reverse proxy). The built-in /admin panel is gated by
+      ADMIN_TOKEN, an argon2id PHC whose random plaintext wdm surfaces once on
+      the install finish screen.
+    template_name: vaultwarden
+    template_version: "2026-06-15"
+    compose_template: templates/vaultwarden/docker-compose.yml.tmpl
+    env_template: templates/vaultwarden/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres superuser password — used by the postgres entrypoint on
+      # first-run init. base64url so it carries no ':' / '@' / '$' that would
+      # break the DATABASE_URL vaultwarden connects with. regenerable=false: the
+      # init-data.sh script that creates the non-root user runs once on fresh
+      # DB init; rotating the superuser password later would require ALTER USER
+      # orchestration wdm does not do.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — vaultwarden connects with this inside
+      # DATABASE_URL. base64url keeps it URL-safe (no ':' / '@' / '$').
+      # init-data.sh interpolates this value as a SQL string literal
+      # (single-quoted inside CREATE USER ... WITH PASSWORD '${VAR}'), which is
+      # safe. Identifier safety is enforced separately: the
+      # user name itself is catalog-fixed in .env.tmpl, never user-modifiable.
+      # regenerable=false: rotation would require ALTER USER inside the postgres
+      # container.
+      - name: POSTGRES_NON_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # ADMIN_TOKEN — gates vaultwarden's /admin panel. encoding: argon2id: wdm
+      # generates a strong random plaintext, persists ONLY the one-way argon2id
+      # PHC hash in .env (its '$' signs doubled so Compose does not expand
+      # them), and surfaces the plaintext to the operator once on the install
+      # finish screen. regenerable=false is required for argon2id — the
+      # plaintext cannot be re-derived from the hash on update, so wdm reuses
+      # the existing hash.
+      - name: ADMIN_TOKEN
+        type: secret
+        required: true
+        encoding: argon2id
+        regenerable: false
+
+      # Public domain. The .env.tmpl derives DOMAIN from this single
+      # placeholder via env templating:
+      # DOMAIN=https://{{ .VAULTWARDEN_DOMAIN }} — the FULL external URL with
+      # scheme, no trailing slash. vaultwarden requires it for WebAuthn/U2F,
+      # push notifications, and emitted links. One input, one derived env var.
+      - name: VAULTWARDEN_DOMAIN
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI — localhost only (no public port; front with a reverse proxy).
+      # The Compose template binds 127.0.0.1:8080 -> container 8080.
+      - service: vaultwarden
+        container: 8080
+        host: 8080
+
+    image_pins:
+      - service: postgres
+        image: postgres
+        tag: "18.4"
+      - service: vaultwarden
+        image: vaultwarden/server
+        tag: 1.36.0
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres
+    # adds the five minimal init / privilege-drop caps. vaultwarden runs as
+    # container root and needs ZERO added caps (probe-verified), so it declares
+    # no service_hardening entry — every cap stays dropped under cap_drop: ALL,
+    # and it additionally runs with a read_only rootfs.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches vaultwarden here (or via 127.0.0.1:8080).
+      - name: vaultwarden-front
+        internal: false
+      # Backend DB: vaultwarden <-> postgres only, no internet egress.
+      - name: vaultwarden-db
+        internal: true
+
+    additional_files:
+      # Postgres init-data.sh creates the non-root user and grants privileges.
+      # This declaration triggers the schema's SQL-identifier denylist
+      # The SQL-identifier denylist applies: no placeholder above may be named POSTGRES_USER,
+      # POSTGRES_DB, POSTGRES_NON_ROOT_USER, or any other denylist entry —
+      # those values live as catalog-fixed literals in .env.tmpl. The script
+      # interpolates user identifiers from env vars at first-run init;
+      # identifier values are catalog-controlled, password values flow through
+      # as quoted SQL string literals.
+      - src: init-data.sh
+        dest: init-data.sh
+        mode: "0755"
+        mount: ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+
+    resources:
+      # postgres: vaultwarden's relational store; modest write rate for a
+      # personal password vault. Recommended 512m / 0.5 cpu suffices on a small
+      # VPS; min covers postgres 18 idle; max is the override ceiling for larger
+      # multi-user vaults (NOT the auto-selected default).
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # vaultwarden: a single lightweight Rust binary that idles ~9 MiB.
+      # Recommended 256m / 0.5 cpu is generous for a personal vault;
+      # min covers idle with ample headroom; max is the override ceiling for
+      # busy multi-user / large-attachment installs.
+      - service: vaultwarden
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 512m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation). NOT complex: two services, a standard init script, no
+    # inter-service broker or task-runner coordination.
+    risk_classification:
+      - database
+
+    local_target_url_template: "http://127.0.0.1:8080"
+
+    # The admin token is shown once at install and account creation is manual;
+    # surfaced on the install finish screen so the user knows what to record and
+    # how to reach the app.
+    first_run_notes:
+      - "Record the admin token shown once on this screen — it gates the /admin panel at your configured domain and cannot be recovered later."
+      - "Open Vaultwarden at its configured domain (DOMAIN) through your reverse proxy and create your account on first load."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8080"
+      recommended_subdomain: vault
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8080"
+
+  # ============================================================================
+  # Authentik — three-service identity provider (an Okta / Keycloak alternative).
+  # An official postgres:18.4 backend plus the authentik server (web UI + API)
+  # and worker (background tasks), which share one ghcr.io/goauthentik/server
+  # image and an identical environment block. init-data.sh creates a non-root DB
+  # user (the SQL-identifier denylist applies); authentik connects as
+  # that user via AUTHENTIK_POSTGRESQL__* (probe-verified: it migrates cleanly as
+  # a non-root user — no superuser, no CREATE EXTENSION failure). Authentik
+  # 2026.5.3 removed Redis (dropped in 2025.10), so there is NO redis service.
+  # Both app services run as the image default UID 1000 with ZERO added caps
+  # (probe-verified CapEff: 0); the upstream worker's user: root and
+  # /var/run/docker.sock mount (for the embedded Docker outpost, out of scope)
+  # are dropped — wdm forbids docker.sock mounts (PRD §12.1). Only the server has
+  # a public port; the web UI binds localhost only. First boot runs migrations +
+  # warms both processes (~60-90s), gating the healthcheck (ak healthcheck). The
+  # admin account is created via the initial-setup flow, not a bootstrap env var.
+  # ============================================================================
+  - app_id: authentik
+    name: Authentik
+    summary: Self-hosted identity provider with SSO, SAML, OAuth2/OIDC, LDAP, and a visual flow builder.
+    description: |
+      Open-source identity provider — a self-hosted alternative to Okta, Auth0,
+      and Keycloak. Three-container split: an official Postgres backend, the
+      authentik server (web UI + API, and the schema migrations the worker
+      waits on), and the authentik worker (background tasks: scheduled jobs,
+      email, certificate management). The server and worker share one image and
+      an identical environment block. The database network is created
+      --internal, so Postgres has no internet egress. Authentik connects to
+      Postgres as a non-root user created by init-data.sh (least privilege — the
+      app never holds the Postgres superuser). Authentik 2026.5.3 removed the
+      Redis dependency, so this stack has no Redis service. Both app services run
+      as the image's default unprivileged user (UID 1000) with zero added
+      capabilities, and neither mounts the Docker socket. The web UI binds
+      localhost only (front it with a reverse proxy). The first boot runs
+      database migrations and warms both processes, so it can take ~60-90s before
+      the server reports healthy. Complete the initial-setup flow at
+      /if/flow/initial-setup/ to create your akadmin administrator account.
+    template_name: authentik
+    template_version: "2026-06-15"
+    compose_template: templates/authentik/docker-compose.yml.tmpl
+    env_template: templates/authentik/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres superuser password — used by the postgres entrypoint on
+      # first-run init. base64url so it carries no shell-special characters.
+      # regenerable=false: the init-data.sh script that creates the non-root
+      # user runs once on fresh DB init; rotating the superuser password later
+      # would require ALTER USER orchestration wdm does not do.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Non-root DB user password — authentik connects with this via
+      # AUTHENTIK_POSTGRESQL__PASSWORD. init-data.sh interpolates this value as a
+      # SQL string literal (single-quoted inside CREATE USER ... WITH PASSWORD
+      # '${VAR}'), which is safe. Identifier safety is enforced
+      # separately: the user name itself is catalog-fixed in .env.tmpl, never
+      # user-modifiable. regenerable=false: rotation would require ALTER USER
+      # inside the postgres container.
+      - name: POSTGRES_NON_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # AUTHENTIK_SECRET_KEY — per-deployment secret that signs sessions and
+      # tokens. Required by both the server and the worker (identical value).
+      # encoding: hex. regenerable=false: rotating it
+      # invalidates outstanding sessions and signed tokens (forces re-auth), so
+      # wdm reuses the existing value on every update.
+      - name: AUTHENTIK_SECRET_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI + API — localhost only (no public port; front with a reverse
+      # proxy). The Compose template binds 127.0.0.1:9000 -> container 9000 on
+      # the server. The worker exposes no port. 9443 (HTTPS) is intentionally
+      # NOT declared — TLS terminates at the reverse proxy and 9000 serves the
+      # full UI + health endpoints.
+      - service: server
+        container: 9000
+        host: 9000
+
+    image_pins:
+      - service: postgres
+        image: postgres
+        tag: "18.4"
+      # The server and worker share one image; both pins are declared so the
+      # rendered image refs on both services stay in parity with the catalog.
+      - service: server
+        image: ghcr.io/goauthentik/server
+        tag: 2026.5.3
+      - service: worker
+        image: ghcr.io/goauthentik/server
+        tag: 2026.5.3
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres
+    # adds the five minimal init / privilege-drop caps. The server and worker
+    # run as the image's default UID 1000 and need ZERO added caps
+    # (probe-verified CapEff: 0), so they declare no service_hardening entry —
+    # every cap stays dropped under cap_drop: ALL.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches the server here (or via 127.0.0.1:9000),
+      # and the worker uses it for outbound egress (email + external tasks).
+      - name: authentik-front
+        internal: false
+      # Backend DB: server/worker <-> postgres only, no internet egress.
+      - name: authentik-db
+        internal: true
+
+    additional_files:
+      # Postgres init-data.sh creates the non-root user and grants privileges.
+      # This declaration triggers the schema's SQL-identifier denylist
+      # The SQL-identifier denylist applies: no placeholder above may be named POSTGRES_USER,
+      # POSTGRES_DB, POSTGRES_NON_ROOT_USER, or any other denylist entry —
+      # those values live as catalog-fixed literals in .env.tmpl. The script
+      # interpolates user identifiers from env vars at first-run init;
+      # identifier values are catalog-controlled, password values flow through
+      # as quoted SQL string literals.
+      - src: init-data.sh
+        dest: init-data.sh
+        mode: "0755"
+        mount: ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+
+    resources:
+      # postgres: authentik's relational store (users, applications, flows,
+      # events). Recommended 512m / 0.5 cpu suffices on a small VPS; min covers
+      # postgres 18 idle; max is the override ceiling for larger directories
+      # (NOT the auto-selected default).
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # server: the web UI + API process; idles ~457 MiB.
+      # Recommended 1g / 1.0 cpu fits a typical personal install; min covers the
+      # idle process with headroom; max is the override ceiling for busy
+      # multi-application installs.
+      - service: server
+        memory:
+          min: 512m
+          recommended: 1g
+          max: 2g
+        cpus:
+          min: "0.5"
+          recommended: "1.0"
+          max: "2.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+      # worker: background tasks (scheduled jobs, email, certificates); idles
+      # ~295 MiB. Recommended 512m / 0.5 cpu absorbs typical task
+      # load; min covers the idle process; max is the override ceiling for heavy
+      # task volumes.
+      - service: worker
+        memory:
+          min: 384m
+          recommended: 512m
+          max: 1g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation), and the three-service split (server + worker sharing an
+    # image, with a brief migration-window coordination on first boot) is
+    # non-trivial coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:9000"
+
+    # The first boot is long and account creation is manual; surfaced on the
+    # install finish screen so the user knows to wait and what to do next.
+    first_run_notes:
+      - "Complete the initial-setup flow at /if/flow/initial-setup/ through your reverse proxy (e.g. https://your-domain/if/flow/initial-setup/) to set the akadmin administrator password on first load."
+      - "The first boot runs database migrations and warms the server and worker, so it can take roughly 60-90 seconds before the server reports healthy."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:9000"
+      recommended_subdomain: auth
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:9000"
+
+  - app_id: meshcentral
+    name: MeshCentral
+    summary: Self-hosted remote monitoring and management with browser-based remote desktop, terminal, and file transfer.
+    description: |
+      Open-source remote management platform — a self-hosted alternative to
+      TeamViewer and ConnectWise. Manage Windows, macOS, and Linux devices from
+      the browser: remote desktop, terminal, file transfer, wake-on-LAN, and a
+      cross-platform mesh agent. Two-container split: a MongoDB backend and the
+      MeshCentral server. The database network is created --internal, so MongoDB
+      has no internet egress; it runs without authentication (MeshCentral is its
+      sole client on that isolated network, matching the upstream compose). This
+      is the first wdm app to use config generation — wdm renders config.json
+      itself from the placeholder map (replacing the upstream generate-config.sh)
+      and bind-mounts it read-only, so the rendered file is authoritative.
+      MeshCentral runs in tlsOffload mode behind a reverse proxy that terminates
+      TLS; the web console binds localhost only. No host kernel module or
+      modprobe is required. First boot generates a self-signed certificate and
+      initializes the database, so it can take up to a minute to report healthy.
+      The first account you register becomes the site administrator.
+    template_name: meshcentral
+    template_version: "2026-06-15"
+    compose_template: templates/meshcentral/docker-compose.yml.tmpl
+    env_template: templates/meshcentral/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Public hostname MeshCentral serves. Rendered into config.json as the
+      # certificate / domain name and surfaced as the local/reverse-proxy
+      # target. Not a secret.
+      - name: MESHCENTRAL_DOMAIN
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    # No secret placeholders: MongoDB runs with no authentication on the
+    # --internal network (no DB credentials to generate), and MeshCentral
+    # auto-persists its own session secret inside its data volume on first boot.
+
+    ports:
+      # Web console + agent endpoint — localhost only (no public port; front
+      # with a reverse proxy). The container serves plain HTTP on 443 in
+      # tlsOffload mode; the Compose template publishes 127.0.0.1:4430 -> 443.
+      - service: meshcentral
+        container: 443
+        host: 4430
+
+    image_pins:
+      # mongo:6 index digest sha256:8b6d8f5bbedb25cb73517b65cf99f13aeb75ad5b157a56c479287a840bbad3ac.
+      # Pinned to major 6: MeshCentral bundles the mongodb@4.17.2 Node driver,
+      # which supports MongoDB server versions up to 6 — do NOT bump to 7 or 8.
+      - service: mongodb
+        image: mongo
+        tag: "6"
+      # ghcr.io/ylianst/meshcentral:1.2.0 index digest
+      # sha256:8c84cb45be6c84dc94de38452a9ac0abd16aae7733dd5de97cf4d7ed77250a4b.
+      - service: meshcentral
+        image: ghcr.io/ylianst/meshcentral
+        tag: 1.2.0
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). mongodb adds
+    # the five minimal init / privilege-drop caps its entrypoint uses to chown
+    # /data/db and gosu down to the mongodb user. meshcentral runs as container
+    # root with ZERO added caps (probe-verified: binding port 443 and cert
+    # generation need none), so it declares no service_hardening entry — every
+    # cap stays dropped under cap_drop: ALL.
+    service_hardening:
+      - service: mongodb
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches MeshCentral here (or via 127.0.0.1:4430).
+      - name: meshcentral-front
+        internal: false
+      # Backend DB: meshcentral <-> mongodb only, no internet egress.
+      - name: meshcentral-db
+        internal: true
+
+    config_generation:
+      # wdm renders config.json from the placeholder map (PRD §17) and the
+      # Compose template bind-mounts it read-only over the data volume. mode
+      # 0644: the file carries no secret (no DB credentials, no session key), so
+      # it must pass the rendered-non-secret-artifact scan. The mount field names
+      # the exact bind the Compose template declares so render verifies it
+      # exists (never injects it).
+      - template: config.json.tmpl
+        dest: config.json
+        mode: "0644"
+        mount: ./config.json:/opt/meshcentral/meshcentral-data/config.json:ro
+
+    resources:
+      # mongodb: MeshCentral's document store (devices, users, events). idles
+      # modestly; recommended 512m / 0.5 cpu suffices on a small VPS, min covers
+      # mongo 6 idle, max is the override ceiling for larger fleets (NOT the
+      # auto-selected default).
+      - service: mongodb
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 1024m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # meshcentral: the Node server (web console + agent endpoint). Recommended
+      # 384m / 0.5 cpu fits a typical personal install; min covers the idle
+      # process; max is the override ceiling for many concurrent sessions.
+      - service: meshcentral
+        memory:
+          min: 192m
+          recommended: 384m
+          max: 768m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20 / Decision #77: the stack contains a MongoDB instance the user
+    # owns (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation), and the config-generated two-service split with a remote
+    # management plane is non-trivial coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:4430"
+
+    # First boot is long (cert generation + DB init) and the first account is
+    # the administrator; surfaced on the install finish screen.
+    first_run_notes:
+      - "Open MeshCentral through your reverse proxy and register the first account — the first account created becomes the site administrator."
+      - "First boot generates a self-signed certificate and initializes the database, so it can take up to a minute before the server reports healthy."
+      - "MongoDB runs without authentication on the internal-only meshcentral-db network (no internet egress); MeshCentral is its sole client."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:4430"
+      recommended_subdomain: mesh
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:4430 and enable WebSocket upgrades (MeshCentral relies on long-lived WebSocket connections)."
+
+  # ============================================================================
+  # wg-adguard — WireGuard VPN (wg-easy) + AdGuard Home DNS filtering. The
+  # hardest privilege app in the curated set: wg-easy exercises NET_ADMIN +
+  # NET_RAW with two sysctls and a read-only /lib/modules host mount (PRD §12.2
+  # host_module_mount — the wireguard kernel module is host-loaded via a
+  # `sudo modprobe wireguard` prerequisite, replacing the excluded SYS_MODULE),
+  # and publishes the WireGuard listener publicly on 51820/udp (PRD §11.1). A
+  # single network carries static IPAM so AdGuard holds the fixed address
+  # wg-easy hands clients as DNS. AdGuard runs as deprivileged container root
+  # (cap_drop: ALL + no-new-privileges) with only NET_BIND_SERVICE (its binary's
+  # file capability binds privileged port 53) and DAC_OVERRIDE (data-dir
+  # writes). No database (filter state + wg config are flat files), no config
+  # generation: wg-easy is headless via INIT_* env and AdGuard uses its own
+  # first-run setup wizard.
+  # ============================================================================
+  - app_id: wg-adguard
+    name: WireGuard + AdGuard Home
+    summary: WireGuard VPN with a web UI paired with AdGuard Home DNS filtering, so ad and tracker blocking follows your devices everywhere.
+    description: |
+      A WireGuard VPN server (via wg-easy) paired with an AdGuard Home DNS
+      resolver. Connect a device to the VPN and its traffic is encrypted to your
+      server while its DNS resolves through AdGuard Home — so ad, tracker, and
+      malware-domain filtering follows you onto any network. wg-easy provides a
+      web UI to add clients and download their configs or QR codes; it is fully
+      headless, seeding its admin account and public endpoint from the
+      environment on first boot. AdGuard Home runs its own first-run setup
+      wizard for the dashboard, filter lists, and per-client rules. The two
+      services share one Docker network with static addressing: AdGuard holds a
+      fixed address that wg-easy hands clients as their DNS server, so tunnel DNS
+      lands on AdGuard without any host DNS port. WireGuard runs in the kernel —
+      the wireguard module must be loaded on the host (a one-time
+      `sudo modprobe wireguard`), since the container is denied SYS_MODULE and
+      mounts the host module tree read-only. The WireGuard listener (51820/udp)
+      is published publicly so remote clients connect directly; both web UIs bind
+      localhost only and expect a reverse proxy in front.
+    template_name: wg-adguard
+    template_version: "2026-06-15"
+    compose_template: templates/wg-adguard/docker-compose.yml.tmpl
+    env_template: templates/wg-adguard/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Public WireGuard endpoint hostname clients dial. Rendered into wg-easy's
+      # WG_HOST / INIT_HOST so generated client configs point at it. A host, not
+      # a URL — no scheme, no path.
+      - name: WG_HOST
+        type: domain
+        required: true
+
+      # wg-easy web UI admin password. wg-easy hashes it internally (argon2) on
+      # first boot, so it MUST be plaintext here (INIT_PASSWORD). base64url(32)
+      # is 43 chars, above wg-easy's 12-char minimum. regenerable=false: wg-easy
+      # persists the hash in its SQLite DB on first boot, so rotating the .env
+      # value would not change the stored credential; wdm reuses the existing
+      # value on update. The admin username is a catalog-fixed literal in
+      # .env.tmpl, never user-supplied.
+      - name: WG_EASY_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # WireGuard listener — PUBLIC by design so remote clients connect directly
+      # (PRD §11.1 public-port exception). Published on all interfaces; the
+      # Compose template binds 51820/udp without a 127.0.0.1 prefix.
+      - service: wg-easy
+        container: 51820
+        host: 51820
+        protocol: udp
+        public: true
+
+      # wg-easy web UI — localhost only (front with a reverse proxy). NOT public:
+      # it is the management/admin surface (PRD §11.1).
+      - service: wg-easy
+        container: 51821
+        host: 51821
+
+      # AdGuard setup wizard + admin UI — localhost only (front with a reverse
+      # proxy). DNS (53) is NOT host-published: it is reached through the tunnel
+      # via AdGuard's static IP on vpn_net.
+      - service: adguard
+        container: 3000
+        host: 3000
+
+    image_pins:
+      # ghcr.io/wg-easy/wg-easy:15 digest
+      # sha256:93bbd593e07bab98d02807a28770ac87ab6c48818e319e68c1f66561feb99876
+      # (v15.3.0). NOTE: :latest is the OLD v14 — pin :15 explicitly.
+      - service: wg-easy
+        image: ghcr.io/wg-easy/wg-easy
+        tag: "15"
+      # adguard/adguardhome:v0.107.77 digest
+      # sha256:e6f2b8bcda06064ab055b44933a4f0e983c35558b9cdb8d2e7ab1efcee36d890.
+      - service: adguard
+        image: adguard/adguardhome
+        tag: v0.107.77
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). wg-easy adds
+    # NET_ADMIN + NET_RAW (configure the wg0 interface, routes, and the iptables
+    # NAT/forward rules), the two WireGuard forwarding sysctls, and the read-only
+    # /lib/modules host mount (host_module_mount: true — the wireguard module is
+    # host-loaded, replacing the excluded SYS_MODULE). adguard adds
+    # NET_BIND_SERVICE (its binary's file capability binds privileged port 53 —
+    # without it in the bounding set the exec is refused) and DAC_OVERRIDE (its
+    # root process creates and writes the work/conf data dirs). No NET_* beyond
+    # those, no SYS_*.
+    service_hardening:
+      - service: wg-easy
+        capabilities:
+          add:
+            - NET_ADMIN
+            - NET_RAW
+        sysctls:
+          - name: net.ipv4.ip_forward
+            value: "1"
+          - name: net.ipv4.conf.all.src_valid_mark
+            value: "1"
+        host_module_mount: true
+      - service: adguard
+        capabilities:
+          add:
+            - NET_BIND_SERVICE
+            - DAC_OVERRIDE
+
+    networks:
+      # Single shared network with static IPAM. NOT --internal: wg-easy routes
+      # client egress and AdGuard reaches its upstream resolvers, so both need
+      # internet. wdm creates it with --subnet/--gateway; the Compose template
+      # pins each service's ipv4_address, which the IPAM verifier checks against
+      # these declarations (PRD §9). AdGuard's 10.0.0.100 is the DNS address
+      # wg-easy hands clients.
+      - name: vpn_net
+        internal: false
+        ipam:
+          subnet: 10.0.0.0/24
+          gateway: 10.0.0.1
+          addresses:
+            - service: adguard
+              ipv4_address: 10.0.0.100
+            - service: wg-easy
+              ipv4_address: 10.0.0.2
+
+    resources:
+      # wg-easy: the v15 Nitro SSR web app idles ~180 MiB. Recommended 320m /
+      # 0.5 cpu fits a typical personal install; min 256m gives headroom above
+      # idle (the nextcloud floor lesson — never set min at the idle peak); max
+      # is the override ceiling for many concurrent clients (NOT auto-selected).
+      - service: wg-easy
+        memory:
+          min: 256m
+          recommended: 320m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # adguard: the Go resolver idles ~65 MiB. Recommended 192m / 0.5 cpu suits
+      # a typical home network; min 96m covers idle with spare for filter-list
+      # loads; max is the override ceiling for large filter sets and heavy query
+      # volume (NOT auto-selected).
+      - service: adguard
+        memory:
+          min: 96m
+          recommended: 192m
+          max: 384m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+    # PRD §20 / Decision #77: no database (AdGuard filter state and the wg config
+    # are flat files in named volumes — no separate DB process), but the
+    # two-service split with elevated network capabilities, a host kernel-module
+    # dependency, a public UDP listener, and static addressing is non-trivial
+    # coordination (complex tag).
+    risk_classification:
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:51821"
+
+    # The host modprobe prerequisite, the admin password location, AdGuard's
+    # first-run wizard, and the public WireGuard port are surfaced on the install
+    # finish screen.
+    first_run_notes:
+      - "Load the WireGuard kernel module on the host first: `sudo modprobe wireguard` (and `echo wireguard | sudo tee /etc/modules-load.d/wireguard.conf` to persist it). The container is denied SYS_MODULE and mounts /lib/modules read-only, so the module must be host-loaded or wg-easy fails to start."
+      - "Your wg-easy admin login is username `admin` and the generated password in ~/docker/wg-adguard/.env (the WG_EASY_PASSWORD line). Open the wg-easy UI at http://127.0.0.1:51821 (or via your reverse proxy)."
+      - "Complete AdGuard's first-run wizard at http://127.0.0.1:3000: set the admin web interface to listen on all interfaces on port 3000, the DNS server on all interfaces on port 53, and choose an AdGuard admin username/password. Tunnel clients already point at AdGuard (10.0.0.100) for DNS."
+      - "The WireGuard listener 51820/udp is published on all interfaces; open/forward UDP 51820 at your firewall so remote clients can connect directly. Both web UIs stay on localhost behind a reverse proxy."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:51821"
+      recommended_subdomain: wg
+      notes:
+        - "Front both UIs with a reverse proxy: wg-easy on http://127.0.0.1:51821 (it serves plain HTTP — INSECURE=true — so the proxy terminates TLS) and AdGuard on http://127.0.0.1:3000."
+        - "Do NOT reverse-proxy the WireGuard listener itself — 51820/udp must be reachable directly (it is published publicly by design)."
+
+  # ============================================================================
+  # Zulip — five-service team-chat platform (Slack alternative) with topic-based
+  # threading. A vanilla postgres:18.4 backend (Zulip owns its DB outright as
+  # POSTGRES_USER=zulip — no non-root-DB-user split), a SASL-authenticated
+  # memcached session cache, a RabbitMQ event queue, a password-protected Redis
+  # rate-limit store, and the all-in-one zulip server (Django + Tornado + nginx
+  # + supervisor in one upstream image). The four backing services run as their
+  # image users on an --internal network with no egress; postgres adds the four
+  # init caps (FOWNER not needed — probe-verified) and the zulip server adds six
+  # (the supervisor entrypoint chowns/cp -p's the data dir and drops workers to
+  # uid 1000; nginx binds port 80). The zulip server declares a nofile ulimit
+  # for Tornado's many long-poll connections. No public port — the web UI binds
+  # localhost only; front it with a reverse proxy for TLS. First boot applies
+  # ~280 Django migrations (~4-6 min), gating the healthcheck. A real FQDN is
+  # required: Zulip rejects a dotless host at boot (E002).
+  # ============================================================================
+  - app_id: zulip
+    name: Zulip
+    summary: Self-hosted team chat with topic-based threading (Slack alternative).
+    description: |
+      Open-source team chat with a topic-based threading model — a self-hosted
+      alternative to Slack. Five-container split: a vanilla Postgres backend, a
+      SASL-authenticated memcached session cache, a RabbitMQ event queue, a
+      password-protected Redis rate-limit store, and the all-in-one Zulip server
+      (Django + Tornado + nginx + supervisor in one upstream image). The database
+      network is created --internal, so the four backing services have no
+      internet egress; only the Zulip server reaches the front network for
+      outbound SMTP and mobile push notifications. Zulip owns its database
+      outright (POSTGRES_USER=zulip), so there is no non-root-DB-user split. The
+      memcached, RabbitMQ, and Redis services run as their image users with zero
+      added capabilities; Postgres adds the four init / privilege-drop caps; the
+      Zulip server runs as container root for its supervisor-based init (which
+      drops every long-running worker to uid 1000) and adds six caps. Only the
+      Zulip server publishes a port, on localhost (front it with a reverse
+      proxy). First boot applies ~280 Django migrations against the fresh
+      database, so it typically takes four to six minutes before the app reports
+      healthy. After install, set your real admin email in ~/docker/zulip/.env
+      and create your first organization via the realm-creation link — until then
+      / returns an HTTP 500. A real fully qualified domain name is required:
+      Zulip rejects a dotless hostname at boot.
+    template_name: zulip
+    template_version: "2026-06-15"
+    compose_template: templates/zulip/docker-compose.yml.tmpl
+    env_template: templates/zulip/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres password — the zulip DB user's password, applied by the
+      # postgres entrypoint at first-run init. base64url so it carries no
+      # shell-special characters. regenerable=false: postgres applies it only on
+      # fresh init; rotating it later would require ALTER USER orchestration wdm
+      # does not do, so the update path reuses the existing value via
+      # state.ReadStackEnv.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # memcached SASL password — protects the session cache. base64url.
+      # regenerable=false: the SASL password DB is written from this value at
+      # container start and Zulip's SECRETS_memcached_password must match it;
+      # rotating only one side breaks auth.
+      - name: MEMCACHED_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # RabbitMQ password — the zulip queue user's password. base64url.
+      # regenerable=false: rabbitmq applies RABBITMQ_DEFAULT_PASS only on first
+      # mnesia init; rotating it against an existing volume breaks auth.
+      - name: RABBITMQ_DEFAULT_PASS
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Redis password — protects the rate-limit counter store via requirepass.
+      # base64url. regenerable=false: rotation requires a coordinated restart of
+      # the Zulip server (which holds SECRETS_redis_password).
+      - name: REDIS_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Django SECRET_KEY — signs session cookies, CSRF tokens, and
+      # password-reset links. base64url. regenerable=false:
+      # rotating it invalidates every outstanding session and signed value. The
+      # placeholder is uppercase per schema (^[A-Z][A-Z0-9_]*$); .env.tmpl maps
+      # it onto the lowercase SECRETS_secret_key env var Zulip actually reads.
+      - name: ZULIP_SECRET_KEY
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Public hostname. Rendered into SETTING_EXTERNAL_HOST. Zulip rejects a
+      # dotless host at boot (E002), so a real FQDN is required — the domain type
+      # already implies a dotted host.
+      - name: SETTING_EXTERNAL_HOST
+        type: domain
+        required: true
+
+      # Admin contact email shown on user-facing error pages and used as the
+      # From: address for system mail. It cannot reference the domain
+      # placeholder, so it defaults to admin@example.com; the operator sets their
+      # real address in ~/docker/zulip/.env (surfaced in first-run notes). Not a
+      # secret.
+      - name: SETTING_ZULIP_ADMINISTRATOR
+        type: string
+        required: false
+        default: admin@example.com
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI via the Zulip server's nginx — localhost only (no public port;
+      # front with a reverse proxy). The Compose template binds 127.0.0.1:8080 ->
+      # container 80. The four backing services stay on the internal db network
+      # and are never published.
+      - service: zulip
+        container: 80
+        host: 8080
+
+    image_pins:
+      # postgres:18.4 index digest
+      # sha256:29ee7bb30d804447dc9a91fd0d74322ae1dc3a4072cc6346f70a5ed6e783b565.
+      # Vanilla postgres (no pgroonga); Zulip uses built-in tsvector search.
+      - service: postgres
+        image: postgres
+        tag: "18.4"
+        digest: sha256:29ee7bb30d804447dc9a91fd0d74322ae1dc3a4072cc6346f70a5ed6e783b565
+      # memcached:1.6.42-alpine3.23 index digest
+      # sha256:43a2e7f74aebfff0c9921f4d367299ced9eacaeaccdc8bb4bc122a4fba2cd909.
+      - service: memcached
+        image: memcached
+        tag: 1.6.42-alpine3.23
+        digest: sha256:43a2e7f74aebfff0c9921f4d367299ced9eacaeaccdc8bb4bc122a4fba2cd909
+      # rabbitmq:4.2.6 index digest
+      # sha256:0f0eeaba114a94a9e4aae6a5bde40de85e0ab3b9ae7fe715a25cac19c4253643.
+      - service: rabbitmq
+        image: rabbitmq
+        tag: 4.2.6
+        digest: sha256:0f0eeaba114a94a9e4aae6a5bde40de85e0ab3b9ae7fe715a25cac19c4253643
+      # redis:7.4.9-alpine3.21 index digest
+      # sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99.
+      - service: redis
+        image: redis
+        tag: 7.4.9-alpine3.21
+        digest: sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+      # ghcr.io/zulip/zulip-server:12.0-0 index digest
+      # sha256:d26f408abe4b8c6a86f4543de7cddfa3c5c45e117ccb5989ac5ad724e44f2e88.
+      - service: zulip
+        image: ghcr.io/zulip/zulip-server
+        tag: 12.0-0
+        digest: sha256:d26f408abe4b8c6a86f4543de7cddfa3c5c45e117ccb5989ac5ad724e44f2e88
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres adds
+    # the four init / privilege-drop caps (FOWNER NOT needed — probe-verified).
+    # The zulip server adds six: the same drop set plus FOWNER (the supervisor
+    # entrypoint chowns/cp -p's the data dir and rm's old upload symlinks) and
+    # NET_BIND_SERVICE (nginx binds port 80 in the container); it also declares
+    # the nofile ulimit Tornado needs (passive disclosure metadata — ulimits is
+    # not parity-checked). memcached, rabbitmq, and redis run as their image
+    # users with ZERO added caps, so they declare no service_hardening entry —
+    # every cap stays dropped under cap_drop: ALL. No NET_* / SYS_* beyond
+    # NET_BIND_SERVICE.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+      - service: zulip
+        capabilities:
+          add:
+            - NET_BIND_SERVICE
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+        ulimits:
+          nofile:
+            soft: 1000000
+            hard: 1048576
+
+    networks:
+      # Front: reverse proxy reaches the server here (or via 127.0.0.1:8080), and
+      # the server uses it for outbound egress (SMTP, mobile push notifications).
+      - name: zulip-front
+        internal: false
+      # Backend DB/cache/queue: postgres + memcached + rabbitmq + redis + the
+      # zulip server's backend chatter only, no internet egress.
+      - name: zulip-db
+        internal: true
+
+    resources:
+      # zulip: the heavy all-in-one server (Django + Tornado + nginx + ~25
+      # supervisor workers). Recommended 2g / 1.0 cpu fits a small team install;
+      # min (1792m) clears the migration-heavy first boot and leaves headroom
+      # above the ~1.5 GiB fresh-server idle the VM smoke measured at the 1536m
+      # floor; max is the override ceiling, capped at the host's 2.0 cores. High
+      # pids: supervisor spawns many worker processes.
+      - service: zulip
+        memory:
+          min: 1792m
+          recommended: 2g
+          max: 4g
+        cpus:
+          min: "0.5"
+          recommended: "1.0"
+          max: "2.0"
+        pids:
+          default: 1024
+          max: 2048
+        allow_override: true
+
+      # postgres: Zulip's relational store. Recommended 512m / 0.5 cpu suffices
+      # for a small team; min covers idle; max is the override ceiling.
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+      # rabbitmq: the event queue. Modest footprint under typical message load.
+      - service: rabbitmq
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 1g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 300
+          max: 600
+        allow_override: true
+
+      # redis: rate-limit counter store; small footprint.
+      - service: redis
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+
+      # memcached: session cache; small footprint.
+      - service: memcached
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation), and the five-service split (postgres + memcached + rabbitmq
+    # + redis + the server, with the four backends gating the server's first
+    # boot) is non-trivial coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:8080"
+
+    # The realm-creation step, the dotless-host requirement, the admin-email
+    # default, and the long first boot are surfaced on the install finish screen.
+    first_run_notes:
+      - "Set your real admin email in ~/docker/zulip/.env (SETTING_ZULIP_ADMINISTRATOR defaults to admin@example.com — it cannot reference your domain), then re-run the stack."
+      - "Create your first organization: run `docker exec -it zulip-server /home/zulip/deployments/current/manage.py generate_realm_creation_link` and open the single-use URL through your reverse proxy. Until you create an organization, / returns an HTTP 500 — this is expected on a fresh server."
+      - "Front the server with a reverse proxy that terminates TLS and point it at http://127.0.0.1:8080 (Zulip serves plain HTTP — http_only=True). A real fully qualified domain name is required; Zulip rejects a dotless hostname at boot."
+      - "First boot applies ~280 Django migrations against the fresh database, so it typically takes four to six minutes before the app reports healthy."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8080"
+      recommended_subdomain: chat
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8080 (Zulip serves plain HTTP — http_only=True — so the proxy terminates TLS) and forward X-Forwarded-Proto."
+
+  - app_id: dockhand
+    name: Dockhand
+    summary: Self-hosted Docker-management web UI with filtered socket access (Portainer alternative).
+    description: |
+      Security-focused web UI for managing Docker — a self-hosted alternative to
+      Portainer with a visual Compose editor, container lifecycle controls, a web
+      terminal, and image vulnerability scanning. Three-container split: a
+      vanilla Postgres backend, a tecnativa/docker-socket-proxy sidecar, and the
+      Dockhand server. Dockhand NEVER touches the raw Docker socket: it reaches
+      the Docker API only through the proxy over an --internal network, and the
+      proxy alone mounts /var/run/docker.sock read-only. The proxy is granted
+      read AND control access (list/inspect plus create/start/stop/restart/remove
+      containers, images, networks, and volumes) — wdm surfaces this as a DOCKER
+      SOCKET ACCESS WARNING at install. Three-network split isolates each path:
+      the front network carries the localhost-bound UI to a reverse proxy, the
+      --internal database network carries Postgres traffic, and the --internal
+      socket network carries the proxied Docker API; the proxy attaches to the
+      socket network only and is never reachable off-host. Dockhand owns its
+      database outright (PG_USER is the Postgres superuser), so there is no
+      non-root-DB-user split. Postgres adds the four init / privilege-drop caps
+      and the Dockhand server adds the same four; both run unprivileged (uid 1000
+      / uid 999) under cap_drop: ALL. Only the Dockhand server publishes a port,
+      on localhost — front it with a reverse proxy and create the admin account
+      through the UI on first visit.
+    template_name: dockhand
+    template_version: "2026-06-15"
+    compose_template: templates/dockhand/docker-compose.yml.tmpl
+    env_template: templates/dockhand/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres password — the dockhand DB superuser's password, applied by the
+      # postgres entrypoint at first-run init. base64url so it carries no
+      # shell-special characters. regenerable=false: postgres applies it only on
+      # fresh init; rotating it later would require ALTER USER orchestration wdm
+      # does not do, so the update path reuses the existing value via
+      # state.ReadStackEnv.
+      - name: PG_PASS
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Postgres role name. Dockhand owns its database outright — PG_USER is the
+      # superuser the postgres entrypoint creates from POSTGRES_USER — so there
+      # is no non-root-DB-user split (no init-data.sh). Not a secret. Default
+      # dockhand; the value is read by the postgres entrypoint and composed into
+      # DATABASE_URL, never interpolated into raw SQL (no init-script injection
+      # surface, so the SQL-identifier catalog-fixed rule does not apply).
+      - name: PG_USER
+        type: string
+        required: false
+        default: dockhand
+
+      # Database name, created by the postgres entrypoint from POSTGRES_DB. Not a
+      # secret. Default dockhand.
+      - name: PG_DB
+        type: string
+        required: false
+        default: dockhand
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Web UI / API via the Dockhand server — localhost only (no public port;
+      # front with a reverse proxy). The Compose template binds 127.0.0.1:8080 ->
+      # container 3000. Postgres and the socket-proxy stay on their internal
+      # networks and are never published.
+      - service: dockhand
+        container: 3000
+        host: 8080
+
+    image_pins:
+      # postgres:18.4-alpine3.23 index digest
+      # sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88.
+      # Vanilla postgres; dockhand owns the database outright.
+      - service: postgresql
+        image: postgres
+        tag: 18.4-alpine3.23
+        digest: sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
+      # tecnativa/docker-socket-proxy:0.3 index digest
+      # sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2.
+      # The proxy sidecar — the SOLE service that mounts the Docker socket.
+      - service: socket-proxy
+        image: tecnativa/docker-socket-proxy
+        tag: "0.3"
+        digest: sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+      # fnsys/dockhand:v1.0.29 index digest
+      # sha256:656ae5ed674d79b8251de275ae4259043f60222bbab563c71ed8dd91edd0b660.
+      - service: dockhand
+        image: fnsys/dockhand
+        tag: v1.0.29
+        digest: sha256:656ae5ed674d79b8251de275ae4259043f60222bbab563c71ed8dd91edd0b660
+
+    # PRD §12.1: Docker API access reaches dockhand only through the
+    # tecnativa/docker-socket-proxy sidecar on the --internal dockhand-socket
+    # network; wdm refuses any direct /var/run/docker.sock bind on a non-proxy
+    # service. allowed_api is the closed set of API groups the proxy exposes:
+    # CONTAINERS/IMAGES/NETWORKS/VOLUMES/INFO/EVENTS are the read scopes
+    # dockhand's UI needs, and POST is the write/control switch (it expands in
+    # the rendered proxy env to POST + the lifecycle/delete flags). POST triggers
+    # the install READ AND CONTROL warning. SYSTEM is intentionally omitted —
+    # only /system/df is gated by it and dockhand does not use it (probe-verified
+    # it functions fully without SYSTEM). The proxy service is image-pinned above
+    # and attaches to dockhand-socket only (internal:true).
+    socket_proxy:
+      enabled: true
+      service: socket-proxy
+      network: dockhand-socket
+      allowed_api:
+        - CONTAINERS
+        - IMAGES
+        - NETWORKS
+        - VOLUMES
+        - INFO
+        - EVENTS
+        - POST
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). postgres and
+    # the dockhand server each add the four init / privilege-drop caps their
+    # entrypoints need to chown their data dirs and drop privileges (postgres to
+    # uid 999, dockhand to uid 1000 via PUID/PGID). The socket-proxy runs as its
+    # image user with ZERO added caps, so it declares no service_hardening entry —
+    # every cap stays dropped under cap_drop: ALL. No NET_* / SYS_* anywhere.
+    service_hardening:
+      - service: postgresql
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+      - service: dockhand
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+
+    networks:
+      # Front: reverse proxy reaches the UI here (or via 127.0.0.1:8080).
+      - name: dockhand-frontend
+        internal: false
+      # Backend DB: dockhand <-> postgres only, no internet egress. wdm creates
+      # this with --internal at install time.
+      - name: dockhand-database
+        internal: true
+      # Socket path: dockhand <-> the socket-proxy only, no internet egress. The
+      # proxy attaches to THIS network only so the Docker API it exposes is never
+      # reachable off-host (PRD §12.1, socket-proxy check C). wdm creates it with
+      # --internal at install time.
+      - name: dockhand-socket
+        internal: true
+
+    resources:
+      # dockhand: the web UI + API server. Idle ~225 MiB; the max
+      # band (4g) covers heavy operations like vulnerability scans across many
+      # images. Recommended 512m / 0.5 cpu fits a typical install; max cpu capped
+      # at the host's 2.0 cores.
+      - service: dockhand
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 4g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # postgresql: dockhand's relational store; idle ~42 MiB. Recommended
+      # 512m / 0.5 cpu suffices; min covers idle; max is the override ceiling.
+      - service: postgresql
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 1g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+
+      # socket-proxy: the haproxy-based tecnativa sidecar; idle ~3 MiB. Tiny
+      # footprint — it only forwards filtered Docker API calls.
+      - service: socket-proxy
+        memory:
+          min: 16m
+          recommended: 32m
+          max: 64m
+        cpus:
+          min: "0.1"
+          recommended: "0.25"
+          max: "0.5"
+        pids:
+          default: 50
+          max: 100
+        allow_override: true
+
+    # PRD §20 / Decision #77: stack contains a Postgres instance the user owns
+    # (database tag — triggers the warning + explicit --accept-database-risk
+    # confirmation), and the three-service split with the socket-proxy sidecar
+    # and the three-network topology (front + --internal db + --internal socket)
+    # is non-trivial coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:8080"
+
+    # The admin-account-on-first-visit step, the socket-proxy posture, and the
+    # reverse-proxy requirement are surfaced on the install finish screen.
+    first_run_notes:
+      - "Open Dockhand through your reverse proxy (or at http://127.0.0.1:8080) and create the admin account on first visit — the first account becomes the instance owner."
+      - "Dockhand manages Docker through a hardened socket-proxy with read AND control access (list/create/start/stop/restart/remove containers, images, networks, and volumes); it never touches the raw Docker socket, which the proxy alone mounts read-only on the --internal socket network."
+      - "Front the server with a reverse proxy that terminates TLS and point it at http://127.0.0.1:8080 (Dockhand serves plain HTTP)."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8080"
+      recommended_subdomain: dockhand
+      notes:
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8080 (Dockhand serves plain HTTP — the proxy terminates TLS)."
+
+  # ============================================================================
+  # Stoat — the formerly-Revolt self-hosted chat platform. Fifteen long-running
+  # services plus two init containers: a MongoDB backend, a Redis cache, a
+  # RabbitMQ event bus, a Garage S3 object store, eight Rust microservices (api,
+  # events, autumn file-server, january proxy, gifbox, crond, pushd, voice-
+  # ingress), a LiveKit voice/video SFU, the web frontend, and a Caddy in-stack
+  # router; mongo-init seeds cleanup collections and garage-init bootstraps the
+  # S3 bucket. Five segmented networks isolate the front, app, data, rabbit, and
+  # voice paths. The data services use the gosu-drop posture (cap_drop ALL + the
+  # init/privilege-drop caps so each entrypoint chowns its named volume and drops
+  # to the image uid); the Rust services run as the image's nonroot user with
+  # zero added caps. LiveKit publishes the only public ports (the WebRTC TCP
+  # signal 7881 and the UDP media range 50000-50100). wdm renders five config
+  # artifacts (secrets.env, garage.toml, livekit.yml, .env.web, Revolt.toml) from
+  # the placeholder map and copies two static sidecars (Caddyfile, init-garage.sh)
+  # — reproducing the upstream generate-config.sh output, never invoking it. A
+  # real FQDN is required: Stoat crash-loops on a dotless host. Web push (VAPID),
+  # voice/video media (LiveKit), GIF search (gifbox), and file-attachment
+  # encryption are documented v1 skips — see the first-run notes.
+  # ============================================================================
+  - app_id: stoat
+    name: Stoat
+    summary: Self-hosted chat platform (formerly Revolt) with channels, voice, and file sharing.
+    description: |
+      Open-source self-hosted chat platform — the community continuation of
+      Revolt — with servers, channels, direct messages, roles, and a modern web
+      client. This is a large multi-service deployment: a MongoDB backend, a
+      Redis cache, a RabbitMQ event bus, a Garage S3-compatible object store,
+      eight Rust microservices (the api, the events websocket gateway, the autumn
+      file-server, the january link/media proxy, gifbox, crond, the pushd push
+      worker, and voice-ingress), a LiveKit voice/video SFU, the web frontend,
+      and an in-stack Caddy router — plus two one-shot init containers that seed
+      MongoDB cleanup collections and bootstrap the Garage bucket. Five segmented
+      Docker networks isolate the front, app, data, rabbit, and voice paths; only
+      the front network reaches the internet. The data services run the gosu-drop
+      hardening posture (cap_drop ALL with the init/privilege-drop caps so each
+      entrypoint chowns its named volume and drops to the image uid); the Rust
+      services run as the image's nonroot user with zero added capabilities.
+      LiveKit publishes the only public ports — the WebRTC TCP signal (7881) and
+      the UDP media range (50000-50100) — so remote voice peers connect directly;
+      every web surface stays on localhost behind Caddy, which a reverse proxy
+      fronts for TLS. wdm generates five config artifacts at install (the
+      service-secrets env, the Garage, LiveKit, web, and Revolt configs) and is
+      the sole generator — it never runs the upstream generate-config.sh. A real
+      fully qualified domain name is required: Stoat crash-loops on a dotless
+      host. Web push notifications (VAPID), LiveKit voice/video media, and GIF
+      search (gifbox) are documented v1 skips — text chat and file/avatar/image
+      uploads work; those features need operator follow-up described in the
+      first-run notes.
+    template_name: stoat
+    template_version: "2026-06-17"
+    compose_template: templates/stoat/docker-compose.yml.tmpl
+    env_template: templates/stoat/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Public hostname Stoat serves. Rendered into the .env.web URLs and the
+      # Revolt.toml [hosts] block. Stoat rejects a dotless host at boot, so a real
+      # FQDN is required — the domain type already implies a dotted host.
+      - name: STOAT_DOMAIN
+        type: domain
+        required: true
+
+      # MongoDB root user — created by the mongo image entrypoint from
+      # MONGO_INITDB_ROOT_USERNAME. Not a secret. Default stoat. There is no
+      # init-data.sh (mongo creates the root user from env), so the
+      # SQL-identifier denylist does not apply to this name.
+      - name: MONGO_ROOT_USER
+        type: string
+        required: false
+        default: stoat
+
+      # MongoDB root password — applied by the mongo entrypoint only at first-run
+      # init. hex(32) is 64 chars, well above any minimum. regenerable=false:
+      # rotating it against an existing data volume would not change the stored
+      # credential, so the update path reuses the existing value via
+      # state.ReadStackEnv.
+      - name: MONGO_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Redis password — protects the cache via --requirepass. hex(32).
+      # regenerable=false: the Rust services hold the matching password in
+      # secrets.env (REVOLT__DATABASE__REDIS), so rotating only one side breaks
+      # auth; wdm reuses the existing value on update.
+      - name: REDIS_PASSWORD
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # RabbitMQ user — the queue user the broker creates from
+      # RABBITMQ_DEFAULT_USER on first mnesia init. Not a secret. Default
+      # stoatrabbit.
+      - name: RABBIT_USER
+        type: string
+        required: false
+        default: stoatrabbit
+
+      # RabbitMQ password — applied by the broker only on first mnesia init.
+      # hex(32). regenerable=false: rotating it against an existing volume breaks
+      # auth, and the Rust services hold the matching value in secrets.env.
+      - name: RABBIT_PASSWORD
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Garage RPC secret — authenticates the single Garage node's internal RPC.
+      # hex(32). regenerable=false: it is written into garage.toml and persisted
+      # in the Garage metadata on first layout; rotating it would orphan the
+      # store, so wdm reuses the existing value on update.
+      - name: GARAGE_RPC_SECRET
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Garage admin API token — gates the admin API garage-init calls to assign
+      # layout, create the bucket, and import the S3 key. base64url. regenerable=
+      # false: it is written into garage.toml and supplied to garage-init via the
+      # main .env, so both sides must match; wdm reuses the existing value on
+      # update.
+      - name: GARAGE_ADMIN_TOKEN
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Garage metrics token — gates the Garage Prometheus metrics endpoint.
+      # base64url. regenerable=false: written into garage.toml on first init.
+      - name: GARAGE_METRICS_TOKEN
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Garage S3 access key id — imported by garage-init via the admin ImportKey
+      # call and read by autumn as REVOLT__FILES__S3__ACCESS_KEY_ID. Garage
+      # accepts an arbitrary accessKeyId, so a plain hex value (no cosmetic GK
+      # prefix) is the clean choice; the SAME placeholder feeds both garage-init
+      # and autumn so the imported key and the consumer match. hex(32).
+      # regenerable=false: rotating it would orphan the imported key, so wdm
+      # reuses the existing value on update.
+      - name: S3_ACCESS_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Garage S3 secret key — the secret half of the imported S3 credential.
+      # hex(32). regenerable=false: paired with S3_ACCESS_KEY in the imported
+      # Garage key, so both are reused on update.
+      - name: S3_SECRET_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # autumn file-attachment encryption key (REVOLT__FILES__ENCRYPTION_KEY).
+      # autumn decodes this with STANDARD base64 (alphabet +/ with padding) and
+      # feeds the exact 32 raw bytes to AES-256-GCM, so it uses the base64std
+      # encoding — standard base64 of 32 random bytes, the only form whose
+      # alphabet autumn's decoder accepts and that yields the exact key length
+      # (base64url's -_ alphabet is rejected; hex decodes to 48 bytes).
+      # regenerable=false: the key encrypts stored attachments, so rotating it
+      # would orphan every existing upload; wdm reuses the existing value on
+      # update.
+      - name: FILES_ENCRYPTION_KEY
+        type: secret
+        required: true
+        encoding: base64std
+        regenerable: false
+
+      # LiveKit API key — identifies the api->LiveKit credential. It appears both
+      # in secrets.env (REVOLT__API__LIVEKIT__NODES__WORLDWIDE__KEY) and as a YAML
+      # map key in livekit.yml, so the SAME placeholder feeds both. hex(32);
+      # LiveKit accepts any-length API keys. regenerable=false: rotating only one
+      # side breaks the api<->LiveKit handshake.
+      - name: LIVEKIT_KEY
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # LiveKit API secret — the secret half of the LiveKit credential, in both
+      # secrets.env and livekit.yml. hex(32). regenerable=false: paired with
+      # LIVEKIT_KEY.
+      - name: LIVEKIT_SECRET
+        type: secret
+        required: true
+        encoding: hex
+        regenerable: false
+
+      # Web push VAPID keypair (REVOLT__PUSHD__VAPID__*). V1 SKIP: web push needs
+      # an EC P-256 keypair wdm cannot mint, so both are left empty — pushd starts
+      # with browser push disabled. Documented in the first-run notes. Not
+      # secrets (wdm does not generate them).
+      - name: VAPID_PRIVATE_KEY
+        type: string
+        required: false
+        default: ""
+      - name: VAPID_PUBLIC_KEY
+        type: string
+        required: false
+        default: ""
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # LiveKit WebRTC TCP signal — PUBLIC by design so remote voice peers
+      # connect directly (PRD §11.1 public-port exception). Bound on all
+      # interfaces; the Compose template binds 7881 without a 127.0.0.1 prefix.
+      - service: livekit
+        container: 7881
+        host: 7881
+        public: true
+
+      # LiveKit WebRTC UDP media range — PUBLIC by design (PRD §11.1). The
+      # contiguous span 50000-50100/udp carries voice/video RTP; bound on all
+      # interfaces. host_range/container_range declare the span; host is the low
+      # end.
+      - service: livekit
+        container: 50000
+        host: 50000
+        protocol: udp
+        public: true
+        host_range: "50000-50100"
+        container_range: "50000-50100"
+
+      # Caddy in-stack router — localhost only (front with a reverse proxy). NOT
+      # public: the Compose template binds 127.0.0.1:8880 -> container 80.
+      - service: caddy
+        container: 80
+        host: 8880
+
+    image_pins:
+      # docker.io/mongo:8.3.2
+      - service: database
+        image: mongo
+        tag: 8.3.2
+      # docker.io/redis:8.6.3-alpine
+      - service: redis
+        image: redis
+        tag: 8.6.3-alpine
+      # docker.io/rabbitmq:4.2.5-alpine
+      - service: rabbit
+        image: rabbitmq
+        tag: 4.2.5-alpine
+      # docker.io/dxflrs/garage:v2.3.0 (scratch image)
+      - service: garage
+        image: dxflrs/garage
+        tag: v2.3.0
+      # ghcr.io/stoatchat/api:v0.12.1
+      - service: api
+        image: ghcr.io/stoatchat/api
+        tag: v0.12.1
+      # ghcr.io/stoatchat/events:v0.12.1
+      - service: events
+        image: ghcr.io/stoatchat/events
+        tag: v0.12.1
+      # ghcr.io/stoatchat/file-server:v0.12.1 (the autumn service)
+      - service: autumn
+        image: ghcr.io/stoatchat/file-server
+        tag: v0.12.1
+      # ghcr.io/stoatchat/proxy:v0.12.1 (the january service)
+      - service: january
+        image: ghcr.io/stoatchat/proxy
+        tag: v0.12.1
+      # ghcr.io/stoatchat/gifbox:v0.12.1
+      - service: gifbox
+        image: ghcr.io/stoatchat/gifbox
+        tag: v0.12.1
+      # ghcr.io/stoatchat/crond:v0.12.1
+      - service: crond
+        image: ghcr.io/stoatchat/crond
+        tag: v0.12.1
+      # ghcr.io/stoatchat/pushd:v0.12.1
+      - service: pushd
+        image: ghcr.io/stoatchat/pushd
+        tag: v0.12.1
+      # ghcr.io/stoatchat/voice-ingress:v0.12.1
+      - service: voice-ingress
+        image: ghcr.io/stoatchat/voice-ingress
+        tag: v0.12.1
+      # ghcr.io/stoatchat/livekit-server:v1.9.13
+      - service: livekit
+        image: ghcr.io/stoatchat/livekit-server
+        tag: v1.9.13
+      # ghcr.io/stoatchat/for-web:0b94704
+      - service: web
+        image: ghcr.io/stoatchat/for-web
+        tag: "0b94704"
+      # docker.io/caddy:2.11.3
+      - service: caddy
+        image: caddy
+        tag: 2.11.3
+      # docker.io/mongo:8.3.2 (the mongo-init one-shot client; same image as the
+      # database service)
+      - service: mongo-init
+        image: mongo
+        tag: 8.3.2
+      # docker.io/alpine:3.22.4 (the garage-init one-shot)
+      - service: garage-init
+        image: alpine
+        tag: 3.22.4
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template so the rendered
+    # cap_add and this declaration stay in parity (parity check C). The data
+    # services use the gosu-drop posture: their entrypoints start as root, chown
+    # the named volume, and drop to the image uid, which needs the four init /
+    # privilege-drop caps (CHOWN/DAC_OVERRIDE/FOWNER/SETGID/SETUID). garage runs
+    # as container root and writes its own root-owned volumes (no cap needed for
+    # those), but adds DAC_OVERRIDE so capless root can read its bind-mounted
+    # garage.toml — mode 0600, owned by the installing uid. caddy adds only
+    # NET_BIND_SERVICE (its binary's file capability binds privileged port 80).
+    # Every Rust service, the web frontend, livekit, and both init containers run
+    # with zero added caps under cap_drop: ALL, so they declare no entry here. No
+    # SYS_*; no NET_* beyond caddy's NET_BIND_SERVICE.
+    service_hardening:
+      - service: database
+        capabilities:
+          add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - SETGID
+            - SETUID
+      - service: redis
+        capabilities:
+          add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - SETGID
+            - SETUID
+      - service: rabbit
+        capabilities:
+          add:
+            - CHOWN
+            - DAC_OVERRIDE
+            - FOWNER
+            - SETGID
+            - SETUID
+      - service: garage
+        capabilities:
+          add:
+            # container-root reads its 0600 bind-mounted garage.toml (owned by
+            # the installing uid); no other cap needed for its root-owned volumes.
+            - DAC_OVERRIDE
+      - service: caddy
+        capabilities:
+          add:
+            - NET_BIND_SERVICE
+
+    networks:
+      # Front: Caddy binds the host here (127.0.0.1:8880) and reaches the
+      # internet; livekit uses it for STUN external-IP discovery; garage-init uses
+      # it for one-shot apk egress. The only non-internal network.
+      - name: stoat-frontend
+        internal: false
+      # App: Caddy -> the Rust app services and web frontend. wdm creates it with
+      # --internal.
+      - name: stoat-app
+        internal: true
+      # Data: MongoDB, Redis, Garage, and their backend consumers. --internal.
+      - name: stoat-data
+        internal: true
+      # Rabbit: the RabbitMQ broker and its message consumers. --internal.
+      - name: stoat-rabbit
+        internal: true
+      # Voice: LiveKit <-> Redis (voice media coordination). --internal.
+      - name: stoat-voice
+        internal: true
+
+    resources:
+      # Per-service memory/cpu/pids bands grounded in the feasibility probe's
+      # measured idle plus headroom. Recommended is the small-VPS default; min is
+      # the install floor; max is the override ceiling (cpu capped at the host's
+      # 2.0 cores). The two init containers carry fixed small limits in the
+      # Compose template and declare no band here (they are one-shot, not sized
+      # against the host budget).
+      - service: database
+        memory:
+          min: 768m
+          recommended: 1g
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "1.5"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+      - service: rabbit
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 150
+          max: 300
+        allow_override: true
+      - service: redis
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: garage
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+      - service: api
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+      - service: events
+        memory:
+          min: 96m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+      - service: autumn
+        memory:
+          min: 96m
+          recommended: 128m
+          max: 1g
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+      - service: january
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: gifbox
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 256m
+        cpus:
+          min: "0.1"
+          recommended: "0.25"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: crond
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: pushd
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: voice-ingress
+        memory:
+          min: 96m
+          recommended: 128m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.5"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: livekit
+        memory:
+          min: 128m
+          recommended: 256m
+          max: 1g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+      - service: web
+        memory:
+          min: 192m
+          recommended: 256m
+          max: 512m
+        cpus:
+          min: "0.1"
+          recommended: "0.25"
+          max: "1.0"
+        pids:
+          default: 100
+          max: 200
+        allow_override: true
+      - service: caddy
+        memory:
+          min: 64m
+          recommended: 128m
+          max: 256m
+        cpus:
+          min: "0.1"
+          recommended: "0.25"
+          max: "1.0"
+        pids:
+          default: 50
+          max: 100
+        allow_override: true
+
+    # F6 config generation (PRD §17): wdm renders these five artifacts from the
+    # placeholder map at install, reproducing the upstream generate-config.sh
+    # output. secrets.env (the eight Rust services' env_file), garage.toml, and
+    # livekit.yml carry secrets so they are mode 0600; .env.web and Revolt.toml
+    # are domain-derived only (secrets reach the Rust services via the REVOLT__
+    # env overrides in secrets.env) so they are mode 0644. Each mount is verified
+    # against the Compose template — render never injects it.
+    config_generation:
+      - template: secrets.env.tmpl
+        dest: secrets.env
+        mode: "0600"
+      - template: garage.toml.tmpl
+        dest: garage.toml
+        mode: "0600"
+        mount: ./garage.toml:/etc/garage.toml:ro
+      - template: livekit.yml.tmpl
+        dest: livekit.yml
+        mode: "0600"
+        mount: ./livekit.yml:/etc/livekit.yml:ro
+      - template: env.web.tmpl
+        dest: .env.web
+        mode: "0644"
+      - template: Revolt.toml.tmpl
+        dest: Revolt.toml
+        mode: "0644"
+        mount: ./Revolt.toml:/Revolt.toml:ro
+
+    # Static sidecars copied verbatim (no wdm placeholders): the Caddy router
+    # config (Caddy's own {$HOSTNAME} env interpolation + fixed service:port
+    # routes) and the Garage bootstrap script. The init-garage.sh src ends in .sh
+    # but interpolates only catalog-fixed runtime env (GARAGE_ADMIN_TOKEN,
+    # S3_ACCESS_KEY, S3_SECRET_KEY supplied via the main .env) — no placeholder is
+    # named after a SQL identifier, so the denylist is satisfied.
+    additional_files:
+      - src: Caddyfile
+        dest: Caddyfile
+        mode: "0644"
+        mount: ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - src: init-scripts/init-garage.sh
+        dest: init-scripts/init-garage.sh
+        mode: "0755"
+        mount: ./init-scripts/init-garage.sh:/init-garage.sh:ro
+
+    # PRD §20 / Decision #77: MongoDB is a database the user owns (database tag —
+    # triggers the warning + explicit --accept-database-risk confirmation), and
+    # the fifteen-service + two-init-container topology across five segmented
+    # networks with public WebRTC ports and config generation is by far the most
+    # complex curated stack (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:8880"
+
+    # The FQDN requirement, the reverse-proxy entry point, the realm-creation
+    # step, the public WebRTC ports, and the four documented v1 skips are
+    # surfaced on the install finish screen.
+    first_run_notes:
+      - "A real fully qualified domain name is required: Stoat crash-loops on a dotless host. Front the stack with a reverse proxy that terminates TLS and point it at http://127.0.0.1:8880 (the in-stack Caddy serves plain HTTP)."
+      - "Open Stoat through your reverse proxy and create the first account via the sign-up flow — the first account registered becomes the instance owner; the platform ships with open registration (invite_only=false)."
+      - "Public voice ports: the LiveKit WebRTC signal (7881/tcp) and media range (50000-50100/udp) are published on all interfaces by design. Open/forward them at your firewall for remote voice/video; do NOT reverse-proxy them."
+      - "V1 skips (text chat and file/avatar/image uploads work out of the box): LiveKit voice/video media, Web push (VAPID — wdm cannot mint the EC P-256 keypair), and GIF search (gifbox) are deferred and need operator follow-up."
+
+    # One-shot init containers that exit 0 by design: mongo-init seeds the
+    # MongoDB cleanup collections and garage-init bootstraps the Garage bucket.
+    # Status logic treats these as done rather than needs_attention once they
+    # complete successfully.
+    completed_services:
+      - mongo-init
+      - garage-init
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8880"
+      recommended_subdomain: chat
+      notes:
+        - "Front the in-stack Caddy with your reverse proxy: point it at http://127.0.0.1:8880 (Caddy serves plain HTTP — the proxy terminates TLS) and forward X-Forwarded-Proto. A real FQDN is required."
+        - "Do NOT reverse-proxy the LiveKit WebRTC ports — 7881/tcp and 50000-50100/udp must be reachable directly (they are published publicly by design for voice/video media)."

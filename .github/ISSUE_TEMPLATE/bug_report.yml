@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible problem in wdm.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **Do not include secrets, tokens, passwords, or unredacted `.env` contents.**
+        `wdm` redacts secrets in its own output and logs; please double-check anything
+        you paste here and remove credentials before submitting.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I removed all secrets, tokens, and credentials from this report.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem and the actual behavior you observed.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps, including the `wdm` command(s) you ran.
+      placeholder: |
+        1. Run `wdm apps install ...`
+        2. ...
+        3. See the error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected to happen instead.
+    validations:
+      required: false
+  - type: input
+    id: wdm-version
+    attributes:
+      label: wdm version
+      description: Output of `wdm --version`.
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Distribution and version.
+      placeholder: Debian 13 (amd64)
+    validations:
+      required: true
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker and Compose version
+      description: Output of `docker version` and `docker compose version`.
+      placeholder: Docker 27.x, Compose v2.x
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant command output or logs
+      description: Paste the relevant `wdm` output or logs. Confirm there are no secrets.
+      render: text
+    validations:
+      required: false

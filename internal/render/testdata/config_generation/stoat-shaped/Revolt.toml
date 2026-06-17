@@ -1,0 +1,3 @@
+[api]
+host = "https://stoat.test.example"
+secret = "TESTONLY-FAKE-REVOLT-API-SECRET-0000000000000000000000000000"

@@ -1,0 +1,90 @@
+# SerpBear — Hardened Docker Compose (wdm template, search-keyword rank tracker)
+# Self-hosted SEO rank tracker: https://serpbear.com/
+#
+# Default DB: SQLite (bundled, file-based) under /app/data.
+#
+# Security baseline:
+#   - cap_drop: ALL with ZERO added caps — the image's built-in `nextjs`
+#     user (UID 1001) owns /app and runs the Next.js server directly, so
+#     no entrypoint chown/privilege-drop caps are needed (clean non-root)
+#   - NO `user:` directive: the image default IS the non-root nextjs user.
+#     Forcing a different UID makes the healthcheck pass but the SQLite
+#     open fail (SQLITE_CANTOPEN) — verified in testing
+#   - security_opt: no-new-privileges; ipc: private
+#   - tmpfs for /tmp; deploy.resources limits incl. pids
+#   - 127.0.0.1 port binding — reverse proxy in front for TLS
+#   - Healthcheck hits the app root via wget (busybox, no creds in cmdline)
+#
+# wdm renders this template into ~/docker/serpbear/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/serpbear/.env (mode 0600).
+
+name: serpbear
+services:
+  serpbear:
+    image: towfiqi/serpbear:3.1.0
+    container_name: serpbear
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3009:3000" # localhost only — front with a reverse proxy
+    environment:
+      # Admin login (USER_NAME is the dashboard username; PASSWORD is the
+      # wdm-generated login password — see .env).
+      USER_NAME: ${SERPBEAR_USER}
+      PASSWORD: ${SERPBEAR_PASSWORD}
+      # SECRET signs session JWTs; APIKEY is the REST bearer token.
+      SECRET: ${SERPBEAR_SECRET}
+      APIKEY: ${SERPBEAR_APIKEY}
+      # Hours a session stays valid before re-login. Fixed catalog literal.
+      SESSION_DURATION: ${SESSION_DURATION}
+      # Public origin (reverse-proxy host). serpbear uses it for CSRF origin,
+      # OAuth callbacks, and notification emails, so it must be the public URL.
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the image runs as the unprivileged
+      # `nextjs` user and Docker seeds a named volume nextjs-owned from the
+      # image, so SQLite can open /app/data/database.sqlite. A bind mount's
+      # host source is auto-created root-owned, which fails the DB open with
+      # SQLITE_CANTOPEN — verified in testing.
+      - serpbear_data:/app/data
+    networks:
+      - serpbear
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_SERPBEAR}
+          cpus: "${CPUS_LIMIT_SERPBEAR}"
+          pids: ${PIDS_LIMIT_SERPBEAR}
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+    healthcheck:
+      # App root returns 200 once Next.js is ready. wget is busybox, no creds.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "serpbear"
+networks:
+  # Front: reverse proxy reaches serpbear here (or via 127.0.0.1:3009).
+  # Egress is required for serpbear's scraping/search APIs.
+  serpbear:
+    external: true
+volumes:
+  # serpbear's data dir (database.sqlite + settings.json). A named volume so
+  # Docker's copy-up seeds it nextjs-owned from the image — see the service
+  # `volumes:` note above. wdm's remove preserves named volumes (never
+  # `docker compose down -v`) and lists them in the removal summary, so the
+  # tracked keywords survive a remove.
+  serpbear_data:

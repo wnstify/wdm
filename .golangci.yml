@@ -1,0 +1,378 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.26"
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - errorlint
+    - nilerr
+    - bodyclose
+    - noctx
+    - copyloopvar
+    - intrange
+
+    # Security
+    - gosec
+    - forbidigo
+
+    # Style / hygiene
+    - misspell
+    - unconvert
+    - unparam
+    - revive
+    - nolintlint
+
+    # Complexity guardrail.
+    - gocyclo
+
+    # Architecture enforcement (PRD §29 / §37)
+    - depguard
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G104
+
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: "use slog or the TUI; do not print to stdout from core packages"
+        - pattern: ^os\.Exit$
+          msg: "return an error and let cmd/wdm map it to an exit code (PRD §27)"
+        - pattern: ^panic$
+          msg: "return a typed error instead of panicking"
+
+    misspell:
+      locale: US
+
+    gocyclo:
+      min-complexity: 20
+
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: indent-error-flow
+        - name: receiver-naming
+        - name: unexported-return
+        - name: unused-parameter
+        - name: var-declaration
+
+    depguard:
+      rules:
+        # pkg/types/** is stdlib-only.
+        # Strict allow list catches every non-stdlib import — third-
+        # party libs and the module's own internal/* alike.
+        pkg-types-stdlib-only:
+          list-mode: strict
+          files:
+            - "**/pkg/types/**"
+          allow:
+            - $gostd
+
+        # pkg/engine bridges to internal/core; internal/core is
+        # intentionally absent from the deny list below (the only
+        # allowed internal/* sibling). UI and CLI dependencies remain
+        # blocked so UI layers consume only pkg/engine + pkg/types
+        # (PRD §37). pkg/types is covered separately by
+        # pkg-types-stdlib-only above, so this rule no longer needs to
+        # apply to all of pkg/**.
+        #
+        # Note on rule shape: depguard treats any rule with an `allow:`
+        # block as effectively strict (everything not listed is denied,
+        # including stdlib), so the "broad deny + allow exception"
+        # form does not work here. The enumerated deny list below is
+        # the lax-mode equivalent — every internal/* sibling except
+        # internal/core is denied explicitly. UPDATE this list when a
+        # new internal/* sibling is added.
+        pkg-engine-stays-uiless:
+          files:
+            - "**/pkg/engine/**"
+          deny:
+            - pkg: github.com/wnstify/wdm/internal/cli
+              desc: "pkg/engine must not depend on internal/cli (PRD §29)"
+            - pkg: github.com/wnstify/wdm/internal/tui
+              desc: "pkg/engine must not depend on internal/tui (PRD §29)"
+            - pkg: github.com/wnstify/wdm/internal/security
+              desc: "pkg/engine must not depend on internal/security; route through internal/core"
+            - pkg: github.com/wnstify/wdm/internal/logging
+              desc: "pkg/engine must not depend on internal/logging; route through internal/core"
+            - pkg: github.com/wnstify/wdm/internal/system
+              desc: "pkg/engine must not depend on internal/system; route through internal/core"
+            - pkg: github.com/wnstify/wdm/internal/state
+              desc: "pkg/engine must not depend on internal/state; route through internal/core"
+            - pkg: github.com/wnstify/wdm/internal/catalog
+              desc: "pkg/engine must not depend on internal/catalog; route through internal/core"
+            - pkg: github.com/wnstify/wdm/internal/docker
+              desc: "pkg/engine must not depend on internal/docker; route through internal/core"
+            - pkg: github.com/wnstify/wdm/internal/render
+              desc: "pkg/engine must not depend on internal/render; route through internal/core"
+            - pkg: github.com/charmbracelet
+              desc: "pkg/engine must not depend on the Charm ecosystem — Bubble Tea, Lipgloss, etc. (PRD §37)"
+            - pkg: github.com/spf13/cobra
+              desc: "pkg/engine must not depend on Cobra"
+            - pkg: github.com/spf13/pflag
+              desc: "pkg/engine must not depend on pflag"
+
+        # internal/cli/** must go through pkg/engine, never reach
+        # any internal/* sibling directly.
+        cli-uses-engine:
+          files:
+            - "**/internal/cli/**"
+          deny:
+            - pkg: github.com/wnstify/wdm/internal
+              desc: "internal/cli must call pkg/engine, not any internal/* sibling (PRD §29, §37)"
+
+        # internal/tui/** must go through pkg/engine and pkg/types only,
+        # plus the locked Bubble Tea stack. Strict mode rejects every
+        # unlisted package, including future internal/* siblings.
+        tui-uses-engine:
+          list-mode: strict
+          files:
+            - "**/internal/tui/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/pkg/engine
+            - github.com/wnstify/wdm/pkg/types
+            - github.com/charmbracelet/bubbletea
+            - github.com/charmbracelet/lipgloss
+            - github.com/charmbracelet/bubbles
+
+        # Sibling internal/* packages may import each other but never
+        # the orchestrator (internal/core) or the UI layers
+        # (internal/cli, internal/tui). UPDATE this list when a new
+        # internal/* sibling is added.
+        # internal/render is intentionally excluded — its boundary is
+        # stricter than the sibling baseline and is enforced by the
+        # internal-render-pure rule below.
+        # internal/docker is also excluded — its low-level boundary is
+        # stricter than the sibling baseline and is enforced by the
+        # internal-docker-low-level rule below.
+        # internal/security is also excluded — its leaf-only boundary
+        # is enforced by the internal-security-leaf rule below.
+        siblings-no-orchestrator:
+          files:
+            - "**/internal/catalog/**"
+            - "**/internal/logging/**"
+            - "**/internal/registry/**"
+            - "**/internal/release/**"
+            - "**/internal/state/**"
+            - "**/internal/system/**"
+          deny:
+            - pkg: github.com/wnstify/wdm/internal/core
+              desc: "sibling internal/* packages must not depend on the orchestrator"
+            - pkg: github.com/wnstify/wdm/internal/cli
+              desc: "sibling internal/* packages must not depend on internal/cli"
+            - pkg: github.com/wnstify/wdm/internal/tui
+              desc: "sibling internal/* packages must not depend on internal/tui"
+
+        # internal/docker is the low-level Docker/Compose wrapper
+        # package. It may import only the standard
+        # library, pkg/types, and internal/security. This strict allow
+        # list therefore denies every other package implicitly,
+        # including internal/core, internal/cli, internal/tui,
+        # internal/render, internal/state, and internal/catalog.
+        internal-docker-low-level:
+          list-mode: strict
+          files:
+            - "**/internal/docker/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/pkg/types
+            - github.com/wnstify/wdm/internal/security
+
+        # internal/security is the leaf security helpers package
+        # It depends only on the standard library
+        # and pkg/types — never on any internal/* sibling. Security
+        # helpers may be CONSUMED by other packages (internal/logging
+        # for redaction, internal/state and internal/core for path
+        # validation, future internal/docker for stderr scrubbing) but
+        # security must not orchestrate them, which would create
+        # cycles when logging and state both depend on the redactor.
+        # The strict allow list below denies every package not
+        # explicitly listed — that covers every other internal/*
+        # sibling, internal/core, internal/cli, internal/tui, and
+        # every third-party module. crypto/rand (commit 10 secret
+        # generation is allowed via $gostd;
+        # pkg/types is allowed so security can wrap returns with the
+        # typed *Error / ErrorCode contract. golang.org/x/crypto/argon2 is
+        # allowed for argon2id PHC secret encoding (the
+        # hashed admin-token path, e.g. Vaultwarden's ADMIN_TOKEN) — the one
+        # hashed admin-token path, e.g. Vaultwarden's ADMIN_TOKEN). Keep
+        # the edge minimal: the single argon2 sub-package, not all of
+        # golang.org/x/crypto.
+        internal-security-leaf:
+          list-mode: strict
+          files:
+            - "**/internal/security/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/pkg/types
+            - golang.org/x/crypto/argon2
+
+        # internal/render is the pure renderer. It
+        # depends only on the standard library, pkg/types, and
+        # gopkg.in/yaml.v3 (the YAML parse-mutate-emit cycle required
+        # for label enforcement) — never on any internal/* sibling, including
+        # internal/catalog (render carries its own projection of the
+        # catalog placeholder shape; the projection happens inside
+        # internal/core, not at the render boundary). The strict
+        # allow list below denies every package not explicitly
+        # listed, which covers internal/core, internal/cli,
+        # internal/tui, internal/catalog, internal/security,
+        # internal/docker, internal/state, internal/logging,
+        # internal/system, and every third-party module other than
+        # gopkg.in/yaml.v3. UPDATE the allow list only when PRD §29
+        # broadens the render boundary.
+        internal-render-pure:
+          list-mode: strict
+          files:
+            - "**/internal/render/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/pkg/types
+            - gopkg.in/yaml.v3
+
+        # internal/release owns Go-native release artifact verification —
+        # checksums, the detached release signature over SHA256SUMS,
+        # and in-product Sigstore/SLSA attestation verification. It is the deliberate
+        # dependency-isolation boundary that keeps the heavy attestation
+        # verifier tree OUT of the internal/security leaf (Decision #66):
+        # security stays small, release carries the trust machinery. The
+        # strict allow list permits only the standard library, pkg/types
+        # (for the typed *Error / ErrorCode verification-failure contract),
+        # and the exact verification library the product imports —
+        # github.com/sigstore/sigstore-go (the module prefix covers its
+        # pkg/bundle, pkg/root, and pkg/verify sub-packages). Every other
+        # package is denied implicitly, including internal/core,
+        # internal/cli, internal/tui, every other internal/* sibling, and
+        # any cosign / external-verifier-binary path (Go-native only,
+        # PRD §23). UPDATE the allow list only when
+        # PRD §12/§14/§22/§23 broaden the verifier's direct dependencies;
+        # do NOT loosen it to satisfy a transitive dep — depguard only
+        # checks direct imports. The siblings-no-orchestrator rule above
+        # also covers internal/release as belt-and-suspenders.
+        internal-release-boundary:
+          list-mode: strict
+          files:
+            - "**/internal/release/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/pkg/types
+            - github.com/sigstore/sigstore-go
+
+        # internal/registry owns the Go-native OCI / Docker Registry v2
+        # metadata client for app-image update checks. Registry metadata
+        # is fetched and parsed by Go code only — never by docker / crane /
+        # skopeo or any external binary. The strict allow list permits only
+        # the standard library (net/http, encoding/json, crypto/sha256,
+        # etc.) and pkg/types (for the typed *Error / ErrorCode network-vs-
+        # usage failure contract). Every other package is denied
+        # implicitly — most importantly internal/docker (which would be a
+        # Docker registry shell-out path), and also internal/core,
+        # internal/cli, internal/tui, and every other internal/* sibling.
+        # This client performs anonymous public metadata checks only and
+        # adds no registry SDK dependency (stdlib-only); UPDATE the
+        # allow list only when PRD §14/§20/§35 broaden the
+        # client's direct dependencies, and do NOT loosen it to satisfy a
+        # transitive dep — depguard only checks direct imports. The
+        # siblings-no-orchestrator rule above also covers internal/registry
+        # as belt-and-suspenders.
+        internal-registry-boundary:
+          list-mode: strict
+          files:
+            - "**/internal/registry/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/pkg/types
+
+        # internal/core orchestrates siblings but must not reach into
+        # the UI layers — cli and tui depend on the engine, never the
+        # other way around. It also must not
+        # import pkg/engine: the engine bridge made
+        # the dependency one-way (pkg/engine → internal/core), and
+        # allowing the reverse would reintroduce the import cycle the
+        # bridge was designed to break.
+        orchestrator-no-ui:
+          files:
+            - "**/internal/core/**"
+          deny:
+            - pkg: github.com/wnstify/wdm/internal/cli
+              desc: "internal/core must not depend on internal/cli"
+            - pkg: github.com/wnstify/wdm/internal/tui
+              desc: "internal/core must not depend on internal/tui"
+            - pkg: github.com/wnstify/wdm/pkg/engine
+              desc: "internal/core must not depend on pkg/engine; reversing the dependency would reintroduce the import cycle"
+
+        # cmd/** wires the app together: constructs the engine via
+        # pkg/engine.New (the public constructor that bridges through
+        # to internal/core), runs the PRD §11
+        # root/sudo refusal via internal/system, and forwards to
+        # internal/cli for command dispatch. PRD §29
+        # forbid cmd from reaching into other internal/* siblings;
+        # the engine is the public API surface for everything else.
+        # Strict allow list — the only rule that matches cmd/** files,
+        # so the allowed exceptions always win without deny
+        # interaction. internal/core was removed from this allow list
+        # at the engine boundary: cmd/wdm uses
+        # pkg/engine.New now, never core.New directly.
+        cmd-wires-app:
+          list-mode: strict
+          files:
+            - "**/cmd/**"
+          allow:
+            - $gostd
+            - github.com/wnstify/wdm/internal/system
+            - github.com/wnstify/wdm/internal/cli
+            - github.com/wnstify/wdm/internal/tui
+            - github.com/wnstify/wdm/pkg/engine
+            - github.com/wnstify/wdm/pkg/types
+            - github.com/spf13/cobra
+            - github.com/spf13/pflag
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+          - noctx
+          # depguard: test files import their own package (e.g.
+          # pkg/types/*_test.go imports pkg/types) and the testify
+          # assertion library, neither of which the production-side
+          # depguard rules permit. Production code stays strict; the
+          # architectural invariants depguard encodes still hold
+          # because the rules apply to every *.go file outside tests.
+          - depguard
+      - path: cmd/
+        linters:
+          - forbidigo
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

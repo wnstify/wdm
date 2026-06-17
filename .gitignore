@@ -1,0 +1,64 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+# …except the rendered golden .env fixtures: they carry only
+# TESTONLY-FAKE-SECRET- placeholder values (never real credentials) and
+# are load-bearing committed inputs for the internal/render golden tests.
+!/fixtures/golden/**/.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+
+# Build output
+bin/
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Codex
+.Codex/
+AGENTS.md
+
+# Local/private workspace material
+.local/
+CLAUDE.md
+PHASE*.md
+p*-execution.md
+v1*.md
+docs/golang-skills.md
+docs/dev-log.md
+docs/archive/
+docs/engineering/
+docs/evidence/
+
+# graphify knowledge-graph output
+graphify-out/

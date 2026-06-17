@@ -1,0 +1,36 @@
+# wdm user configuration
+#
+# Location:  ~/.config/wdm/config.toml
+# Schema:    config/schema.json (validated at startup; failure exits with code 2)
+# Reference: PRD §34
+
+# Schema version of this file. wdm migrates older versions forward when
+# possible; a newer version than wdm understands is a startup error.
+schema_version = 1
+
+# Base directory under which managed stacks are written. Each app lives at:
+#   <base_stack_path>/<app>/docker-compose.yml
+# A leading "~" is expanded to $HOME at load time.
+base_stack_path = "~/docker"
+
+# IANA timezone (e.g. "Europe/Bratislava", "America/Los_Angeles", "UTC").
+# Empty string means: detect from the host at install time. The chosen value
+# is written into generated stacks as TZ once and is not retroactively pushed
+# to already-installed apps.
+timezone = ""
+
+# Default external Docker network attached to managed stacks. Created on
+# demand the first time a stack needs it.
+default_docker_network = "wdm_default"
+
+# Catalog channel to read from at:
+#   ~/.local/share/wdm/catalogs/<channel>/catalog.yaml
+# In v1 only "stable" is supported. "verified" is reserved for a future
+# premium channel and is rejected by the schema.
+catalog_channel = "stable"
+
+# When to check for catalog and binary updates.
+#   manual           never check automatically
+#   daily-on-launch  at most one check per calendar day, triggered on launch
+#   disabled         never check (no update UI surfaces)
+update_check_preference = "daily-on-launch"

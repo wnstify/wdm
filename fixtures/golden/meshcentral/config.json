@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "cert": "n8n.test.example",
+    "port": 443,
+    "redirPort": 0,
+    "tlsOffload": true,
+    "trustedProxy": true,
+    "SelfUpdate": false,
+    "WebRTC": false,
+    "AllowFraming": false,
+    "mongoDb": "mongodb://mongodb:27017/meshcentral",
+    "plugins": {
+      "enabled": false
+    }
+  },
+  "domains": {
+    "": {
+      "title": "MeshCentral",
+      "NewAccounts": true,
+      "minify": true
+    }
+  }
+}

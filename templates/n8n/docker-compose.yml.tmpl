@@ -1,0 +1,230 @@
+# n8n — Hardened Docker Compose (wdm template, workflow automation)
+# Three services: postgres backend, n8n editor/webhook, separate task runner.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only on postgres (init/privilege drop);
+#     n8n and runner run as the image's `node` user (UID 1000), no caps
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Three-network isolation (wdm creates internal networks at install):
+#       n8n-front     (external) — reverse proxy reaches n8n here
+#       n8n-db        (internal) — n8n <-> postgres only, no internet
+#       n8n-runners   (internal) — n8n <-> runner only, no internet
+#     Code nodes (executed in the runner) can't make outbound calls by
+#     default — use n8n's HTTP Request node for that.
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for ephemeral writes; healthchecks gate startup via depends_on
+#   - 127.0.0.1 port binding — reverse proxy in front for TLS
+#   - Task runner isolates user-defined JS from n8n's main process
+#   - init-data.sh creates a non-root DB user so n8n never has DB superuser
+#   - n8n's data dir is a named volume (n8n_storage), not a bind mount —
+#     Docker seeds it node-owned from the image so the unprivileged `node`
+#     user can write /home/node/.n8n on first boot (a bind mount's host
+#     source is auto-created root-owned and the image does not chown)
+#
+# wdm renders this template into ~/docker/n8n/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/n8n/.env (mode 0600). init-data.sh ships as a catalog
+# additional_files entry and is written verbatim
+# alongside the rendered compose + env files.
+
+name: n8n
+
+services:
+
+  postgres:
+    image: postgres:18.4
+    container_name: n8n-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_NON_ROOT_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so users upgrading from
+      # postgres:17 don't need a data migration.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      - ./db_storage:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    networks:
+      - n8n-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for postgres entrypoint init + privilege drop to postgres:postgres.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.21.4
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      # --- Database connection (non-root user from init-data.sh) -----------
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_NON_ROOT_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      DB_POSTGRESDB_SCHEMA: public
+      DB_POSTGRESDB_POOL_SIZE: "10"
+      # --- Server / proxy ---------------------------------------------------
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      N8N_EDITOR_BASE_URL: ${WEBHOOK_URL}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      N8N_PROXY_HOPS: "1"
+      N8N_SECURE_COOKIE: "true"
+      # --- Hardening / privacy ---------------------------------------------
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      # --- Task runners (Code nodes execute in a separate sandbox) ---------
+      # Runners are enabled by default in n8n 2.21+; no N8N_RUNNERS_ENABLED needed.
+      N8N_RUNNERS_MODE: external
+      # 0.0.0.0 here means "all interfaces of the n8n container" — required so
+      # the runner in a separate container can reach the broker at n8n:5679.
+      # NOT exposed to the host (no `ports:` mapping for 5679) and the
+      # n8n-runners network is --internal, so the broker is reachable only
+      # by the runner. AUTH_TOKEN below is the authentication layer on top.
+      N8N_RUNNERS_BROKER_LISTEN_ADDRESS: 0.0.0.0
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      # --- Locale ----------------------------------------------------------
+      GENERIC_TIMEZONE: ${TZ}
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): the n8n image runs as the
+      # unprivileged `node` user (UID 1000) with cap_drop: ALL and no
+      # chowning entrypoint. A bind mount's host source is auto-created
+      # root-owned 0755, so n8n cannot write /home/node/.n8n and crashes
+      # on first boot with EACCES. Docker initializes a named volume from
+      # the image's /home/node/.n8n (owned node:node), so ownership is
+      # correct with no chown, no root, and no host writes — matching the
+      # official n8n-hosting compose examples.
+      - n8n_storage:/home/node/.n8n
+    networks:
+      - n8n-front
+      - n8n-db
+      - n8n-runners
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_N8N}
+          cpus: "${CPUS_LIMIT_N8N}"
+          pids: ${PIDS_LIMIT_N8N}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # /healthz is unauthenticated, returns 200 when ready.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  runner:
+    # Executes Code/Function nodes in a separate sandbox container.
+    # Reaches n8n's broker on port 5679 over the n8n-runners network.
+    # Note: runners are published to Docker Hub only, not docker.n8n.io.
+    image: n8nio/runners:2.21.4
+    container_name: n8n-runner
+    restart: unless-stopped
+    depends_on:
+      n8n:
+        condition: service_healthy
+    environment:
+      N8N_RUNNERS_TASK_BROKER_URI: http://n8n:5679
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST}
+      GENERIC_TIMEZONE: ${TZ}
+      TZ: ${TZ}
+    networks:
+      - n8n-runners
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_RUNNER}
+          cpus: "${CPUS_LIMIT_RUNNER}"
+          pids: ${PIDS_LIMIT_RUNNER}
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5680/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  # External-facing: reverse proxy reaches n8n here (or via 127.0.0.1:5678).
+  n8n-front:
+    external: true
+  # Internal: n8n <-> postgres only, no internet egress. wdm creates this
+  # with --internal at install time.
+  n8n-db:
+    external: true
+  # Internal: n8n <-> runner only, no internet egress. wdm creates this
+  # with --internal at install time. Code nodes therefore can't make
+  # outbound calls — use n8n's HTTP Request node (which runs in n8n itself,
+  # on n8n-front) for that.
+  n8n-runners:
+    external: true
+
+volumes:
+  # n8n's data dir (workflows, settings, encrypted credentials). A named
+  # volume so Docker's copy-up seeds it from the image's node-owned
+  # /home/node/.n8n — see the n8n service `volumes:` note above. wdm's
+  # remove preserves named volumes (never `docker compose down -v`) and
+  # lists them in the removal summary, so workflows survive a remove.
+  n8n_storage:

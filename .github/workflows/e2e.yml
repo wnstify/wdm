@@ -1,0 +1,44 @@
+# Real-Docker e2e regression tripwire — NOT a required check.
+#
+# Role: a low-frequency safety net for the tests/e2e/ suite (build tag
+# docker_e2e), which installs a real stack via the pkg/engine facade
+# against a real Docker daemon. The curated-app smoke matrix is
+# the authoritative release gate; this workflow only catches regressions
+# between smoke runs.
+#
+# Triggers:
+#   - schedule: one weekly run as a background tripwire.
+#   - workflow_dispatch: on-demand manual run.
+#   - push on dev, limited to this file: lets the workflow prove itself
+#     on the push that lands it.
+#
+# Note: GitHub resolves schedule and workflow_dispatch from the DEFAULT
+# branch (main), so those two triggers go live only once main carries
+# this file. The dev-push trigger activates immediately on this push.
+name: e2e
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/e2e.yml
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: "1.26"
+      - name: Run Docker e2e tests
+        run: go test -tags docker_e2e -timeout 15m ./tests/e2e/...

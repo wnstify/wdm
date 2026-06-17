@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/wnstify/wdm/main/config/schema.json",
+  "title": "wdm config.toml",
+  "description": "User settings for wdm. Loaded from ~/.config/wdm/config.toml by internal/state. PRD §34.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "base_stack_path",
+    "timezone",
+    "default_docker_network",
+    "catalog_channel",
+    "update_check_preference"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version of this config file. Locked to 1 in v1; future versions trigger migration handled by internal/state."
+    },
+    "base_stack_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Base directory under which managed stacks are written. PRD §9. Path safety (symlink resolution, escape prevention) is enforced by internal/security at use time, not by this schema."
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA timezone name (e.g. 'Europe/Bratislava', 'UTC') or empty string. Empty means: detect from the host at install time. PRD §34."
+    },
+    "default_docker_network": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$",
+      "description": "Default external Docker network attached to managed stacks. Must match Docker's network name rules. PRD §34."
+    },
+    "catalog_channel": {
+      "type": "string",
+      "enum": ["stable"],
+      "description": "Catalog channel. v1 ships only the public 'stable' channel; 'verified' is reserved for future premium use and is rejected here. PRD §22, §34."
+    },
+    "update_check_preference": {
+      "type": "string",
+      "enum": ["manual", "daily-on-launch", "disabled"],
+      "description": "When to check for catalog and binary updates. PRD §34."
+    }
+  }
+}

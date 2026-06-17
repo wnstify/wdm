@@ -1,0 +1,112 @@
+# Syncthing — Hardened Docker Compose (wdm template, upstream-official image)
+# Continuous peer-to-peer file synchronization: https://syncthing.net/
+#
+# Security baseline:
+#   - cap_drop: ALL, re-adding only CHOWN/SETUID/SETGID/DAC_OVERRIDE — the
+#     minimum the entrypoint needs to chown /var/syncthing and drop to
+#     PUID:PGID. Zero caps exits on boot (probe-verified); these four are the
+#     floor, no NET_* / SYS_*.
+#   - Runs as container-root that drops to uid 1000: the upstream image starts
+#     as root and the entrypoint switches to PUID:PGID, so there is no `user:`
+#     directive. `docker top` confirmed the long-running syncthing process runs
+#     as the host user, not root.
+#   - security_opt: no-new-privileges; ipc: private
+#   - GUI bound 127.0.0.1 only — it has NO authentication on first boot, so it
+#     MUST stay localhost-behind-a-reverse-proxy until the user sets a GUI
+#     username/password in the web UI (Actions -> Settings -> GUI).
+#   - BEP sync port 22000 (tcp + udp) is the ONE deliberately public surface:
+#     remote peers connect to it directly, so it binds all interfaces by design
+#     (PRD §11.1 public-port exception, declared public:true in the signed
+#     catalog). Local-discovery broadcast (21027/udp) is LAN-only and is not
+#     host-published — direct peer connections use 22000.
+#   - deploy.resources limits incl. pids
+#   - Healthcheck hits Syncthing's unauthenticated /rest/noauth/health endpoint
+#     (no creds on the command line); wget is provided by the image's busybox.
+#
+# wdm renders this template into ~/docker/syncthing/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/syncthing/.env (mode 0600). SYNC_PATH is an absolute
+# user-host path validated by internal/core (must be
+# absolute, must exist, must not be inside the stack dir — symlinks resolved
+# before that check); Syncthing mounts it read-write at /data so it can sync
+# files in both directions.
+
+name: syncthing
+
+services:
+  syncthing:
+    image: syncthing/syncthing:2.1.1
+    container_name: syncthing
+    restart: unless-stopped
+    environment:
+      # The entrypoint chowns /var/syncthing and drops to this uid:gid; wdm
+      # resolves PUID/PGID to the host user that owns the stack directory.
+      PUID: ${PUID}
+      PGID: ${PGID}
+      # Bind the GUI on all container interfaces so the host port mapping can
+      # reach it. The host side stays 127.0.0.1 (see ports below), so the GUI
+      # is still localhost-only on the host.
+      STGUIADDRESS: ${STGUIADDRESS}
+      TZ: ${TZ}
+    volumes:
+      # Config, device keys, TLS cert, and the SQLite index. A named volume
+      # (not a bind mount): the image runs as container-root and chowns this
+      # dir to PUID:PGID on boot, so a named volume keeps the device identity
+      # self-contained instead of scattering a chowned tree across the host.
+      # wdm's remove preserves named volumes (never `docker compose down -v`)
+      # and lists them in the removal summary, so the device ID survives a
+      # remove.
+      - syncthing_config:/var/syncthing
+      # The synced folder — mounted read-write so Syncthing can apply changes
+      # received from peers. Unlike a media library this is bidirectional by
+      # design: keep SYNC_PATH outside the stack dir (validated by wdm).
+      - ${SYNC_PATH}:/data
+    ports:
+      # GUI / REST API — localhost only. NO auth on first boot; front with a
+      # reverse proxy and set a GUI password before exposing it.
+      - "127.0.0.1:8384:8384"
+      # BEP sync protocol — PUBLIC by design so remote peers can connect
+      # directly. Both tcp and the quic/udp transport are published on all
+      # interfaces (declared public:true in the signed catalog, PRD §11.1).
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+    networks:
+      - syncthing
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps the entrypoint needs to chown /var/syncthing and drop
+      # privileges to PUID:PGID. Zero caps exits on boot (probe-verified).
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_SYNCTHING}
+          cpus: "${CPUS_LIMIT_SYNCTHING}"
+          pids: ${PIDS_LIMIT_SYNCTHING}
+        reservations:
+          memory: 128m
+          cpus: "0.1"
+    healthcheck:
+      # /rest/noauth/health is unauthenticated and returns {"status":"OK"}
+      # once Syncthing is ready. wget is busybox, preinstalled in the image.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8384/rest/noauth/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  syncthing:
+    external: true
+
+volumes:
+  # Syncthing's config, device keys, TLS cert, and SQLite index. Named volume —
+  # see the syncthing service `volumes:` note above. Preserved on remove.
+  syncthing_config:

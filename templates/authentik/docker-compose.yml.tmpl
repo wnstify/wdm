@@ -1,0 +1,260 @@
+# Authentik — Hardened Docker Compose (wdm template, identity provider)
+# Three services: postgres backend + the authentik server (HTTP/UI + API) +
+# the authentik worker (background tasks: migrations, email, scheduled jobs).
+# The server and worker share one image and an identical environment block.
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only — postgres adds the five init /
+#     privilege-drop caps; the server and worker run as the image's default
+#     unprivileged user (UID 1000) and need ZERO added caps (probe-verified
+#     CapEff: 0), so each carries cap_drop: ALL with no cap_add.
+#   - NO docker.sock mount. Upstream mounts /var/run/docker.sock into the worker
+#     for the embedded Docker outpost; that is out of scope here, and wdm
+#     forbids docker.sock mounts (PRD §12.1). The worker runs without it.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates internal networks at install):
+#       authentik-front (external) — reverse proxy reaches the server here, and
+#         it is the egress path the worker uses for email + external tasks
+#       authentik-db    (internal) — server/worker <-> postgres only, no internet
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for postgres ephemeral writes; healthchecks gate startup via
+#     depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS
+#   - init-data.sh creates a non-root DB user so authentik never has DB
+#     superuser (probe-verified: authentik migrates cleanly as a non-root user
+#     against postgres:18.4 — no superuser, no CREATE EXTENSION failure)
+#   - SCRAM-SHA-256 password auth on postgres (stronger than the default md5)
+#   - postgres + the shared authentik data dirs are named volumes (db_storage,
+#     authentik_media, authentik_templates, authentik_certs), not bind mounts —
+#     wdm does not pre-create bind dirs, and the named volumes are seeded
+#     UID-1000-writable from the image so the unprivileged user can write them
+#
+# Authentik 2026.5.3 removed the Redis dependency (dropped in 2025.10), so this
+# stack has NO redis service and NO AUTHENTIK_REDIS__* env — it is exactly the
+# three services below.
+#
+# wdm renders this template into ~/docker/authentik/docker-compose.yml at
+# install time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/authentik/.env (mode 0600). init-data.sh ships as a
+# catalog additional_files entry and is written verbatim
+# alongside the rendered compose + env files.
+
+name: authentik
+
+services:
+
+  postgres:
+    image: postgres:18.4
+    container_name: authentik-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_NON_ROOT_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      # SCRAM-SHA-256 password hashing instead of the historical md5 default.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so users upgrading from
+      # postgres:17 don't need a data migration.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): postgres self-chowns its PGDATA on
+      # init, and a named volume keeps the data inside Docker rather than in a
+      # host dir wdm would have to pre-create.
+      - db_storage:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    networks:
+      - authentik-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the postgres entrypoint init + privilege drop to
+      # postgres:postgres. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  server:
+    # authentik server: serves the web UI + API and runs the schema migrations
+    # the worker waits on. `command: server` selects the HTTP role from the
+    # shared image. Runs as the image's default UID 1000 (probe-verified
+    # CapEff: 0) — no docker.sock, no user: root.
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: authentik-server
+    restart: unless-stopped
+    command: server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9000:9000"  # localhost only — front with a reverse proxy
+    environment:
+      # Per-deployment secret: signs sessions + tokens. Required.
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      # --- Database connection (non-root user from init-data.sh) -----------
+      # authentik connects to postgres as the least-privilege user; the double
+      # underscore is authentik's nested-config convention (POSTGRESQL.HOST).
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__USER: ${POSTGRES_NON_ROOT_USER}
+      AUTHENTIK_POSTGRESQL__NAME: ${POSTGRES_DB}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      # Named volumes (not bind mounts): authentik runs as the unprivileged
+      # UID 1000 with no chowning entrypoint, so a root-owned host bind would
+      # break its writes. Docker seeds the named volumes UID-1000-writable from
+      # the image. /media holds uploaded icons, flow backgrounds, and reports;
+      # /templates holds custom email/flow templates. Both are SHARED with the
+      # worker so either process can read and write the same assets.
+      - authentik_media:/media
+      - authentik_templates:/templates
+    networks:
+      - authentik-front
+      - authentik-db
+    cap_drop:
+      - ALL
+    # The server runs as the image's default UID 1000 and needs no added
+    # capabilities (probe-verified CapEff: 0): it binds the unprivileged port
+    # 9000 and writes only its named volumes. cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_SERVER}
+          cpus: "${CPUS_LIMIT_SERVER}"
+          pids: ${PIDS_LIMIT_SERVER}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # The image ships the `ak` management command; `ak healthcheck` exits 0
+      # once the server is ready. First boot runs migrations + warms the app,
+      # so start_period: 120s covers the ~60-90s cold start (server reports
+      # healthy ~20s after migrations finish).
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  worker:
+    # authentik worker: runs background tasks (scheduled jobs, email delivery,
+    # certificate management, outpost reconciliation). `command: worker` selects
+    # the worker role from the shared image. It needs the front network for
+    # outbound egress (email + external tasks) and the db network for postgres.
+    # Runs as the image's default UID 1000 (probe-verified CapEff: 0) — the
+    # upstream worker's `user: root` and /var/run/docker.sock mount are dropped:
+    # the socket is only for the embedded Docker outpost (out of scope) and wdm
+    # forbids docker.sock mounts.
+    image: ghcr.io/goauthentik/server:2026.5.3
+    container_name: authentik-worker
+    restart: unless-stopped
+    command: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Identical to the server's env block — both processes read the same
+      # config. (No YAML anchors: wdm re-parses the rendered compose for label
+      # injection, so the block is written explicitly in both services.)
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      # --- Database connection (non-root user from init-data.sh) -----------
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__USER: ${POSTGRES_NON_ROOT_USER}
+      AUTHENTIK_POSTGRESQL__NAME: ${POSTGRES_DB}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      # Named volumes (not bind mounts), seeded UID-1000-writable from the
+      # image. /media and /templates are SHARED with the server; /certs is the
+      # worker's own store for external certificates it imports. The upstream
+      # /var/run/docker.sock mount (embedded outpost) is intentionally omitted.
+      - authentik_media:/media
+      - authentik_certs:/certs
+      - authentik_templates:/templates
+    networks:
+      - authentik-front
+      - authentik-db
+    cap_drop:
+      - ALL
+    # The worker runs as the image's default UID 1000 and needs no added
+    # capabilities (probe-verified CapEff: 0). cap_drop: ALL with no cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=128m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_WORKER}
+          cpus: "${CPUS_LIMIT_WORKER}"
+          pids: ${PIDS_LIMIT_WORKER}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # Same `ak healthcheck` command as the server. The worker tolerates a
+      # brief window at first boot where the schema is mid-migration (harmless
+      # transient "relation does not exist") until the server's migrations
+      # finish — probe-verified self-resolving, so no extra dependency is added.
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+networks:
+  # Front: reverse proxy reaches the server here (or via 127.0.0.1:9000), and
+  # the worker uses it for outbound egress (email + external tasks).
+  authentik-front:
+    external: true
+  # Backend DB: server/worker <-> postgres only, no internet egress. wdm creates
+  # this with --internal at install time.
+  authentik-db:
+    external: true
+
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind
+  # dir; postgres self-chowns it on init. wdm's remove preserves named volumes
+  # (never `docker compose down -v`) and lists them in the removal summary.
+  db_storage:
+  # Uploaded media (icons, flow backgrounds, generated reports). Shared by the
+  # server and worker; a named volume seeded UID-1000-writable from the image.
+  authentik_media:
+  # Custom email / flow templates. Shared by the server and worker.
+  authentik_templates:
+  # External certificates the worker imports. Worker-only; preserved on remove
+  # like the other named volumes.
+  authentik_certs:
