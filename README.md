@@ -50,7 +50,9 @@ Verified one-line install for Linux amd64:
 curl -fsSL https://raw.githubusercontent.com/wnstify/wdm/main/scripts/install.sh | sh
 ```
 
-The installer requires `curl` and GNU `sha256sum`; no preinstalled `cosign`, `gh`, `sudo`, or package manager is needed. It downloads a pinned temporary cosign verifier, verifies that verifier with a pinned SHA-256 checksum, verifies the signed release checksums and provenance attestation, then installs `wdm` to `~/.local/bin/wdm` by default. Set `WDM_INSTALL_DIR` to another user-writable absolute directory if needed.
+The installer requires `curl`, GNU `sha256sum`, and `tar`; no preinstalled `cosign`, `gh`, `sudo`, or package manager is needed. It downloads a pinned temporary cosign verifier, verifies that verifier with a pinned SHA-256 checksum, then verifies the signed release checksums and provenance attestation.
+
+After verification, the installer writes `wdm` to `~/.local/bin/wdm` and seeds the verified stable catalog under `$XDG_DATA_HOME/wdm/catalogs` or `~/.local/share/wdm/catalogs`, so first-run app browsing works without a separate catalog update. Set `WDM_INSTALL_DIR` to another user-writable absolute directory if needed.
 
 Manual fallback:
 

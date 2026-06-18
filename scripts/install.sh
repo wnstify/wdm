@@ -60,6 +60,20 @@ require_platform() {
 	esac
 }
 
+resolve_data_dir() {
+	case "${XDG_DATA_HOME:-}" in
+	/*)
+		data_base=$XDG_DATA_HOME
+		;;
+	*)
+		data_base="$HOME/.local/share"
+		;;
+	esac
+
+	data_dir="$data_base/wdm"
+	catalogs_dir="$data_dir/catalogs"
+}
+
 safe_install_dir() {
 	case "$1" in
 	"" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~/-]*)
@@ -205,6 +219,148 @@ verify_release() {
 	verify_attestation "$catalog_asset"
 }
 
+validate_catalog_bundle() {
+	member_list="$tmpdir/catalog-members.txt"
+	type_list="$tmpdir/catalog-member-types.txt"
+	found_manifest=0
+	found_templates=0
+
+	tar -tzf "$tmpdir/$catalog_asset" >"$member_list" ||
+		die "catalog bundle could not be listed"
+
+	while IFS= read -r member || [ -n "$member" ]; do
+		[ -n "$member" ] || continue
+
+		case "$member" in
+		/* | ../* | */../* | */.. | ..)
+			die "catalog bundle contains unsafe path: $member"
+			;;
+		esac
+
+		case "$member" in
+		stable | stable/ | stable/* | templates | templates/ | templates/*)
+			;;
+		*)
+			die "catalog bundle contains unsupported path: $member"
+			;;
+		esac
+
+		if [ "$member" = "stable/catalog.yaml" ]; then
+			found_manifest=1
+		fi
+		case "$member" in
+		templates | templates/ | templates/*)
+			found_templates=1
+			;;
+		esac
+	done <"$member_list"
+
+	[ "$found_manifest" = "1" ] ||
+		die "catalog bundle missing required file: stable/catalog.yaml"
+	[ "$found_templates" = "1" ] ||
+		die "catalog bundle missing required directory: templates"
+
+	tar -tvzf "$tmpdir/$catalog_asset" >"$type_list" ||
+		die "catalog bundle could not be type-checked"
+
+	while IFS= read -r entry || [ -n "$entry" ]; do
+		[ -n "$entry" ] || continue
+
+		case "$entry" in
+		-* | d*)
+			;;
+		*)
+			die "catalog bundle contains unsupported entry type"
+			;;
+		esac
+	done <"$type_list"
+}
+
+seed_catalog() {
+	old_umask=$(umask)
+	umask 022
+	mkdir -p "$catalogs_dir" || {
+		umask "$old_umask"
+		die "failed to create catalog directory: $catalogs_dir"
+	}
+	umask "$old_umask"
+
+	if [ -L "$catalogs_dir" ] || [ -L "$catalogs_dir/stable" ] || [ -L "$catalogs_dir/templates" ]; then
+		die "refusing to seed catalog through a symlinked catalog directory"
+	fi
+
+	mkdir -p "$catalogs_dir/stable" ||
+		die "failed to create stable catalog directory"
+
+	if [ -f "$catalogs_dir/stable/catalog.yaml" ]; then
+		return 0
+	fi
+	if [ -e "$catalogs_dir/stable/catalog.yaml" ] || [ -L "$catalogs_dir/stable/catalog.yaml" ]; then
+		die "refusing to seed catalog over a non-file manifest path"
+	fi
+
+	validate_catalog_bundle
+	extract_dir="$tmpdir/catalog-extract"
+
+	mkdir -p "$extract_dir" ||
+		die "failed to create catalog staging directory"
+
+	tar -xzf "$tmpdir/$catalog_asset" -C "$extract_dir" ||
+		die "failed to extract catalog bundle"
+
+	[ -f "$extract_dir/stable/catalog.yaml" ] ||
+		die "catalog bundle missing required file after extraction: stable/catalog.yaml"
+	[ -d "$extract_dir/templates" ] ||
+		die "catalog bundle missing required directory after extraction: templates"
+
+	catalog_stage=$(mktemp -d "$catalogs_dir/.install.XXXXXX") ||
+		die "failed to create catalog filesystem staging directory"
+	stage_name=${catalog_stage##*/}
+	new_templates="$catalog_stage/templates.new"
+	new_manifest="$catalog_stage/catalog.yaml.new"
+	previous_templates="$catalogs_dir/.templates.previous.$stage_name"
+	previous_manifest="$catalogs_dir/stable/.catalog.yaml.previous.$stage_name"
+	templates_replace_started=
+
+	if [ -e "$previous_templates" ] || [ -e "$previous_manifest" ]; then
+		die "catalog rollback path already exists"
+	fi
+
+	mv "$extract_dir/templates" "$new_templates" ||
+		die "failed to stage catalog templates"
+	mv "$extract_dir/stable/catalog.yaml" "$new_manifest" ||
+		die "failed to stage stable catalog"
+
+	if [ -e "$catalogs_dir/templates" ]; then
+		mv "$catalogs_dir/templates" "$previous_templates" ||
+			die "failed to preserve existing catalog templates"
+	fi
+
+	templates_replace_started=1
+	mv "$new_templates" "$catalogs_dir/templates" || {
+		restore_catalog
+		die "failed to install catalog templates"
+	}
+
+	if [ -f "$catalogs_dir/stable/catalog.yaml" ]; then
+		mv "$catalogs_dir/stable/catalog.yaml" "$previous_manifest" || {
+			restore_catalog
+			die "failed to preserve existing catalog manifest"
+		}
+	fi
+
+	mv "$new_manifest" "$catalogs_dir/stable/catalog.yaml" || {
+		restore_catalog
+		die "failed to install stable catalog"
+	}
+
+	templates_replace_started=
+	rm -rf "$previous_templates" "$previous_manifest" "$catalog_stage"
+	catalog_stage=
+	previous_templates=
+	previous_manifest=
+}
+
 install_binary() {
 	target="$install_dir/wdm"
 
@@ -227,21 +383,39 @@ install_binary() {
 	fi
 }
 
+restore_catalog() {
+	if [ -f "${previous_manifest:-}" ]; then
+		mv "$previous_manifest" "$catalogs_dir/stable/catalog.yaml" || :
+	fi
+	if [ "${templates_replace_started:-}" = "1" ]; then
+		rm -rf "$catalogs_dir/templates" || :
+	fi
+	if [ -e "${previous_templates:-}" ]; then
+		mv "$previous_templates" "$catalogs_dir/templates" || :
+	fi
+}
+
 cleanup() {
 	rm -rf "$tmpdir"
+	if [ -n "${catalog_stage:-}" ]; then
+		rm -rf "$catalog_stage"
+	fi
 }
 
 cleanup_signal() {
+	restore_catalog
 	cleanup
 	exit 1
 }
 
 need_cmd curl
 need_cmd sha256sum
+need_cmd tar
 need_cmd mktemp
 need_cmd chmod
 need_cmd mkdir
 need_cmd rm
+need_cmd mv
 need_cmd id
 need_cmd uname
 need_any_install_method
@@ -253,6 +427,7 @@ require_platform
 install_dir=${WDM_INSTALL_DIR:-"$HOME/.local/bin"}
 safe_install_dir "$install_dir" ||
 	die "WDM_INSTALL_DIR must be a user-local absolute path using only letters, numbers, '.', '_', '-', '~', and '/'"
+resolve_data_dir
 
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/wdm-install.XXXXXX") ||
 	die "failed to create temporary directory"
@@ -271,6 +446,7 @@ download_asset "$cosign_bundle_asset"
 
 verify_release
 install_binary
+seed_catalog
 
 printf '%s\n' "wdm ${tag} installed to ${install_dir}/wdm"
 
