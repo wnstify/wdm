@@ -23,8 +23,7 @@
 //     loads and validates the catalog app, plans the stack path, resolves
 //     non-secret placeholders plus built-in values, checks localhost
 //     ports once, selects catalog resource limits with recommended-to-min
-//     fallback after subtracting every existing stack's recorded
-//     recommended totals from the host budget,
+//     fallback from the current host probe only,
 //     generates secret placeholders (internal/security), and renders.env
 //     / label-injected Compose / additional_files plus the post-install
 //     guidance in memory. It

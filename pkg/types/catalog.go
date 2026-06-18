@@ -146,7 +146,7 @@ type CatalogImagePin struct {
 
 // CatalogResource is the projection of one catalog per-service resource
 // band, for the detail / sizing view. The recommended values document
-// what the install path selects when the host budget allows.
+// what the install path selects when the host guidance budget allows.
 type CatalogResource struct {
 	// Service is the Compose service name this band sizes.
 	Service string `json:"service"`

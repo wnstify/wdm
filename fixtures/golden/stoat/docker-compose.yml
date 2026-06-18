@@ -432,8 +432,6 @@ services:
         condition: service_healthy
       garage-init:
         condition: service_completed_successfully
-      mongo-init:
-        condition: service_completed_successfully
     volumes:
       - ./Revolt.toml:/Revolt.toml:ro
     networks:

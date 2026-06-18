@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"math"
 	"net"
 	"net/netip"
@@ -80,13 +79,6 @@ type installPlan struct {
 	// catalog-fixed public port (which a localhost-port rewrite cannot make
 	// ephemeral) does not flake on a busy host.
 	probePort func(context.Context, types.PortBinding) error
-}
-
-// existingResourceTotals sums the recommended resource totals of
-// already-managed stacks read from their .wdm.lock files.
-type existingResourceTotals struct {
-	memoryBytes uint64
-	cpus        float64
 }
 
 type timezoneLookupDeps struct {
@@ -308,72 +300,10 @@ func (e *Engine) planInstall(
 	if err := plan.planPorts(ctx); err != nil {
 		return nil, err
 	}
-	existing, err := e.existingStackRecommendedResourceTotals(ctx, stackPath)
-	if err != nil {
-		return nil, err
-	}
-	if err := plan.planResources(req, host, existing, onProgress); err != nil {
+	if err := plan.planResources(req, host, onProgress); err != nil {
 		return nil, err
 	}
 	return plan, nil
-}
-
-// existingStackRecommendedResourceTotals sums the recommended
-// resource totals recorded in every managed stack's.wdm.lock under
-// the engine's stack base. The budget
-// reserves headroom for each existing stack's recommended allocation
-// — recommended, not selected — regardless of what it was installed
-// at. Unmanaged directories are skipped silently; corrupt locks are
-// skipped with a WARN entry (mirroring the List scan) so one broken
-// stack cannot block new installs; locks without the the confirmation rules
-// field contribute zero.
-func (e *Engine) existingStackRecommendedResourceTotals(
-	ctx context.Context,
-	targetStackPath string,
-) (existingResourceTotals, error) {
-	var totals existingResourceTotals
-
-	entries, err := os.ReadDir(e.stackBase)
-	if errors.Is(err, fs.ErrNotExist) {
-		return totals, nil
-	}
-	if err != nil {
-		return totals, types.WrapError(
-			types.ErrCodeGeneric,
-			"stack base could not be scanned for resource budgeting",
-			"check stack base directory permissions and retry",
-			err,
-		)
-	}
-
-	for _, entry := range entries {
-		if err := ctx.Err(); err != nil {
-			return existingResourceTotals{}, err
-		}
-		if !entry.IsDir() {
-			continue
-		}
-		stackDir := filepath.Join(e.stackBase, entry.Name())
-		if stackDir == filepath.Clean(targetStackPath) {
-			continue
-		}
-		lock, err := state.ReadStackLock(ctx, filepath.Join(stackDir, installLockFilename))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			e.logger.WarnContext(ctx, "core: skipping unreadable stack lock during resource budgeting",
-				slog.String("path", stackDir),
-			)
-			continue
-		}
-		if lock.RecommendedResources == nil {
-			continue
-		}
-		totals.memoryBytes += lock.RecommendedResources.MemoryBytes
-		totals.cpus += lock.RecommendedResources.CPUs
-	}
-	return totals, nil
 }
 
 func (e *Engine) loadInstallCatalog(ctx context.Context) (*catalog.Catalog, error) {
@@ -4914,7 +4844,6 @@ func classifyPortBindError(hostPort int, err error) error {
 func (p *installPlan) planResources(
 	req types.InstallRequest,
 	host system.HostResources,
-	existing existingResourceTotals,
 	onProgress types.ProgressFn,
 ) error {
 	if len(p.app.Resources) == 0 {
@@ -4932,14 +4861,16 @@ func (p *installPlan) planResources(
 	if err != nil {
 		return err
 	}
-	// Recommended totals are persisted into.wdm.lock at protocol step
-	// 6 so later installs can subtract this stack from the host budget
+	// Recommended totals are persisted into .wdm.lock so status, update, and
+	// future planning surfaces can report the catalog's normal sizing guidance.
+	// They are not a hard host-capacity reservation; Docker resource limits are
+	// caps, not guaranteed allocations.
 	p.recommendedResources = &state.RecommendedResources{
 		MemoryBytes: recMemory,
 		CPUs:        recCPU,
 	}
 
-	useMin, err := p.chooseMinimumResourceProfile(req, host, existing, onProgress)
+	useMin, err := p.chooseMinimumResourceProfile(req, host, onProgress)
 	if err != nil {
 		return err
 	}
@@ -5016,10 +4947,9 @@ func indexResourceProfile(
 func (p *installPlan) chooseMinimumResourceProfile(
 	req types.InstallRequest,
 	host system.HostResources,
-	existing existingResourceTotals,
 	onProgress types.ProgressFn,
 ) (bool, error) {
-	availableMemory, availableCPU := installResourceBudget(host, existing)
+	availableMemory, availableCPU := installResourceGuidanceBudget(host)
 	recMemory := p.recommendedResources.MemoryBytes
 	recCPU := p.recommendedResources.CPUs
 	useMin := req.ResourceProfile == types.ResourceProfileMin
@@ -5029,16 +4959,8 @@ func (p *installPlan) chooseMinimumResourceProfile(
 	if !useMin {
 		return false, nil
 	}
-	minMemory, minCPU, err := sumResourceBand(p.app.Resources, types.ResourceProfileMin)
-	if err != nil {
+	if _, _, err := sumResourceBand(p.app.Resources, types.ResourceProfileMin); err != nil {
 		return false, err
-	}
-	if minMemory > availableMemory || minCPU > availableCPU {
-		return false, usageValidationError(
-			"host resources below minimum",
-			fmt.Sprintf("host resources below minimum for %s", p.app.AppID),
-			fmt.Errorf("minimum memory/cpu exceeds budget"),
-		)
 	}
 	if req.ResourceProfile != types.ResourceProfileMin && onProgress != nil {
 		onProgress(types.StepInstallResourceDegraded, 15, "using minimum resource profile")
@@ -5169,12 +5091,12 @@ type selectedResource struct {
 	pids   int
 }
 
-func installResourceBudget(host system.HostResources, existing existingResourceTotals) (uint64, float64) {
+func installResourceGuidanceBudget(host system.HostResources) (uint64, float64) {
 	memoryBudget := uint64(0)
-	if host.TotalMemoryBytes > installHostMemoryReserveBytes+existing.memoryBytes {
-		memoryBudget = host.TotalMemoryBytes - installHostMemoryReserveBytes - existing.memoryBytes
+	if host.TotalMemoryBytes > installHostMemoryReserveBytes {
+		memoryBudget = host.TotalMemoryBytes - installHostMemoryReserveBytes
 	}
-	return memoryBudget, float64(host.CPUCores) - existing.cpus
+	return memoryBudget, float64(host.CPUCores)
 }
 
 func sumResourceBand(resources []catalog.ResourceProfile, profile types.ResourceProfile) (uint64, float64, error) {
