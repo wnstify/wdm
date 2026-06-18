@@ -279,6 +279,10 @@ validate_catalog_bundle() {
 seed_catalog() {
 	validate_catalog_bundle
 	extract_dir="$tmpdir/catalog-extract"
+	new_templates="$tmpdir/catalog-templates-new"
+	new_manifest="$tmpdir/catalog.yaml.new"
+	previous_templates="$tmpdir/catalog-templates-previous"
+	previous_manifest="$tmpdir/catalog.yaml.previous"
 
 	mkdir -p "$extract_dir" ||
 		die "failed to create catalog staging directory"
@@ -305,14 +309,46 @@ seed_catalog() {
 
 	mkdir -p "$catalogs_dir/stable" ||
 		die "failed to create stable catalog directory"
-	rm -f "$catalogs_dir/stable/catalog.yaml" ||
-		die "failed to replace existing catalog manifest"
-	mv "$extract_dir/stable/catalog.yaml" "$catalogs_dir/stable/catalog.yaml" ||
-		die "failed to install stable catalog"
-	rm -rf "$catalogs_dir/templates" ||
-		die "failed to replace existing catalog templates"
-	mv "$extract_dir/templates" "$catalogs_dir/templates" ||
+
+	mv "$extract_dir/templates" "$new_templates" ||
+		die "failed to stage catalog templates"
+	mv "$extract_dir/stable/catalog.yaml" "$new_manifest" ||
+		die "failed to stage stable catalog"
+
+	if [ -e "$catalogs_dir/templates" ]; then
+		mv "$catalogs_dir/templates" "$previous_templates" ||
+			die "failed to preserve existing catalog templates"
+	fi
+
+	mv "$new_templates" "$catalogs_dir/templates" || {
+		if [ -e "$previous_templates" ]; then
+			mv "$previous_templates" "$catalogs_dir/templates" || :
+		fi
 		die "failed to install catalog templates"
+	}
+
+	if [ -f "$catalogs_dir/stable/catalog.yaml" ]; then
+		mv "$catalogs_dir/stable/catalog.yaml" "$previous_manifest" || {
+			rm -rf "$catalogs_dir/templates"
+			if [ -e "$previous_templates" ]; then
+				mv "$previous_templates" "$catalogs_dir/templates" || :
+			fi
+			die "failed to preserve existing catalog manifest"
+		}
+	fi
+
+	mv "$new_manifest" "$catalogs_dir/stable/catalog.yaml" || {
+		if [ -f "$previous_manifest" ]; then
+			mv "$previous_manifest" "$catalogs_dir/stable/catalog.yaml" || :
+		fi
+		rm -rf "$catalogs_dir/templates"
+		if [ -e "$previous_templates" ]; then
+			mv "$previous_templates" "$catalogs_dir/templates" || :
+		fi
+		die "failed to install stable catalog"
+	}
+
+	rm -rf "$previous_templates" "$previous_manifest"
 }
 
 install_binary() {
