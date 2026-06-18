@@ -44,6 +44,16 @@
 
 `wdm` is distributed as a single signed binary through GitHub Releases, together with its catalog bundle and verification assets.
 
+Verified one-line install for Linux amd64:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wnstify/wdm/main/scripts/install.sh | sh
+```
+
+The installer requires `curl` and GNU `sha256sum`; no preinstalled `cosign`, `gh`, `sudo`, or package manager is needed. It downloads a pinned temporary cosign verifier, verifies that verifier with a pinned SHA-256 checksum, verifies the signed release checksums and provenance attestation, then installs `wdm` to `~/.local/bin/wdm` by default. Set `WDM_INSTALL_DIR` to another user-writable absolute directory if needed.
+
+Manual fallback:
+
 1. Download the binary (`wdm-linux-amd64`) and the verification assets (`SHA256SUMS`, its signatures, the provenance attestation, and the SBOM) from the [Releases page](https://github.com/wnstify/wdm/releases).
 2. **Verify before you run.** Check the signature, checksums, and provenance attestation as described in [SECURITY.md](SECURITY.md). Verification fails closed: a missing or invalid signature, checksum, or attestation stops the process — do not run an artifact that does not verify.
 3. Place the verified binary on your `PATH` (for example `~/.local/bin/wdm`) and mark it executable.

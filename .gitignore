@@ -46,6 +46,7 @@ bin/
 
 # Codex
 .Codex/
+.codex/
 AGENTS.md
 
 # Local/private workspace material
