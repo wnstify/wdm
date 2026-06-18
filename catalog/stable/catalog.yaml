@@ -3419,8 +3419,9 @@ apps:
   # voice paths. The data services use the gosu-drop posture (cap_drop ALL + the
   # init/privilege-drop caps so each entrypoint chowns its named volume and drops
   # to the image uid); the Rust services run as the image's nonroot user with
-  # zero added caps. LiveKit publishes the only public ports (the WebRTC TCP
-  # signal 7881 and the UDP media range 50000-50100). wdm renders five config
+  # zero added caps, and LiveKit runs as the installing uid/gid so it can read
+  # livekit.yml mode 0600. LiveKit publishes the only public ports (the WebRTC
+  # TCP signal 7881 and the UDP media range 50000-50100). wdm renders five config
   # artifacts (secrets.env, garage.toml, livekit.yml, .env.web, Revolt.toml) from
   # the placeholder map and copies two static sidecars (Caddyfile, init-garage.sh)
   # — reproducing the upstream generate-config.sh output, never invoking it. A
@@ -3445,7 +3446,8 @@ apps:
       the front network reaches the internet. The data services run the gosu-drop
       hardening posture (cap_drop ALL with the init/privilege-drop caps so each
       entrypoint chowns its named volume and drops to the image uid); the Rust
-      services run as the image's nonroot user with zero added capabilities.
+      services run as the image's nonroot user with zero added capabilities, and
+      LiveKit runs as the installing uid/gid so it can read its 0600 config.
       LiveKit publishes the only public ports — the WebRTC TCP signal (7881) and
       the UDP media range (50000-50100) — so remote voice peers connect directly;
       every web surface stays on localhost behind Caddy, which a reverse proxy
@@ -3458,7 +3460,7 @@ apps:
       uploads work; those features need operator follow-up described in the
       first-run notes.
     template_name: stoat
-    template_version: "2026-06-17"
+    template_version: "2026-06-18"
     compose_template: templates/stoat/docker-compose.yml.tmpl
     env_template: templates/stoat/.env.tmpl
 
@@ -3734,8 +3736,9 @@ apps:
     # garage.toml — mode 0600, owned by the installing uid. caddy adds only
     # NET_BIND_SERVICE (its binary's file capability binds privileged port 80).
     # Every Rust service, the web frontend, livekit, and both init containers run
-    # with zero added caps under cap_drop: ALL, so they declare no entry here. No
-    # SYS_*; no NET_* beyond caddy's NET_BIND_SERVICE.
+    # with zero added caps under cap_drop: ALL, so they declare no entry here.
+    # LiveKit's run-as uid/gid is rendered from wdm's built-in .UID/.GID values,
+    # not from a capability. No SYS_*; no NET_* beyond caddy's NET_BIND_SERVICE.
     service_hardening:
       - service: database
         capabilities:

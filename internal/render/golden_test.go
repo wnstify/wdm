@@ -177,6 +177,36 @@ func TestGoldenRenderedArtifacts(t *testing.T) {
 	}
 }
 
+func TestStoatLiveKitUsesRenderedInstallUser(t *testing.T) {
+	t.Parallel()
+
+	cat := loadStableCatalog(t)
+	var stoat catalog.App
+	for _, app := range cat.Apps {
+		if app.AppID == "stoat" {
+			stoat = app
+			break
+		}
+	}
+	require.NotEmpty(t, stoat.AppID, "stable catalog must carry stoat")
+
+	input := buildInput(t, stoat)
+	input.Values["UID"] = "1234"
+	input.Values["GID"] = "2345"
+
+	stack, err := render.RenderLabels(input)
+	require.NoError(t, err)
+
+	var doc struct {
+		Services map[string]struct {
+			User string `yaml:"user"`
+		} `yaml:"services"`
+	}
+	require.NoError(t, yaml.Unmarshal(stack.ComposeBytes, &doc))
+	require.Contains(t, doc.Services, "livekit")
+	assert.Equal(t, "1234:2345", doc.Services["livekit"].User)
+}
+
 // TestGoldenLabelInjectionCannotBeDropped re-parses each committed
 // golden docker-compose.yml and asserts every services.* entry carries
 // the injected wdm.managed="true" and wdm.app=<app_id> labels. This is
