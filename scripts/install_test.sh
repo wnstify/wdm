@@ -528,6 +528,51 @@ run_existing_catalog_manifest_skip_case() {
 	rm -rf "$tmpdir"
 }
 
+run_non_file_catalog_manifest_failure_case() {
+	name="non-file catalog manifest path fails closed"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	manifest_dir=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	if [ "$status" -eq 0 ]; then
+		printf '%s\n' "not ok - $name: installer succeeded" >&2
+		failures=$((failures + 1))
+	elif ! contains "$tmpdir/stderr" "refusing to seed catalog over a non-file manifest path"; then
+		printf '%s\n' "not ok - $name: expected non-file manifest refusal" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ ! -d "$manifest_dir" ]; then
+		printf '%s\n' "not ok - $name: manifest directory was changed" >&2
+		failures=$((failures + 1))
+	elif [ -e "$manifest_dir/catalog.yaml.new" ]; then
+		printf '%s\n' "not ok - $name: new manifest was moved into manifest directory" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
 run_catalog_live_promotion_stays_in_catalog_dir_case() {
 	name="catalog live promotion stays in catalog directory"
 	scenario="success"
@@ -781,6 +826,7 @@ run_relative_xdg_data_home_success_case
 run_symlink_catalog_root_failure_case
 run_existing_catalog_versions_success_case
 run_existing_catalog_manifest_skip_case
+run_non_file_catalog_manifest_failure_case
 run_catalog_live_promotion_stays_in_catalog_dir_case
 run_template_failure_rolls_back_case
 run_template_failure_removes_partial_catalog_case

@@ -295,6 +295,9 @@ seed_catalog() {
 	if [ -f "$catalogs_dir/stable/catalog.yaml" ]; then
 		return 0
 	fi
+	if [ -e "$catalogs_dir/stable/catalog.yaml" ] || [ -L "$catalogs_dir/stable/catalog.yaml" ]; then
+		die "refusing to seed catalog over a non-file manifest path"
+	fi
 
 	validate_catalog_bundle
 	extract_dir="$tmpdir/catalog-extract"
