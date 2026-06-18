@@ -34,7 +34,11 @@ write_base_fakes() {
 		'esac'
 
 	write_fake "$bin_dir/install" \
-		'exit 0'
+		'mode=' \
+		'if [ "${1:-}" = "-m" ]; then mode=$2; shift 2; fi' \
+		'[ "$#" -eq 2 ] || exit 1' \
+		'cp "$1" "$2" || exit 1' \
+		'[ -z "$mode" ] || chmod "$mode" "$2"'
 }
 
 write_sha256sum_fake() {
@@ -161,6 +165,50 @@ run_case() {
 	rm -rf "$tmpdir"
 }
 
+run_private_install_dir_success_case() {
+	name="existing private install dir keeps mode"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home" "$tmpdir/tmp" "$tmpdir/home/.local/bin"
+	chmod 0700 "$tmpdir/home/.local/bin"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	private_dir=$tmpdir/home/.local/bin
+	mode_match=$(find "$private_dir" -prune -type d -perm 700)
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "not ok - $name: installer failed" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ "$mode_match" != "$private_dir" ]; then
+		printf '%s\n' "not ok - $name: install dir mode is not 0700" >&2
+		failures=$((failures + 1))
+	elif [ ! -x "$private_dir/wdm" ]; then
+		printf '%s\n' "not ok - $name: installed binary missing or not executable" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_private_install_dir_success_case
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \
 	"checksum manifest missing required asset: catalog-stable.tar.gz"

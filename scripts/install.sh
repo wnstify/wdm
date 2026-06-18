@@ -208,14 +208,18 @@ verify_release() {
 install_binary() {
 	target="$install_dir/wdm"
 
+	old_umask=$(umask)
+	umask 022
+	mkdir -p "$install_dir" || {
+		umask "$old_umask"
+		die "failed to create install directory: $install_dir"
+	}
+	umask "$old_umask"
+
 	if command -v install >/dev/null 2>&1; then
-		install -d -m 0755 "$install_dir" ||
-			die "failed to create install directory: $install_dir"
 		install -m 0755 "$tmpdir/$binary_asset" "$target" ||
 			die "failed to install wdm to $target"
 	else
-		mkdir -p "$install_dir" ||
-			die "failed to create install directory: $install_dir"
 		cp "$tmpdir/$binary_asset" "$target" ||
 			die "failed to copy wdm to $target"
 		chmod 0755 "$target" ||
@@ -236,6 +240,7 @@ need_cmd curl
 need_cmd sha256sum
 need_cmd mktemp
 need_cmd chmod
+need_cmd mkdir
 need_cmd rm
 need_cmd id
 need_cmd uname
