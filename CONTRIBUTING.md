@@ -26,6 +26,10 @@ Use the project's Make targets:
 
 `make e2e` needs a working Docker daemon with the Compose V2 plugin.
 
+GitHub Actions run the required unit, lint, vulnerability, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
+
+Major functional changes must add or update automated tests for the changed behavior. If a change cannot be covered by an automated test, explain the reason in the pull request and describe the manual verification performed.
+
 ## Project layout
 
 `wdm` exposes a single public Go API in `pkg/engine`, backed by private packages under `internal/`. The UI layers go through `pkg/engine` rather than reaching into the internal packages directly: the CLI lives in `internal/cli`, and the TUI lives in `internal/tui`. Keep that boundary intact when adding features, so both UIs share one engine.

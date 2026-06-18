@@ -121,4 +121,10 @@ See [SECURITY-DESIGN.md](SECURITY-DESIGN.md) for actors, actions, trust boundari
 - It ships a single stable release channel.
 - `wdm` is provided as-is under the [MIT license](LICENSE) with self-service, community support: file bugs and feature requests as GitHub issues, and report security issues as described in [SECURITY.md](SECURITY.md). There is no commercial support or SLA.
 
+### Release support lifecycle
+
+Each stable release is supported until the next stable release is published. Support covers the `wdm` binary, release verification assets, catalog bundle, and curated templates shipped by this repository. Third-party container images and managed applications follow their own upstream support policies.
+
+Only the latest stable release receives security fixes. When a newer stable release is published, earlier releases become unsupported and no longer receive security updates. If a release must be withdrawn for security reasons, the advisory or release notes will say so.
+
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
