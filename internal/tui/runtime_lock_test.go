@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,6 +53,38 @@ func TestModel_RuntimeLockClearCallsEngineAndRendersPostClearStatus(t *testing.T
 	assert.Contains(t, view, "exists: false")
 	assert.Contains(t, view, "held: false")
 	assert.Contains(t, view, "stale: false")
+}
+
+func TestModel_RuntimeLockViewRendersBusyErrorMessageAndMissingStatus(t *testing.T) {
+	t.Parallel()
+
+	t.Run("busy", func(t *testing.T) {
+		t.Parallel()
+
+		m := model{busy: true}
+
+		view := m.runtimeLockView()
+		assert.Contains(t, view, "Runtime lock recovery")
+		assert.Contains(t, view, "Clearing runtime lock...")
+		assert.Contains(t, view, "Back: b")
+		assert.Contains(t, view, "Quit: q")
+		assert.NotContains(t, view, "Actions")
+	})
+
+	t.Run("error message without status", func(t *testing.T) {
+		t.Parallel()
+
+		m := model{
+			err:                errors.New("lock file is not stale"),
+			runtimeLockMessage: "Runtime lock clear was skipped.",
+		}
+
+		view := m.runtimeLockView()
+		assert.Contains(t, view, "Runtime lock action failed: lock file is not stale")
+		assert.Contains(t, view, "Runtime lock clear was skipped.")
+		assert.Contains(t, view, "No runtime lock status available.")
+		assert.Contains(t, view, "Actions")
+	})
 }
 
 func loadRuntimeLockPrompt(t *testing.T, eng *fakeEngine) model {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,6 +135,103 @@ func TestModel_CheckMyAppsRestartAndValidateUseEngine(t *testing.T) {
 	assert.Equal(t, []string{"uptime-kuma"}, fake.validateCalls)
 	assert.Contains(t, m.View(), "Compose config is invalid")
 	assert.Contains(t, m.View(), "services.app.image is required")
+}
+
+func TestModel_CheckAppsViewRendersLoadingErrorAndEmptyStates(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		m    model
+		want string
+	}{
+		{
+			name: "loading",
+			m:    model{busy: true},
+			want: "Loading managed apps...",
+		},
+		{
+			name: "error",
+			m:    model{err: errors.New("docker daemon unavailable")},
+			want: "Could not load managed apps: docker daemon unavailable",
+		},
+		{
+			name: "empty",
+			m:    model{},
+			want: "No managed apps found.",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			view := tt.m.checkAppsView()
+			assert.Contains(t, view, "Check my apps")
+			assert.Contains(t, view, tt.want)
+			assert.Contains(t, view, "Back: b")
+			assert.Contains(t, view, "Quit: q")
+		})
+	}
+}
+
+func TestModel_AppActionsViewRendersBusyErrorValidationAndFallbacks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("busy", func(t *testing.T) {
+		t.Parallel()
+
+		m := model{
+			busy: true,
+			apps: []types.AppInfo{{AppID: "vaultwarden"}},
+		}
+
+		view := m.appActionsView()
+		assert.Contains(t, view, "Working on vaultwarden...")
+		assert.Contains(t, view, "Back: b")
+		assert.Contains(t, view, "Quit: q")
+		assert.NotContains(t, view, "Next actions")
+	})
+
+	t.Run("error with unavailable status", func(t *testing.T) {
+		t.Parallel()
+
+		m := model{
+			err:  errors.New("restart failed"),
+			apps: []types.AppInfo{{AppID: "vaultwarden"}},
+		}
+
+		view := m.appActionsView()
+		assert.Contains(t, view, "Action failed: restart failed")
+		assert.Contains(t, view, "vaultwarden")
+		assert.Contains(t, view, "Status unavailable.")
+		assert.Contains(t, view, "Next actions")
+	})
+
+	t.Run("valid config and action message", func(t *testing.T) {
+		t.Parallel()
+
+		m := model{
+			status: &types.AppStatus{
+				AppID: "vaultwarden",
+				State: "running",
+				Services: []types.ServiceStatus{
+					{Service: "server", State: "running"},
+				},
+			},
+			actionMessage: "Restart complete.",
+			validation: &types.ValidationResult{
+				Valid:  true,
+				Detail: "compose.yaml is valid",
+			},
+		}
+
+		view := m.appActionsView()
+		assert.Contains(t, view, "State: running")
+		assert.Contains(t, view, "- server: running")
+		assert.Contains(t, view, "Restart complete.")
+		assert.Contains(t, view, "Compose config is valid.")
+		assert.Contains(t, view, "compose.yaml is valid")
+		assert.Contains(t, view, "> View details [selected]")
+	})
 }
 
 func newReadyModel(eng *fakeEngine) model {
