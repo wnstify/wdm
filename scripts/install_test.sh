@@ -55,6 +55,84 @@ write_sha256sum_fake() {
 		'exit 0'
 }
 
+write_tar_fake() {
+	bin_dir=$1
+
+	write_fake "$bin_dir/tar" \
+		'case "${1:-}" in' \
+		'-tzf)' \
+		'	case "${WDM_INSTALL_TEST_SCENARIO:-}" in' \
+		'	unsafe_catalog_absolute_path)' \
+		'		printf "%s\n" "/etc/passwd"' \
+		'		;;' \
+		'	unsafe_catalog_parent_path)' \
+		'		printf "%s\n" "stable/../escape.yaml"' \
+		'		;;' \
+		'	unsafe_catalog_root)' \
+		'		printf "%s\n" "other/file.txt"' \
+		'		;;' \
+		'	missing_catalog_manifest)' \
+		'		printf "%s\n" "stable/" "templates/" "templates/uptime-kuma/docker-compose.yml.tmpl"' \
+		'		;;' \
+		'	missing_catalog_templates)' \
+		'		printf "%s\n" "stable/" "stable/catalog.yaml"' \
+		'		;;' \
+		'	*)' \
+		'		printf "%s\n" "stable/" "stable/catalog.yaml" "templates/" "templates/uptime-kuma/docker-compose.yml.tmpl"' \
+		'		;;' \
+		'	esac' \
+		'	;;' \
+		'-tvzf)' \
+		'	case "${WDM_INSTALL_TEST_SCENARIO:-}" in' \
+		'	unsafe_catalog_symlink_type)' \
+		'		printf "%s\n" "drwxr-xr-x 0 root root 0 Jan 1 00:00 stable/"' \
+		'		printf "%s\n" "-rw-r--r-- 0 root root 1 Jan 1 00:00 stable/catalog.yaml"' \
+		'		printf "%s\n" "drwxr-xr-x 0 root root 0 Jan 1 00:00 templates/"' \
+		'		printf "%s\n" "lrwxrwxrwx 0 root root 0 Jan 1 00:00 templates/uptime-kuma/docker-compose.yml.tmpl -> /etc/passwd"' \
+		'		;;' \
+		'	unsafe_catalog_hardlink_type)' \
+		'		printf "%s\n" "drwxr-xr-x 0 root root 0 Jan 1 00:00 stable/"' \
+		'		printf "%s\n" "hrw-r--r-- 0 root root 0 Jan 1 00:00 stable/catalog.yaml link to templates/source"' \
+		'		printf "%s\n" "drwxr-xr-x 0 root root 0 Jan 1 00:00 templates/"' \
+		'		printf "%s\n" "-rw-r--r-- 0 root root 1 Jan 1 00:00 templates/uptime-kuma/docker-compose.yml.tmpl"' \
+		'		;;' \
+		'	*)' \
+		'		printf "%s\n" "drwxr-xr-x 0 root root 0 Jan 1 00:00 stable/"' \
+		'		printf "%s\n" "-rw-r--r-- 0 root root 1 Jan 1 00:00 stable/catalog.yaml"' \
+		'		printf "%s\n" "drwxr-xr-x 0 root root 0 Jan 1 00:00 templates/"' \
+		'		printf "%s\n" "-rw-r--r-- 0 root root 1 Jan 1 00:00 templates/uptime-kuma/docker-compose.yml.tmpl"' \
+		'		;;' \
+		'	esac' \
+		'	;;' \
+		'-xzf)' \
+		'	[ "${3:-}" = "-C" ] || exit 1' \
+		'	dest=${4:-}' \
+		'	[ -n "$dest" ] || exit 1' \
+		'	mkdir -p "$dest/stable" "$dest/templates/uptime-kuma" || exit 1' \
+		'	printf "%s\n" "schema_version: 1" >"$dest/stable/catalog.yaml" || exit 1' \
+		'	printf "%s\n" "services: {}" >"$dest/templates/uptime-kuma/docker-compose.yml.tmpl" || exit 1' \
+		'	;;' \
+		'*)' \
+		'	exit 1' \
+		'	;;' \
+		'esac'
+}
+
+write_mv_fake() {
+	bin_dir=$1
+
+	write_fake "$bin_dir/mv" \
+		'[ -n "${WDM_INSTALL_TEST_REAL_MV:-}" ] || exit 1' \
+		'if [ "${WDM_INSTALL_TEST_SCENARIO:-}" = "manifest_promote_failure" ]; then' \
+		'	case "${1:-}:${2:-}" in' \
+		'	*/catalog.yaml.new:*/stable/catalog.yaml)' \
+		'		exit 1' \
+		'		;;' \
+		'	esac' \
+		'fi' \
+		'exec "$WDM_INSTALL_TEST_REAL_MV" "$@"'
+}
+
 write_curl_fake() {
 	bin_dir=$1
 
@@ -100,6 +178,9 @@ write_curl_fake() {
 		'		;;' \
 		'	esac' \
 		'	;;' \
+		'*/catalog-stable.tar.gz)' \
+		'	printf "%s\n" "catalog" >"$out"' \
+		'	;;' \
 		'*)' \
 		'	printf "%s\n" "asset" >"$out"' \
 		'	;;' \
@@ -130,14 +211,20 @@ run_case() {
 		exit 1
 	mkdir -p "$tmpdir/bin" "$tmpdir/home" "$tmpdir/tmp"
 
-	if [ "$scenario" != "missing_sha256sum" ]; then
+	if [ "$scenario" = "missing_sha256sum" ]; then
+		write_curl_fake "$tmpdir/bin"
+		test_path="$tmpdir/bin"
+	elif [ "$scenario" = "missing_tar" ]; then
 		write_base_fakes "$tmpdir/bin"
 		write_sha256sum_fake "$tmpdir/bin"
 		write_curl_fake "$tmpdir/bin"
-		test_path="$tmpdir/bin:${PATH:-}"
-	else
-		write_curl_fake "$tmpdir/bin"
 		test_path="$tmpdir/bin"
+	else
+		write_base_fakes "$tmpdir/bin"
+		write_sha256sum_fake "$tmpdir/bin"
+		write_curl_fake "$tmpdir/bin"
+		write_tar_fake "$tmpdir/bin"
+		test_path="$tmpdir/bin:${PATH:-}"
 	fi
 
 	set +e
@@ -176,6 +263,7 @@ run_private_install_dir_success_case() {
 	write_base_fakes "$tmpdir/bin"
 	write_sha256sum_fake "$tmpdir/bin"
 	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
 	test_path="$tmpdir/bin:${PATH:-}"
 
 	set +e
@@ -189,6 +277,7 @@ run_private_install_dir_success_case() {
 	set -e
 
 	private_dir=$tmpdir/home/.local/bin
+	catalog_dir=$tmpdir/home/.local/share/wdm/catalogs
 	mode_match=$(find "$private_dir" -prune -type d -perm 700)
 	if [ "$status" -ne 0 ]; then
 		printf '%s\n' "not ok - $name: installer failed" >&2
@@ -201,6 +290,230 @@ run_private_install_dir_success_case() {
 	elif [ ! -x "$private_dir/wdm" ]; then
 		printf '%s\n' "not ok - $name: installed binary missing or not executable" >&2
 		failures=$((failures + 1))
+	elif [ ! -f "$catalog_dir/stable/catalog.yaml" ]; then
+		printf '%s\n' "not ok - $name: seeded catalog manifest missing" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$catalog_dir/templates/uptime-kuma/docker-compose.yml.tmpl" ]; then
+		printf '%s\n' "not ok - $name: seeded catalog template missing" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_xdg_data_home_success_case() {
+	name="absolute XDG_DATA_HOME seeds catalog"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home" "$tmpdir/data"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		XDG_DATA_HOME="$tmpdir/data" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	catalog_dir=$tmpdir/data/wdm/catalogs
+	fallback_catalog=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "not ok - $name: installer failed" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$catalog_dir/stable/catalog.yaml" ]; then
+		printf '%s\n' "not ok - $name: seeded XDG catalog manifest missing" >&2
+		failures=$((failures + 1))
+	elif [ -e "$fallback_catalog" ]; then
+		printf '%s\n' "not ok - $name: fallback catalog path should not be used" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_relative_xdg_data_home_success_case() {
+	name="relative XDG_DATA_HOME falls back to home data dir"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		XDG_DATA_HOME="relative-data" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	catalog_manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "not ok - $name: installer failed" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$catalog_manifest" ]; then
+		printf '%s\n' "not ok - $name: fallback catalog manifest missing" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_symlink_catalog_root_failure_case() {
+	name="symlinked catalog root fails closed"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm" "$tmpdir/outside"
+	ln -s "$tmpdir/outside" "$tmpdir/home/.local/share/wdm/catalogs"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	if [ "$status" -eq 0 ]; then
+		printf '%s\n' "not ok - $name: installer succeeded" >&2
+		failures=$((failures + 1))
+	elif ! contains "$tmpdir/stderr" "refusing to seed catalog through a symlinked catalog directory"; then
+		printf '%s\n' "not ok - $name: expected symlink refusal" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_existing_catalog_versions_success_case() {
+	name="existing catalog versions are preserved"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable/.versions/v1.0.0"
+	printf '%s\n' "snapshot" >"$tmpdir/home/.local/share/wdm/catalogs/stable/.versions/v1.0.0/provenance.txt"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	snapshot=$tmpdir/home/.local/share/wdm/catalogs/stable/.versions/v1.0.0/provenance.txt
+	manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "not ok - $name: installer failed" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$manifest" ]; then
+		printf '%s\n' "not ok - $name: active manifest missing" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$snapshot" ]; then
+		printf '%s\n' "not ok - $name: version snapshot was removed" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_manifest_failure_rolls_back_case() {
+	name="manifest promotion failure restores previous catalog"
+	scenario="manifest_promote_failure"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	real_mv=$(command -v mv) || exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable" "$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma"
+	printf '%s\n' "old-manifest" >"$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml"
+	printf '%s\n' "old-template" >"$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	write_mv_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_REAL_MV="$real_mv" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	template=$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl
+	if [ "$status" -eq 0 ]; then
+		printf '%s\n' "not ok - $name: installer succeeded" >&2
+		failures=$((failures + 1))
+	elif ! contains "$tmpdir/stderr" "failed to install stable catalog"; then
+		printf '%s\n' "not ok - $name: expected manifest failure" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif ! contains "$manifest" "old-manifest"; then
+		printf '%s\n' "not ok - $name: previous manifest was not restored" >&2
+		failures=$((failures + 1))
+	elif ! contains "$template" "old-template"; then
+		printf '%s\n' "not ok - $name: previous templates were not restored" >&2
+		failures=$((failures + 1))
 	else
 		printf '%s\n' "ok - $name"
 	fi
@@ -209,12 +522,20 @@ run_private_install_dir_success_case() {
 }
 
 run_private_install_dir_success_case
+run_xdg_data_home_success_case
+run_relative_xdg_data_home_success_case
+run_symlink_catalog_root_failure_case
+run_existing_catalog_versions_success_case
+run_manifest_failure_rolls_back_case
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \
 	"checksum manifest missing required asset: catalog-stable.tar.gz"
 run_case "missing sha256sum fails closed" \
 	"missing_sha256sum" \
 	"missing required command: sha256sum"
+run_case "missing tar fails closed" \
+	"missing_tar" \
+	"missing required command: tar"
 run_case "bad cosign bootstrap checksum fails closed" \
 	"bad_cosign_bootstrap_checksum" \
 	"cosign verifier checksum mismatch"
@@ -227,5 +548,26 @@ run_case "binary attestation failure fails closed" \
 run_case "catalog attestation failure fails closed" \
 	"bad_catalog_attestation" \
 	"attestation verification failed for catalog-stable.tar.gz"
+run_case "catalog bundle missing manifest fails closed" \
+	"missing_catalog_manifest" \
+	"catalog bundle missing required file: stable/catalog.yaml"
+run_case "catalog bundle missing templates fails closed" \
+	"missing_catalog_templates" \
+	"catalog bundle missing required directory: templates"
+run_case "absolute catalog bundle path fails closed" \
+	"unsafe_catalog_absolute_path" \
+	"catalog bundle contains unsafe path: /etc/passwd"
+run_case "parent catalog bundle path fails closed" \
+	"unsafe_catalog_parent_path" \
+	"catalog bundle contains unsafe path: stable/../escape.yaml"
+run_case "unsupported catalog bundle root fails closed" \
+	"unsafe_catalog_root" \
+	"catalog bundle contains unsupported path: other/file.txt"
+run_case "catalog symlink member type fails closed" \
+	"unsafe_catalog_symlink_type" \
+	"catalog bundle contains unsupported entry type"
+run_case "catalog hardlink member type fails closed" \
+	"unsafe_catalog_hardlink_type" \
+	"catalog bundle contains unsupported entry type"
 
 [ "$failures" -eq 0 ]
