@@ -113,7 +113,7 @@
         "resources": {
           "type": "array",
           "items": { "$ref": "#/$defs/resource_profile" },
-          "description": "Per-service resource sizing bands. Each entry declares the floor (wdm refuses install below it), the recommended default for a typical small VPS (selected when host budget fits, falls back to min with a warning otherwise), and the ceiling (user overrides above it are rejected — no silent clamping). internal/system probes host CPU + total memory at install planning time; internal/core selects per-service values against the host budget and rejects out-of-band overrides. Optional — apps without explicit sizing fall back to template-declared deploy.resources.limits at render time, which removes wdm's ability to refuse install or reject overrides safely."
+          "description": "Per-service resource sizing bands. Each entry declares the conservative fallback value, the recommended default for a typical small VPS (selected when the host guidance budget fits, otherwise falling back to min with a warning), and the ceiling (user overrides above it are rejected — no silent clamping). internal/system probes host CPU + total memory at install planning time; internal/core selects per-service Docker limit caps from the current host probe and rejects out-of-band overrides. These values are caps, not guaranteed allocations or install refusal thresholds. Optional — apps without explicit sizing fall back to template-declared deploy.resources.limits at render time, which removes wdm's ability to reject overrides safely."
         },
         "service_hardening": {
           "type": "array",
@@ -414,15 +414,15 @@
       "properties": {
         "min": {
           "$ref": "#/$defs/docker_memory_value",
-          "description": "Floor: below this, wdm refuses install with *types.Error{Code: ErrCodeUsageValidation, Hint: 'host resources below minimum for <app>/<service>'} before writing files or calling Docker. PRD §27 reserves exit codes 0–9 so host-resources-below-min reuses ErrCodeUsageValidation rather than introducing a new exit code. Compared against host MemTotal minus the 1 GiB OS-and-reverse-proxy reserve minus already-installed stacks' recommended memory totals."
+          "description": "Conservative fallback selected when the recommended memory band does not fit the host guidance budget. It is still a Docker limit cap, not a guaranteed allocation or install refusal threshold."
         },
         "recommended": {
           "$ref": "#/$defs/docker_memory_value",
-          "description": "Normal default for a typical small VPS — NOT the current maintainer machine's value. wdm selects this value when it fits the detected host memory budget; falls back to min with a warning (StepInstallResourceDegraded progress step) if it doesn't fit but min does; refuses install if min doesn't fit either. Drives the .env-rendered MEMORY_LIMIT_<SERVICE_KEY> value Compose substitutes at up -d time. SERVICE_KEY is derived from the service field."
+          "description": "Normal default for a typical small VPS — NOT the current maintainer machine's value. wdm selects this value when it fits the detected host memory guidance budget; falls back to min with a warning (StepInstallResourceDegraded progress step) if it doesn't fit. Drives the .env-rendered MEMORY_LIMIT_<SERVICE_KEY> value Compose substitutes at up -d time. SERVICE_KEY is derived from the service field."
         },
         "max": {
           "$ref": "#/$defs/docker_memory_value",
-          "description": "Override ceiling AND placeholder for an optional future 'large' profile — wdm does NOT auto-select max as the install default. User overrides above this are rejected with *types.Error{Code: ErrCodeUsageValidation} — no silent clamping. Catalog cap protects against fat-fingering (e.g. a typo turning '2g' into '20g' that would over-commit the host)."
+          "description": "Override ceiling AND placeholder for an optional future 'large' profile — wdm does NOT auto-select max as the install default. User overrides above this are rejected with *types.Error{Code: ErrCodeUsageValidation} — no silent clamping. Catalog cap protects against fat-fingering (e.g. a typo turning '2g' into '20g' that would raise the container cap far beyond the intended sizing band)."
         }
       }
     },
@@ -433,11 +433,11 @@
       "properties": {
         "min": {
           "$ref": "#/$defs/docker_cpu_value",
-          "description": "Floor: below this, wdm refuses install with *types.Error{Code: ErrCodeUsageValidation, Hint: 'host resources below minimum for <app>/<service>'} — same install-time-validation framing as memory.min. Compared against runtime.NumCPU() minus already-installed stacks' recommended cpu totals."
+          "description": "Conservative fallback selected when the recommended CPU band does not fit the host guidance budget. It is still a Docker CPU quota cap, not a guaranteed allocation or install refusal threshold."
         },
         "recommended": {
           "$ref": "#/$defs/docker_cpu_value",
-          "description": "Normal default for a typical small VPS — NOT the maintainer machine's value. Same fit-fallback-refuse algorithm as memory.recommended (selected when host CPU budget fits; falls back to min with warning; refuses if min doesn't fit). Drives the .env-rendered CPUS_LIMIT_<SERVICE_KEY> value. SERVICE_KEY is derived from the service field."
+          "description": "Normal default for a typical small VPS — NOT the maintainer machine's value. Same recommended-to-min guidance fallback as memory.recommended (selected when the host CPU guidance budget fits; falls back to min with warning otherwise). Drives the .env-rendered CPUS_LIMIT_<SERVICE_KEY> value. SERVICE_KEY is derived from the service field."
         },
         "max": {
           "$ref": "#/$defs/docker_cpu_value",

@@ -115,11 +115,10 @@ type StackLock struct {
 	BackupHistory []json.RawMessage `json:"backup_history,omitempty"`
 
 	// RecommendedResources records the stack's catalog-recommended
-	// resource totals at install time. Install planning subtracts every
-	// existing stack's recommended totals — recommended, not
-	// selected — from the host budget so each installed stack keeps
-	// headroom for its normal allocation. nil for stacks whose
-	// catalog entry declares no resources field; additive schema
+	// resource totals at install time. The values are sizing guidance, not
+	// host-capacity reservations; Docker resource limits are caps rather than
+	// guaranteed allocations. nil for stacks whose catalog entry declares no
+	// resources field; additive schema
 	// growth only, so locks without the field parse
 	// unchanged.
 	RecommendedResources *RecommendedResources `json:"recommended_resources,omitempty"`
@@ -133,9 +132,9 @@ type StackLock struct {
 	CompletedServices []string `json:"completed_services,omitempty"`
 }
 
-// RecommendedResources is the per-stack recommended sizing total
-// stored in [StackLock.RecommendedResources] for install-time budget
-// arithmetic.
+// RecommendedResources is the per-stack recommended sizing total stored in
+// [StackLock.RecommendedResources] for later status, update, and planning
+// surfaces.
 type RecommendedResources struct {
 	// MemoryBytes is the sum of the catalog's recommended memory
 	// band across the stack's services, in bytes.

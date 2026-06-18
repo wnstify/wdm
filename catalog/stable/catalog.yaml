@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-18T16:00:00Z"
+generated_at: "2026-06-18T19:02:00Z"
 
 apps:
 
@@ -3798,10 +3798,10 @@ apps:
     resources:
       # Per-service memory/cpu/pids bands grounded in the feasibility probe's
       # measured idle plus headroom. Recommended is the small-VPS default; min is
-      # the install floor; max is the override ceiling (cpu capped at the host's
-      # 2.0 cores). The two init containers carry fixed small limits in the
-      # Compose template and declare no band here (they are one-shot, not sized
-      # against the host budget).
+      # the conservative fallback; max is the override ceiling. These are Docker
+      # limit caps, not guaranteed allocations or install refusal thresholds.
+      # The two init containers carry fixed small limits in the
+      # Compose template and declare no band here (they are one-shot).
       - service: database
         memory:
           min: 768m

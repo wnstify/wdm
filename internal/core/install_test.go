@@ -1,13 +1,11 @@
 package core_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -540,6 +538,13 @@ func TestInstallPlan_ResourcePlanningAndEnvProjection(t *testing.T) {
 		},
 	}
 
+	resourceAppWith := func(mutate func(*catalog.App)) catalog.App {
+		app := baseApp
+		app.Resources = append([]catalog.ResourceProfile(nil), baseApp.Resources...)
+		mutate(&app)
+		return app
+	}
+
 	t.Run("selects recommended and populates env keys", func(t *testing.T) {
 		t.Parallel()
 
@@ -575,40 +580,191 @@ func TestInstallPlan_ResourcePlanningAndEnvProjection(t *testing.T) {
 		assert.Contains(t, steps, types.StepInstallResourceDegraded)
 	})
 
-	t.Run("rejects below minimum host resources", func(t *testing.T) {
+	t.Run("uses min even below minimum guidance", func(t *testing.T) {
 		t.Parallel()
 
 		eng := newEngine(t, baseApp)
-		_, err := core.PlanInstallForTest(
+		var steps []string
+		plan, err := core.PlanInstallForTest(
 			eng,
 			t.Context(),
 			types.InstallRequest{AppID: baseApp.AppID},
 			system.HostResources{CPUCores: 1, TotalMemoryBytes: gibibyte + (gibibyte / 2)},
-			nil,
+			func(step string, _ float64, _ string) { steps = append(steps, step) },
 		)
-		require.Error(t, err)
-		assertUsageValidation(t, err)
-		assert.Contains(t, err.Error(), "host resources below minimum")
+		require.NoError(t, err)
+		assert.Equal(t, "1g", plan.ResolvedValues["MEMORY_LIMIT_APP"])
+		assert.Equal(t, "1.0", plan.ResolvedValues["CPUS_LIMIT_APP"])
+		assert.Contains(t, steps, types.StepInstallResourceDegraded)
 	})
 
-	t.Run("rejects out of range overrides", func(t *testing.T) {
+	t.Run("rejects invalid host resources", func(t *testing.T) {
 		t.Parallel()
 
-		eng := newEngine(t, baseApp)
-		_, err := core.PlanInstallForTest(
-			eng,
-			t.Context(),
-			types.InstallRequest{
-				AppID: baseApp.AppID,
-				ResourceOverrides: []types.ResourceOverride{
-					{Service: "app", Memory: "4g"},
+		tests := []struct {
+			name string
+			host system.HostResources
+		}{
+			{name: "zero cpu", host: system.HostResources{CPUCores: 0, TotalMemoryBytes: 8 * gibibyte}},
+			{name: "zero memory", host: system.HostResources{CPUCores: 4, TotalMemoryBytes: 0}},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				eng := newEngine(t, baseApp)
+				_, err := core.PlanInstallForTest(
+					eng,
+					t.Context(),
+					types.InstallRequest{AppID: baseApp.AppID},
+					tt.host,
+					nil,
+				)
+				require.Error(t, err)
+				assertUsageValidation(t, err)
+				assert.Contains(t, err.Error(), "host resources could not be detected")
+			})
+		}
+	})
+
+	t.Run("rejects invalid catalog resources", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name   string
+			mutate func(*catalog.App)
+			host   system.HostResources
+			want   string
+		}{
+			{
+				name: "bad recommended memory",
+				mutate: func(app *catalog.App) {
+					app.Resources[0].Memory.Recommended = "two"
 				},
+				host: system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte},
+				want: "schema validation",
 			},
-			system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte},
-			nil,
-		)
-		require.Error(t, err)
-		assertUsageValidation(t, err)
+			{
+				name: "bad recommended cpu",
+				mutate: func(app *catalog.App) {
+					app.Resources[0].CPUs.Recommended = "many"
+				},
+				host: system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte},
+				want: "schema validation",
+			},
+			{
+				name: "bad min memory on degraded path",
+				mutate: func(app *catalog.App) {
+					app.Resources[0].Memory.Min = "one"
+				},
+				host: system.HostResources{CPUCores: 1, TotalMemoryBytes: 2 * gibibyte},
+				want: "schema validation",
+			},
+			{
+				name: "bad min cpu on degraded path",
+				mutate: func(app *catalog.App) {
+					app.Resources[0].CPUs.Min = "few"
+				},
+				host: system.HostResources{CPUCores: 1, TotalMemoryBytes: 2 * gibibyte},
+				want: "schema validation",
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				app := resourceAppWith(tt.mutate)
+				eng := newEngine(t, app)
+				_, err := core.PlanInstallForTest(
+					eng,
+					t.Context(),
+					types.InstallRequest{AppID: app.AppID},
+					tt.host,
+					nil,
+				)
+				require.Error(t, err)
+				assertVerificationFailed(t, err)
+				assert.Contains(t, err.Error(), tt.want)
+			})
+		}
+	})
+
+	t.Run("rejects invalid overrides", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name     string
+			app      catalog.App
+			override types.ResourceOverride
+			want     string
+		}{
+			{
+				name:     "unknown service",
+				app:      baseApp,
+				override: types.ResourceOverride{Service: "missing", Memory: "512m"},
+				want:     "resource override targets an unknown service",
+			},
+			{
+				name: "disallowed service",
+				app: resourceAppWith(func(app *catalog.App) {
+					app.Resources[0].AllowOverride = false
+				}),
+				override: types.ResourceOverride{Service: "app", Memory: "512m"},
+				want:     "resource override is not allowed for this service",
+			},
+			{
+				name:     "invalid memory",
+				app:      baseApp,
+				override: types.ResourceOverride{Service: "app", Memory: "large"},
+				want:     "memory override is invalid",
+			},
+			{
+				name:     "memory out of range",
+				app:      baseApp,
+				override: types.ResourceOverride{Service: "app", Memory: "4g"},
+				want:     "memory override is out of range",
+			},
+			{
+				name:     "invalid cpu",
+				app:      baseApp,
+				override: types.ResourceOverride{Service: "app", CPUs: "fast"},
+				want:     "cpu override is invalid",
+			},
+			{
+				name:     "cpu out of range",
+				app:      baseApp,
+				override: types.ResourceOverride{Service: "app", CPUs: "4.0"},
+				want:     "cpu override is out of range",
+			},
+			{
+				name:     "pids out of range",
+				app:      baseApp,
+				override: types.ResourceOverride{Service: "app", PIDs: 201},
+				want:     "pids override is out of range",
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				eng := newEngine(t, tt.app)
+				_, err := core.PlanInstallForTest(
+					eng,
+					t.Context(),
+					types.InstallRequest{
+						AppID: tt.app.AppID,
+						ResourceOverrides: []types.ResourceOverride{
+							tt.override,
+						},
+					},
+					system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte},
+					nil,
+				)
+				require.Error(t, err)
+				assertUsageValidation(t, err)
+				assert.Contains(t, err.Error(), tt.want)
+			})
+		}
 	})
 }
 
@@ -2930,7 +3086,7 @@ func TestInstall_CleanupFailureSurfacesLeftoverPathAlongOriginalFault(t *testing
 	assert.Equal(t, []byte("keep me\n"), raw)
 }
 
-func TestInstallPlan_SubtractsExistingStackRecommendedTotals(t *testing.T) {
+func TestInstallPlan_ResourceGuidanceIgnoresSiblingStackLocks(t *testing.T) {
 	t.Parallel()
 
 	port := freeLocalTCPPort(t)
@@ -2948,8 +3104,9 @@ func TestInstallPlan_SubtractsExistingStackRecommendedTotals(t *testing.T) {
 	}, app)
 	eng, stateDir := newTestEngine(t, core.WithCatalog(catalogFS))
 
-	// An existing managed stack recorded 6 GiB / 1.0 CPU recommended
-	// totals at its own install time.
+	// Sibling manifests are stack state, not host-capacity reservations.
+	// Even extreme recorded guidance must not prevent another app from using
+	// its own recommended limits when the host itself can fit them.
 	existingStack := filepath.Join(filepath.Dir(stateDir), "stacks", "existing-app")
 	require.NoError(t, os.MkdirAll(existingStack, 0o755))
 	existingLock, err := state.AcquireStackLock(t.Context(), filepath.Join(existingStack, ".wdm.lock"))
@@ -2963,63 +3120,15 @@ func TestInstallPlan_SubtractsExistingStackRecommendedTotals(t *testing.T) {
 		ComposeProject: "wdm-existing-app",
 		RecommendedResources: &state.RecommendedResources{
 			MemoryBytes: 6 * gibibyte,
-			CPUs:        1.0,
+			CPUs:        3.0,
 		},
 	}))
 	require.NoError(t, existingLock.Release())
 
-	// Host: 8 GiB − 1 GiB reserve − 6 GiB existing = 1 GiB budget, so
-	// the 2g recommended band no longer fits and planning falls back
-	// to min with the degraded progress step.
-	host := system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}
-	var steps []string
-	snapshot, err := core.PlanInstallForTest(
-		eng,
-		t.Context(),
-		types.InstallRequest{AppID: app.AppID},
-		host,
-		func(step string, _ float64, _ string) { steps = append(steps, step) },
-	)
-	require.NoError(t, err)
-	assert.Contains(t, steps, types.StepInstallResourceDegraded)
-	assert.Equal(t, "128m", snapshot.ResolvedValues["MEMORY_LIMIT_APP"])
-}
-
-func TestInstallPlan_SkipsCorruptStackLockWithWarning(t *testing.T) {
-	t.Parallel()
-
-	port := freeLocalTCPPort(t)
-	app := appFixture("budget-skip-app", port)
-	app.Resources = []catalog.ResourceProfile{{
-		Service:       "app",
-		Memory:        catalog.MemoryBand{Min: "128m", Recommended: "2g", Max: "4g"},
-		CPUs:          catalog.CPUBand{Min: "0.1", Recommended: "1.0", Max: "2.0"},
-		PIDs:          catalog.PIDsBand{Default: 100, Max: 200},
-		AllowOverride: true,
-	}}
-	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
-		app.ComposeTemplate: "services:\n  app:\n    image: docker.io/example/app:1.0.0\n",
-		app.EnvTemplate:     "",
-	}, app)
-
-	var logs bytes.Buffer
-	eng, stateDir := newTestEngine(t,
-		core.WithCatalog(catalogFS),
-		core.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))),
-	)
-
-	// A sibling stack carries the same 6 GiB recommended totals that
-	// force the min fallback in
-	// TestInstallPlan_SubtractsExistingStackRecommendedTotals — but
-	// truncated into unparseable JSON, so budgeting must drop it.
 	stackBase := filepath.Join(filepath.Dir(stateDir), "stacks")
-	brokenStack := filepath.Join(stackBase, "broken-app")
 	writeCoreStackFixture(t, stackBase, "broken-app", fmt.Sprintf(
 		`{"schema_version": 1, "recommended_resources": {"memory_bytes": %d,`, 6*gibibyte))
 
-	// Host: 8 GiB − 1 GiB reserve = 7 GiB budget. Had the corrupt lock
-	// been counted, only 1 GiB would remain and the 2g recommended band
-	// would degrade to min; skipping it keeps recommended selected.
 	host := system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}
 	var steps []string
 	snapshot, err := core.PlanInstallForTest(
@@ -3032,15 +3141,6 @@ func TestInstallPlan_SkipsCorruptStackLockWithWarning(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2g", snapshot.ResolvedValues["MEMORY_LIMIT_APP"])
 	assert.NotContains(t, steps, types.StepInstallResourceDegraded)
-
-	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	require.Len(t, lines, 1)
-
-	var warning map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[0]), &warning))
-	assert.Equal(t, "WARN", warning["level"])
-	assert.Equal(t, "core: skipping unreadable stack lock during resource budgeting", warning["msg"])
-	assert.Equal(t, brokenStack, warning["path"])
 }
 
 // managedContainerInspectStdout fabricates the exact 8-line safe-field

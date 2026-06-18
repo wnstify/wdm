@@ -120,17 +120,14 @@ type App struct {
 	// mounts. Optional — apps without sidecars omit it.
 	AdditionalFiles []AdditionalFile `yaml:"additional_files,omitempty" json:"additional_files,omitempty"`
 
-	// Resources lists per-service resource sizing bands used by
-	// install planning for host-capacity refusal, default
-	// selection, and user-override rejection. `internal/system`
-	// probes host CPU + total memory at install time, selects
-	// `recommended` when it fits the host budget, falls back to
-	// `min` with a warning if not, refuses install if `min`
-	// doesn't fit either, and rejects out-of-band user overrides
-	// rather than clamping them. Optional —
-	// apps without explicit sizing fall back to template-declared
-	// `deploy.resources.limits` at render time, but lose wdm's
-	// ability to refuse install or reject overrides safely.
+	// Resources lists per-service resource sizing bands used by install
+	// planning for default selection and user-override rejection.
+	// `internal/system` probes host CPU + total memory at install time,
+	// selects `recommended` when it fits the host guidance budget, and falls
+	// back to `min` with a warning if not. These values drive Docker limits;
+	// they are caps, not host-capacity reservations. Optional — apps without
+	// explicit sizing fall back to template-declared `deploy.resources.limits`
+	// at render time, but lose wdm's ability to reject overrides safely.
 	Resources []ResourceProfile `yaml:"resources,omitempty" json:"resources,omitempty"`
 
 	// ServiceHardening carries per-service container-privilege
@@ -596,23 +593,17 @@ type ResourceProfile struct {
 // rejects unit-less values so the catalog cannot ship an ambiguous "1"
 // meaning 1 byte.
 type MemoryBand struct {
-	// Min is the floor: below this, wdm refuses install
-	// with `*types.Error{Code: ErrCodeUsageValidation, Hint:
-	// "host resources below minimum for <app>/<service>"}`
-	// before writing files or calling Docker. PRD §27 reserves
-	// exit codes 0–9 so host-resources-below-min reuses the
-	// existing usage-validation code rather than introducing a
-	// new one. Compared against host MemTotal minus the 1 GiB
-	// OS-and-reverse-proxy reserve minus already-installed
-	// stacks' recommended memory totals.
+	// Min is the conservative fallback value wdm selects when the
+	// recommended memory band does not fit the host guidance budget. It is
+	// still a Docker limit cap, not a guaranteed allocation or install
+	// refusal threshold.
 	Min string `yaml:"min" json:"min"`
 
 	// Recommended is the normal default for a typical small VPS —
 	// NOT the current maintainer machine's value. wdm selects it
-	// when it fits the detected host memory budget; falls back to
+	// when it fits the detected host guidance budget; falls back to
 	// [Min] with a warning (StepInstallResourceDegraded progress
-	// step) if it doesn't fit but Min does; refuses install if Min
-	// doesn't fit either. Drives the .env-rendered
+	// step) if it doesn't fit. Drives the .env-rendered
 	// MEMORY_LIMIT_<SERVICE_KEY> value Compose substitutes at up -d
 	// time. SERVICE_KEY is derived from [ResourceProfile.Service]
 	// per 's SERVICE_KEY derivation subsection.
@@ -623,7 +614,8 @@ type MemoryBand struct {
 	// install default. User overrides above it are rejected with
 	// `*types.Error{Code: ErrCodeUsageValidation}` — no silent
 	// clamping. The catalog cap guards against fat-fingering (e.g. a
-	// typo turning "2g" into "20g" that would over-commit the host).
+	// typo turning "2g" into "20g" that would raise the container cap far
+	// beyond the intended sizing band).
 	Max string `yaml:"max" json:"max"`
 }
 
@@ -634,18 +626,15 @@ type MemoryBand struct {
 // all-zero magnitudes ("0", "0.0") since a zero CPU quota is
 // nonsensical for a sizing band.
 type CPUBand struct {
-	// Min is the floor: below this, wdm refuses install
-	// with `*types.Error{Code: ErrCodeUsageValidation, Hint:
-	// "host resources below minimum for <app>/<service>"}` —
-	// same install-time-validation framing as
-	// [MemoryBand.Min] (no new exit code per PRD §27).
-	// Compared against runtime.NumCPU minus already-installed
-	// stacks' recommended cpu totals.
+	// Min is the conservative fallback value wdm selects when the
+	// recommended CPU band does not fit the host guidance budget. It is a
+	// Docker CPU quota cap, not a guaranteed allocation or install refusal
+	// threshold.
 	Min string `yaml:"min" json:"min"`
 
 	// Recommended is the normal default for a typical small VPS —
-	// NOT the maintainer machine's value. Same fit-fallback-refuse
-	// algorithm as [MemoryBand.Recommended]. Drives the
+	// NOT the maintainer machine's value. Same recommended-to-min
+	// guidance fallback as [MemoryBand.Recommended]. Drives the
 	// .env-rendered CPUS_LIMIT_<SERVICE_KEY> value. SERVICE_KEY is
 	// derived from [ResourceProfile.Service] per 's
 	// SERVICE_KEY derivation subsection.
