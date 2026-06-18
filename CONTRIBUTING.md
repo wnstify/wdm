@@ -44,3 +44,5 @@ Some code comments reference anchors such as `PRD §29`. These point to an inter
 ## Code of conduct and security
 
 This project follows our [Code of Conduct](CODE_OF_CONDUCT.md). Please report security issues as described in [SECURITY.md](SECURITY.md) rather than in public issues.
+
+For the security design, trust boundaries, external interfaces, and assessed risks, see [SECURITY-DESIGN.md](SECURITY-DESIGN.md).

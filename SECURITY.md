@@ -4,6 +4,24 @@
 
 Please report security issues privately to the maintainers. Do not open public issues for active vulnerabilities until a fix is available.
 
+Use one of these private channels:
+
+- Email: `webnestify@webnestify.cloud`
+- GitHub private vulnerability reporting, if available on the repository's **Security** tab.
+
+Include the affected version, a clear description, reproduction steps or proof of concept if you have one, and any known impact. Do not include active exploit details in public issues, pull requests, or discussions before coordinated disclosure.
+
+## Coordinated Vulnerability Disclosure
+
+The maintainers follow coordinated vulnerability disclosure for confirmed security issues:
+
+1. Acknowledge receipt within 7 calendar days.
+2. Provide an initial assessment within 14 calendar days when enough information is available.
+3. Work with the reporter on a fix, mitigation, and disclosure timeline based on severity and exploitability.
+4. Publish vulnerability information after a fix or mitigation is available, unless there is a clear safety reason to delay disclosure.
+
+Confirmed vulnerabilities are published through GitHub Security Advisories when appropriate. Release notes or changelog entries may reference the advisory after disclosure. If no vulnerabilities have been confirmed for a release, there may be no advisory to publish.
+
 ## Release Verification
 
 `wdm` release artifacts are signed with [cosign](https://github.com/sigstore/cosign)/Sigstore using keyless signing through GitHub Actions OIDC. In-product verification is Go-native; the human verification command below uses `cosign` and pins the same trust anchors the product code pins.
