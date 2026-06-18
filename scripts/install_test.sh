@@ -37,6 +37,7 @@ write_base_fakes() {
 		'mode=' \
 		'if [ "${1:-}" = "-m" ]; then mode=$2; shift 2; fi' \
 		'[ "$#" -eq 2 ] || exit 1' \
+		'if [ "${WDM_INSTALL_TEST_SCENARIO:-}" = "binary_install_failure" ]; then exit 1; fi' \
 		'cp "$1" "$2" || exit 1' \
 		'[ -z "$mode" ] || chmod "$mode" "$2"'
 }
@@ -482,6 +483,51 @@ run_existing_catalog_versions_success_case() {
 	rm -rf "$tmpdir"
 }
 
+run_existing_catalog_manifest_skip_case() {
+	name="existing catalog manifest is preserved"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable" "$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma"
+	printf '%s\n' "old-manifest" >"$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml"
+	printf '%s\n' "old-template" >"$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	template=$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "not ok - $name: installer failed" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif ! contains "$manifest" "old-manifest"; then
+		printf '%s\n' "not ok - $name: manifest was replaced" >&2
+		failures=$((failures + 1))
+	elif ! contains "$template" "old-template"; then
+		printf '%s\n' "not ok - $name: templates were replaced" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
 run_catalog_live_promotion_stays_in_catalog_dir_case() {
 	name="catalog live promotion stays in catalog directory"
 	scenario="success"
@@ -541,13 +587,12 @@ run_catalog_live_promotion_stays_in_catalog_dir_case() {
 }
 
 run_template_failure_rolls_back_case() {
-	name="template promotion failure restores previous catalog"
+	name="template promotion failure restores previous templates"
 	scenario="templates_promote_partial_failure"
 	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
 		exit 1
 	real_mv=$(command -v mv) || exit 1
 	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable" "$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma"
-	printf '%s\n' "old-manifest" >"$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml"
 	printf '%s\n' "old-template" >"$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl"
 
 	write_base_fakes "$tmpdir/bin"
@@ -568,7 +613,6 @@ run_template_failure_rolls_back_case() {
 	status=$?
 	set -e
 
-	manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
 	template=$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl
 	if [ "$status" -eq 0 ]; then
 		printf '%s\n' "not ok - $name: installer succeeded" >&2
@@ -577,9 +621,6 @@ run_template_failure_rolls_back_case() {
 		printf '%s\n' "not ok - $name: expected template failure" >&2
 		printf '%s\n' "stderr:" >&2
 		sed -n '1,20p' "$tmpdir/stderr" >&2
-		failures=$((failures + 1))
-	elif ! contains "$manifest" "old-manifest"; then
-		printf '%s\n' "not ok - $name: previous manifest was not preserved" >&2
 		failures=$((failures + 1))
 	elif ! contains "$template" "old-template"; then
 		printf '%s\n' "not ok - $name: previous templates were not restored" >&2
@@ -637,13 +678,12 @@ run_template_failure_removes_partial_catalog_case() {
 }
 
 run_manifest_failure_rolls_back_case() {
-	name="manifest promotion failure restores previous catalog"
+	name="manifest promotion failure restores previous templates"
 	scenario="manifest_promote_failure"
 	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
 		exit 1
 	real_mv=$(command -v mv) || exit 1
 	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable" "$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma"
-	printf '%s\n' "old-manifest" >"$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml"
 	printf '%s\n' "old-template" >"$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl"
 
 	write_base_fakes "$tmpdir/bin"
@@ -674,11 +714,59 @@ run_manifest_failure_rolls_back_case() {
 		printf '%s\n' "stderr:" >&2
 		sed -n '1,20p' "$tmpdir/stderr" >&2
 		failures=$((failures + 1))
-	elif ! contains "$manifest" "old-manifest"; then
-		printf '%s\n' "not ok - $name: previous manifest was not restored" >&2
+	elif [ -e "$manifest" ]; then
+		printf '%s\n' "not ok - $name: partial manifest remained" >&2
 		failures=$((failures + 1))
 	elif ! contains "$template" "old-template"; then
 		printf '%s\n' "not ok - $name: previous templates were not restored" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+run_binary_install_failure_preserves_catalog_case() {
+	name="binary install failure preserves existing catalog"
+	scenario="binary_install_failure"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable" "$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma"
+	printf '%s\n' "old-manifest" >"$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml"
+	printf '%s\n' "old-template" >"$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	template=$tmpdir/home/.local/share/wdm/catalogs/templates/uptime-kuma/docker-compose.yml.tmpl
+	if [ "$status" -eq 0 ]; then
+		printf '%s\n' "not ok - $name: installer succeeded" >&2
+		failures=$((failures + 1))
+	elif ! contains "$tmpdir/stderr" "failed to install wdm"; then
+		printf '%s\n' "not ok - $name: expected binary install failure" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif ! contains "$manifest" "old-manifest"; then
+		printf '%s\n' "not ok - $name: manifest was replaced" >&2
+		failures=$((failures + 1))
+	elif ! contains "$template" "old-template"; then
+		printf '%s\n' "not ok - $name: templates were replaced" >&2
 		failures=$((failures + 1))
 	else
 		printf '%s\n' "ok - $name"
@@ -692,10 +780,12 @@ run_xdg_data_home_success_case
 run_relative_xdg_data_home_success_case
 run_symlink_catalog_root_failure_case
 run_existing_catalog_versions_success_case
+run_existing_catalog_manifest_skip_case
 run_catalog_live_promotion_stays_in_catalog_dir_case
 run_template_failure_rolls_back_case
 run_template_failure_removes_partial_catalog_case
 run_manifest_failure_rolls_back_case
+run_binary_install_failure_preserves_catalog_case
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \
 	"checksum manifest missing required asset: catalog-stable.tar.gz"

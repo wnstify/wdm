@@ -277,20 +277,6 @@ validate_catalog_bundle() {
 }
 
 seed_catalog() {
-	validate_catalog_bundle
-	extract_dir="$tmpdir/catalog-extract"
-
-	mkdir -p "$extract_dir" ||
-		die "failed to create catalog staging directory"
-
-	tar -xzf "$tmpdir/$catalog_asset" -C "$extract_dir" ||
-		die "failed to extract catalog bundle"
-
-	[ -f "$extract_dir/stable/catalog.yaml" ] ||
-		die "catalog bundle missing required file after extraction: stable/catalog.yaml"
-	[ -d "$extract_dir/templates" ] ||
-		die "catalog bundle missing required directory after extraction: templates"
-
 	old_umask=$(umask)
 	umask 022
 	mkdir -p "$catalogs_dir" || {
@@ -305,6 +291,24 @@ seed_catalog() {
 
 	mkdir -p "$catalogs_dir/stable" ||
 		die "failed to create stable catalog directory"
+
+	if [ -f "$catalogs_dir/stable/catalog.yaml" ]; then
+		return 0
+	fi
+
+	validate_catalog_bundle
+	extract_dir="$tmpdir/catalog-extract"
+
+	mkdir -p "$extract_dir" ||
+		die "failed to create catalog staging directory"
+
+	tar -xzf "$tmpdir/$catalog_asset" -C "$extract_dir" ||
+		die "failed to extract catalog bundle"
+
+	[ -f "$extract_dir/stable/catalog.yaml" ] ||
+		die "catalog bundle missing required file after extraction: stable/catalog.yaml"
+	[ -d "$extract_dir/templates" ] ||
+		die "catalog bundle missing required directory after extraction: templates"
 
 	catalog_stage=$(mktemp -d "$catalogs_dir/.install.XXXXXX") ||
 		die "failed to create catalog filesystem staging directory"
@@ -438,8 +442,8 @@ download_asset "$checksums_asset"
 download_asset "$cosign_bundle_asset"
 
 verify_release
-seed_catalog
 install_binary
+seed_catalog
 
 printf '%s\n' "wdm ${tag} installed to ${install_dir}/wdm"
 
