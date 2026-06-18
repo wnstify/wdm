@@ -7,13 +7,11 @@ import (
 	"github.com/wnstify/wdm/internal/render"
 )
 
-// representativeComposeBody mirrors the shape of the curated v1
-// Compose templates: shell-style ${VAR} references (Compose's
-// runtime --env-file substitution per the confirmation rules) and
-// zero Go-template {{... }} actions. The byte-identity test
-// asserts text/template passes this through unchanged at commit
-// 6 — the deterministic-output guarantee from "
-// — internal/render Compose rendering scope" subsection.
+// representativeComposeBody mirrors the common action-free Compose
+// template shape: shell-style ${VAR} references (Compose's runtime
+// --env-file substitution per the confirmation rules) and zero
+// Go-template {{... }} actions. The byte-identity test asserts
+// text/template passes this through unchanged.
 const representativeComposeBody = `name: wdm-uptime-kuma
 services:
   app:
@@ -54,8 +52,7 @@ func TestRenderCompose_Success(t *testing.T) {
 }
 
 // TestRenderCompose_NoActionTemplateByteIdentical pins the
-// deterministic-output guarantee from: the
-// curated v1 Compose templates carry zero {{... }} actions, so
+// deterministic-output guarantee for action-free Compose bodies:
 // text/template Execute emits the source bytes contiguously and
 // the rendered output equals the input byte-for-byte. Acts as a
 // regression guard for any future change that would make render

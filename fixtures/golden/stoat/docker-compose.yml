@@ -20,8 +20,10 @@
 #         that writes its own root-owned named volumes (no cap needed for those),
 #         but must read its bind-mounted garage.toml — mode 0600, owned by the
 #         installing uid — which cap_drop: ALL would otherwise deny.
-#       the eight Rust services + web + livekit -> the image's nonroot user
-#         (65532 / 1000) with ZERO added caps under cap_drop: ALL.
+#       the eight Rust services + web -> the image's nonroot user (65532 / 1000)
+#         with ZERO added caps under cap_drop: ALL.
+#       livekit -> the installing uid:gid resolved by wdm, so it can read the
+#         0600 livekit.yml config artifact without widening secret-file mode.
 #       caddy -> NET_BIND_SERVICE only: the caddy binary carries the file
 #         capability to bind privileged port 80, so it runs as root with that one
 #         cap re-added (the AdGuard/file-cap pattern).
@@ -536,8 +538,9 @@ services:
     image: ghcr.io/stoatchat/livekit-server:v1.9.13
     container_name: stoat-livekit
     restart: unless-stopped
-    # Image defaults to root; numeric 1000 runs nonroot with no volume so there
-    # is no ownership concern (feasibility-probe-proven).
+    # livekit.yml is a wdm secret-bearing config artifact written mode 0600 and
+    # owned by the installing user, so the process runs as that uid:gid rather
+    # than a hard-coded image uid.
     user: "1000:1000"
     command: --config /etc/livekit.yml
     depends_on:
