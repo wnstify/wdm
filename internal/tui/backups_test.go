@@ -115,6 +115,15 @@ func TestModel_BackupsRestoreRendersEngineConfirmationVerbatim(t *testing.T) {
 	assert.Contains(t, m.View(), "Config restore complete")
 }
 
+func TestFormatBackupTimeRendersUTCOrUnknown(t *testing.T) {
+	t.Parallel()
+
+	nonUTC := time.Date(2026, time.June, 18, 9, 30, 0, 0, time.FixedZone("CEST", 2*60*60))
+
+	assert.Equal(t, "2026-06-18T07:30:00Z", formatBackupTime(nonUTC))
+	assert.Equal(t, "unknown time", formatBackupTime(time.Time{}))
+}
+
 func backupsFlowFake() *fakeEngine {
 	return &fakeEngine{
 		listApps: []types.AppInfo{

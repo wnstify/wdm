@@ -224,6 +224,73 @@ func TestRun_VerifyKeyRejectsNonEd25519(t *testing.T) {
 	})
 }
 
+func TestRun_SubcommandsRequireMandatoryPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "keygen", args: []string{"keygen", "--private", "release.key"}},
+		{name: "sign", args: []string{"sign", "--private", "release.key", "--in", "SHA256SUMS"}},
+		{name: "verify", args: []string{"verify", "--public", "release.pub", "--in", "SHA256SUMS"}},
+		{name: "verify-key", args: []string{"verify-key"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := run(tt.args); err == nil {
+				t.Fatalf("%s accepted missing mandatory paths", tt.name)
+			}
+		})
+	}
+}
+
+func TestRun_RejectsMalformedPEMFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	noPEM := writeFile(t, dir, "not-pem.pub", []byte("not pem at all"))
+	privateTypedAsPublic := writeFile(t, dir, "private-as-public.pub",
+		pem.EncodeToMemory(&pem.Block{Type: privateKeyPEMType, Bytes: []byte("not a public key")}))
+	publicTypedAsPrivate := writeFile(t, dir, "public-as-private.key",
+		pem.EncodeToMemory(&pem.Block{Type: publicKeyPEMType, Bytes: []byte("not a private key")}))
+	input := writeFile(t, dir, "SHA256SUMS", []byte("checksum payload\n"))
+	sig := writeFile(t, dir, "SHA256SUMS.sig", make([]byte, ed25519.SignatureSize))
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "verify-key rejects a file with no PEM block",
+			args: []string{"verify-key", "--public", noPEM},
+		},
+		{
+			name: "verify-key rejects a PEM block with the wrong type",
+			args: []string{"verify-key", "--public", privateTypedAsPublic},
+		},
+		{
+			name: "sign rejects a public-key PEM supplied as the private key",
+			args: []string{"sign", "--private", publicTypedAsPrivate, "--in", input, "--out", filepath.Join(dir, "bad.sig")},
+		},
+		{
+			name: "verify rejects a private-key PEM supplied as the public key",
+			args: []string{"verify", "--public", privateTypedAsPublic, "--in", input, "--sig", sig},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := run(tt.args); err == nil {
+				t.Fatalf("%s returned no error", tt.name)
+			}
+		})
+	}
+}
+
 func TestRun_UnknownAndMissingSubcommand(t *testing.T) {
 	t.Parallel()
 

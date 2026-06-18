@@ -151,6 +151,18 @@ func TestModel_DestructiveDeleteFlowPassesMismatchedNameToEngine(t *testing.T) {
 	assert.Contains(t, m.View(), "delete refused")
 }
 
+func TestModel_DeleteNameBackspaceRemovesLastRune(t *testing.T) {
+	t.Parallel()
+
+	m := model{deleteNameInput: "café"}
+
+	m = m.deleteDeleteNameRune()
+	assert.Equal(t, "caf", m.deleteNameInput)
+
+	m.deleteNameInput = ""
+	assert.Empty(t, m.deleteDeleteNameRune().deleteNameInput)
+}
+
 func removeFlowFake() *fakeEngine {
 	return &fakeEngine{
 		listApps: []types.AppInfo{

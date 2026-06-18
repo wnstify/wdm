@@ -61,6 +61,31 @@ func TestModel_SettingsScreenPersistsMergedSettingsWithoutReread(t *testing.T) {
 	assert.Contains(t, view, "catalog_channel: stable")
 }
 
+func TestModel_SettingsInputBackspaceRemovesLastRuneAndClearsMessage(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		settingsFields: []settingsField{
+			{key: "timezone", value: "UTC"},
+			{key: "base_stack_path", value: "/srv/donnée"},
+		},
+		settingsCursor:  1,
+		settingsMessage: "Settings saved",
+	}
+
+	m = m.deleteSettingsInputRune()
+	assert.Equal(t, "/srv/donné", m.settingsFields[1].value)
+	assert.Empty(t, m.settingsMessage)
+
+	m.settingsCursor = len(m.settingsFields)
+	unchanged := m.deleteSettingsInputRune()
+	assert.Equal(t, m.settingsFields, unchanged.settingsFields)
+
+	m.settingsCursor = 0
+	m.settingsFields[0].value = ""
+	assert.Empty(t, m.deleteSettingsInputRune().settingsFields[0].value)
+}
+
 func loadSettingsScreen(t *testing.T, eng *fakeEngine) model {
 	t.Helper()
 

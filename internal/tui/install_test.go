@@ -84,6 +84,13 @@ func TestModel_InstallFlowCallsEngineInstallWithFormValues(t *testing.T) {
 			StackPath: "/srv/alpha",
 			PostInstallGuidance: &types.PostInstallGuidance{
 				LocalTargetURL: "http://127.0.0.1:8080",
+				GeneratedCredentials: []types.GeneratedCredential{
+					{
+						Label: "Alpha ADMIN_TOKEN",
+						Value: "one-time-token",
+						Note:  "Store this value now.",
+					},
+				},
 			},
 		},
 	}
@@ -114,6 +121,47 @@ func TestModel_InstallFlowCallsEngineInstallWithFormValues(t *testing.T) {
 	assert.Contains(t, view, "alpha")
 	assert.Contains(t, view, "/srv/alpha")
 	assert.Contains(t, view, "http://127.0.0.1:8080")
+	assert.Contains(t, view, "SAVE THIS NOW")
+	assert.Contains(t, view, "Alpha ADMIN_TOKEN")
+	assert.Contains(t, view, "one-time-token")
+	assert.Contains(t, view, "Store this value now.")
+}
+
+func TestModel_InstallInputBackspaceRemovesLastRune(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		installFields: []installField{
+			{value: "cafe"},
+			{value: "été"},
+		},
+		installFieldCursor: 1,
+	}
+
+	m = m.deleteInstallInputRune()
+	assert.Equal(t, "ét", m.installFields[1].value)
+
+	m.installFieldCursor = len(m.installFields)
+	unchanged := m.deleteInstallInputRune()
+	assert.Equal(t, m.installFields, unchanged.installFields)
+
+	m.installFieldCursor = 0
+	m.installFields[0].value = ""
+	assert.Empty(t, m.deleteInstallInputRune().installFields[0].value)
+}
+
+func TestSelectedCatalogLabelsUseSafeFallbacks(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "Install an app", selectedCatalogName(nil))
+	assert.Equal(t, "app", selectedCatalogID(nil))
+
+	app := &types.CatalogApp{AppID: "vaultwarden"}
+	assert.Equal(t, "vaultwarden", selectedCatalogName(app))
+	assert.Equal(t, "vaultwarden", selectedCatalogID(app))
+
+	app.Name = "Vaultwarden"
+	assert.Equal(t, "Vaultwarden", selectedCatalogName(app))
 }
 
 func loadInstallForm(t *testing.T, eng *fakeEngine) model {
