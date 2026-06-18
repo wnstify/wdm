@@ -114,3 +114,9 @@ The project maintainer is responsible for:
 Before granting write, admin, release, secret, or ruleset access, the maintainer reviews the collaborator's identity, need, requested permission level, and expected duration of access. Access must use the least privilege that allows the work to be done.
 
 Escalated access is removed when it is no longer needed. Release signing secrets and repository security settings remain maintainer-controlled unless a future governance change documents a different owner and review process.
+
+## Solo-Maintainer Review Posture
+
+The project is currently maintained by a single human maintainer, so independent human approval is not required until a second maintainer with write access exists. The project does not use alternate accounts to simulate independent review.
+
+Compensating controls are public pull requests into `main`, signed commits, DCO signoff, required CI, CodeQL, govulncheck, protected `main`, protected `dev`, protected release tags, signed release artifacts, and public issue/security reporting.
