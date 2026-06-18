@@ -78,7 +78,11 @@ Each boundary has a narrow control:
 - Ed25519, SHA-256, Sigstore, and attestation verification before trusting artifacts;
 - tag-only release gates and scoped GitHub Actions permissions.
 
-## Security Assessment
+## Threat Modeling and Attack Surface Analysis
+
+This model identifies the main actors, actions, external interfaces, trust boundaries, and security controls for `wdm`. The assessment focuses on critical paths: local command execution, filesystem writes, Docker operations, template rendering, release verification, catalog updates, self-update, and release publishing.
+
+Maintainers update this analysis when the project adds a new external interface, changes the release or verification path, adds a privileged operation, or changes how templates, filesystem paths, Docker commands, or release artifacts cross trust boundaries.
 
 The most likely and impactful risks are:
 
@@ -104,3 +108,9 @@ The project maintainer is responsible for:
 - rotating release signing material when needed;
 - triaging private vulnerability reports;
 - publishing GitHub Security Advisories for confirmed vulnerabilities when disclosure is appropriate.
+
+## Collaborator Access Review
+
+Before granting write, admin, release, secret, or ruleset access, the maintainer reviews the collaborator's identity, need, requested permission level, and expected duration of access. Access must use the least privilege that allows the work to be done.
+
+Escalated access is removed when it is no longer needed. Release signing secrets and repository security settings remain maintainer-controlled unless a future governance change documents a different owner and review process.

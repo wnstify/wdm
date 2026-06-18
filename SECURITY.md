@@ -30,6 +30,20 @@ Repository and release credentials are stored in GitHub as repository or organiz
 
 Rotate a project secret when it may have been exposed, when the maintainer account or repository settings change in a way that affects access, or when the secret's purpose changes. Release signing key rotation requires updating the GitHub Actions secret and committing the matching public key in `internal/release/signing_public_key.pem` with the next signed release.
 
+## Dependency and Static-Analysis Findings
+
+The project treats Software Composition Analysis (SCA), Static Application Security Testing (SAST), and license findings as release-blocking inputs.
+
+SCA inputs include `go mod verify`, `go mod tidy -diff`, Dependabot alerts, and `govulncheck`. A failing `go mod verify`, unexpected module drift, or a `govulncheck` finding in reachable code blocks merge and release until fixed or documented as non-exploitable.
+
+SAST inputs include CodeQL code scanning and security-relevant linter findings. Critical SAST findings block merge and release. High and medium findings must be fixed, downgraded with written rationale, or tracked before the next stable release, based on exploitability and affected code path.
+
+Dependency licenses must be compatible with the MIT-licensed project and with redistribution through GitHub Releases. A direct or runtime dependency with an incompatible or unknown license blocks release until resolved or replaced.
+
+No official release may be cut while required security checks are failing or while an unresolved release-blocking SCA, SAST, malicious-dependency, or license finding affects the release. Suppressions must be narrow, documented, and tied to a specific finding.
+
+If a vulnerability is present in a component but does not affect `wdm`, document the non-exploitability decision as a VEX statement. The VEX record must identify the component, version, vulnerability identifier, affected `wdm` version or commit range, status, and justification. VEX records may be published through a GitHub Security Advisory, release notes, or a repository security document when needed.
+
 ## Release Verification
 
 `wdm` release artifacts are signed with [cosign](https://github.com/sigstore/cosign)/Sigstore using keyless signing through GitHub Actions OIDC. In-product verification is Go-native; the human verification command below uses `cosign` and pins the same trust anchors the product code pins.

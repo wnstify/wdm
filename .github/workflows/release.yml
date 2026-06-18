@@ -164,6 +164,16 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Validate release tag
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release tag must match vMAJOR.MINOR.PATCH, got: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          echo "release tag OK: ${GITHUB_REF_NAME}"
+
       - name: Build wdm-linux-amd64 (mirrors make build-linux)
         run: |
           set -euo pipefail
@@ -172,11 +182,11 @@ jobs:
           # self-update smoke can match `wdm --version` to the downloaded
           # release; non-tag dry-runs leave the built-in "dev" default
           # (cmd/wdm/main.go `var version = "dev"`) untouched. GITHUB_REF_TYPE
-          # and GITHUB_REF_NAME are runner-provided built-ins, so the tag name
-          # never flows through a GitHub Actions expression into the shell. The
-          # binary is compiled ONCE here; the signed-release job reuses it via
-          # the release-dry-run artifact, so this is the single version-stamp
-          # site.
+          # and GITHUB_REF_NAME are runner-provided built-ins, and tag runs
+          # pass through the validation step above before the tag name reaches
+          # the build flags. The binary is compiled ONCE here; the
+          # signed-release job reuses it via the release-dry-run artifact, so
+          # this is the single version-stamp site.
           ldflags=""
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             ldflags="-X main.version=${GITHUB_REF_NAME}"
