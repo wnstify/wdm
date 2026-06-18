@@ -114,6 +114,12 @@ printf '%s\n' "new template" >"$repo/templates/app/docker-compose.yml.tmpl"
 expect_fail "template change with unchanged generated_at fails" "$repo" \
 	"catalog/templates changed without advancing generated_at"
 
+repo="$tmp_root/catalog-only-unchanged-generated-at"
+init_repo "$repo"
+printf '%s\n' "# catalog-only freshness test" >>"$repo/catalog/stable/catalog.yaml"
+expect_fail "catalog-only change with unchanged generated_at fails" "$repo" \
+	"catalog/templates changed without advancing generated_at"
+
 repo="$tmp_root/catalog-older-generated-at"
 init_repo "$repo"
 write_catalog "$repo" "2026-05-20T00:00:00Z"

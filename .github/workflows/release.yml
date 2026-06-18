@@ -248,8 +248,8 @@ jobs:
             base="$(git tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname |
               awk -v current="${GITHUB_REF_NAME}" '$0 != current { print; exit }')"
             if [ -z "$base" ]; then
-              echo "no previous v* tag found for catalog freshness check" >&2
-              exit 1
+              base="$(git rev-list --max-parents=0 HEAD)"
+              echo "no previous v* tag found; using root commit for catalog freshness check: $base"
             fi
           else
             base="origin/main"
