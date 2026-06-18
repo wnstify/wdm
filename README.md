@@ -86,6 +86,8 @@ Run `wdm <command> --help` for the full flag set of any command.
 - **Managed stacks only.** `wdm` touches only the stacks it manages under `~/docker/<app>/`, and never writes outside the selected stack directory.
 - **Your volumes are preserved.** Removing a stack never destroys its data — `wdm` does not run `docker compose down -v`. It does not back up application data, so keep your own backups of stack volumes.
 
+See [SECURITY-DESIGN.md](SECURITY-DESIGN.md) for actors, actions, trust boundaries, external interfaces, and the security assessment.
+
 ## Curated apps
 
 `wdm` curates nineteen apps:

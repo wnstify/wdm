@@ -18,6 +18,7 @@
 ## Checklist
 
 - [ ] Commits are focused and atomic, with clear messages.
+- [ ] Every commit includes a `Signed-off-by:` DCO trailer.
 - [ ] `make lint` and `make test` pass locally.
 - [ ] Documentation is updated where needed.
 - [ ] No secrets, tokens, or credentials are included in the code or the diff.
