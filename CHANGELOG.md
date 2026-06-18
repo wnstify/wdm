@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.0.2 - 2026-06-18
+
+### Fixed
+- Advanced the stable catalog version so existing installs can receive the
+  Stoat LiveKit UID/GID template fix through `wdm catalog update`.
+
+### CI
+- Added a catalog freshness guard so catalog or template changes must advance
+  the stable catalog `generated_at` timestamp before release.
+
 ## v1.0.1 - 2026-06-18
 
 ### Added
