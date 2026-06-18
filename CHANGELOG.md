@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.0.3 - 2026-06-18
+
+### Fixed
+- Treat catalog resource bands as guidance and Docker limit caps instead of
+  blocking installs when the host is below the curated minimum profile.
+- Fixed Stoat startup ordering so the `crond` service no longer waits on the
+  `mongo-init` migration seeding job during install.
+
 ## v1.0.2 - 2026-06-18
 
 ### Fixed
