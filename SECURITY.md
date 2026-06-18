@@ -103,19 +103,7 @@ The `--certificate-identity` value is `RepositoryURL + "/" + ReleaseWorkflowPath
 sha256sum -c SHA256SUMS
 ```
 
-**3. Verify the SLSA provenance attestation** of the binary (and catalog bundle) against the same workflow identity and issuer. `attestation.json` is a multi-subject statement covering both `wdm-linux-amd64` and `catalog-stable.tar.gz`:
-
-```sh
-gh attestation verify wdm-linux-amd64 \
-  --repo wnstify/wdm \
-  --bundle attestation.json \
-  --cert-identity "https://github.com/wnstify/wdm/.github/workflows/release.yml@refs/tags/${TAG}" \
-  --cert-oidc-issuer "https://token.actions.githubusercontent.com"
-```
-
-`--repo wnstify/wdm` scopes the actor identity to the source repository; `gh attestation verify` requires `--repo` or `--owner` even in offline `--bundle` mode. The native verifier enforces the SLSA v1.0 predicate type (`https://slsa.dev/provenance/v1`) by default.
-
-Equivalently, with cosign:
+**3. Verify the SLSA provenance attestation** of the binary and catalog bundle against the same workflow identity and issuer. `attestation.json` is a multi-subject statement covering both `wdm-linux-amd64` and `catalog-stable.tar.gz`:
 
 ```sh
 cosign verify-blob-attestation wdm-linux-amd64 \
