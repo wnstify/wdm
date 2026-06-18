@@ -15,7 +15,8 @@
 // via the compile-time type assertion in new.go.
 // Public surface:
 //   - [Engine] — read (List, Status, Logs), write (Install, Update,
-//     Remove), settings (Settings, UpdateSettings), lifecycle (Close)
+//     Remove, Restart, StopAll), settings (Settings, UpdateSettings),
+//     lifecycle (Close)
 //   - [Confirmer] — authorizes destructive actions (PRD §37); alias of
 //     [types.Confirmer]
 //   - [ProgressFn] — long-running operation progress callback (PRD §37);

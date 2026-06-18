@@ -91,6 +91,30 @@ func ComposeRestart(ctx context.Context, client Client, project ComposeProject) 
 	return err
 }
 
+// ComposeStop executes plain `docker compose stop` for a validated
+// project. It stops the project's running containers without removing
+// them: the containers, networks, and named volumes stay defined and all
+// data is preserved (this is NOT `docker compose down`). No per-service
+// argument is ever passed: the whole stack stops together. `docker
+// compose stop` is idempotent, so an already-stopped stack is a no-op.
+func ComposeStop(ctx context.Context, client Client, project ComposeProject) error {
+	if client == nil {
+		return types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	inv, err := newComposeStopInvocation(project)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.Run(ctx, inv)
+	return err
+}
+
 // ComposeDown executes safe `docker compose down` (no -v) for a
 // validated project.
 func ComposeDown(ctx context.Context, client Client, project ComposeProject) error {
@@ -135,6 +159,14 @@ type composeRestartInvocation struct {
 }
 
 func (composeRestartInvocation) isDockerInvocation() {}
+
+type composeStopInvocation struct {
+	composeFile string
+	envFile     string
+	projectName string
+}
+
+func (composeStopInvocation) isDockerInvocation() {}
 
 type composeDownInvocation struct {
 	composeFile string
@@ -181,6 +213,19 @@ func newComposeRestartInvocation(project ComposeProject) (composeRestartInvocati
 	}
 
 	return composeRestartInvocation{
+		composeFile: normalized.ComposeFile,
+		envFile:     normalized.EnvFile,
+		projectName: normalized.ProjectName,
+	}, nil
+}
+
+func newComposeStopInvocation(project ComposeProject) (composeStopInvocation, error) {
+	normalized, err := validateComposeProject(project)
+	if err != nil {
+		return composeStopInvocation{}, err
+	}
+
+	return composeStopInvocation{
 		composeFile: normalized.ComposeFile,
 		envFile:     normalized.EnvFile,
 		projectName: normalized.ProjectName,

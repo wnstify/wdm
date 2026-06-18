@@ -66,6 +66,23 @@ type Engine interface {
 	// onProgress receives the step_restart_* events.
 	Restart(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
 
+	// StopAll stops every managed stack at once (issue #27): it runs
+	// docker compose stop against each stack, which stops the running
+	// containers without removing them, so containers, networks, and
+	// named volumes stay defined and all data is preserved (it is NOT
+	// docker compose down). It is whole-stack and all-apps only; the
+	// request carries no selector. As a state-changing op it holds the
+	// global runtime.lock once for the whole batch, takes the per-stack
+	// flock around each stop, and consults confirmer once before the
+	// batch with a SAFE payload listing the apps. StopAll is
+	// continue-on-error: every stack is attempted even if some fail, and
+	// the result partitions the managed set into Stopped and Failed.
+	// A non-nil error is returned only for whole-operation failures (a
+	// nil confirmer, a declined confirmation, lock contention, or
+	// cancellation); per-stack stop failures live in the result.
+	// onProgress receives the step_stop_all_* events.
+	StopAll(ctx context.Context, req types.StopAllRequest, onProgress ProgressFn, confirmer Confirmer) (*types.StopAllResult, error)
+
 	// ValidateConfig runs docker compose config --quiet against the
 	// managed stack's on-disk Compose file and reports the outcome (PRD
 	// §18:418 "Validate config", §18:427 compose-validation condition).

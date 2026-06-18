@@ -81,6 +81,7 @@ wdm apps status <app>         # report a stack's health
 wdm apps logs <app>           # view stack logs
 wdm apps update <app>         # update a stack
 wdm apps restart <app>        # restart a stack
+wdm apps stop-all             # stop every managed stack (data preserved)
 wdm apps backups list <app>   # list pre-change config backups
 wdm apps remove <app>         # stop a stack (volumes preserved)
 

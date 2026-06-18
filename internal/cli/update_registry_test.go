@@ -303,6 +303,15 @@ func (c *crossoverCountingEngine) Restart(
 	return nil, nil
 }
 
+func (c *crossoverCountingEngine) StopAll(
+	context.Context,
+	types.StopAllRequest,
+	engine.ProgressFn,
+	types.Confirmer,
+) (*types.StopAllResult, error) {
+	return nil, nil
+}
+
 func (c *crossoverCountingEngine) ValidateConfig(context.Context, string) (*types.ValidationResult, error) {
 	return nil, nil
 }

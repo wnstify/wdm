@@ -66,6 +66,32 @@ func TestRestartResult_JSONContract_OmitsEmptyOptionalFields(t *testing.T) {
 	assert.JSONEq(t, `{"app_id":"uptime-kuma"}`, got)
 }
 
+func TestStopAllResult_JSONContract_PopulatedFields(t *testing.T) {
+	t.Parallel()
+
+	got := mustMarshalJSON(t, types.StopAllResult{
+		Stopped: []types.StoppedApp{
+			{AppID: "uptime-kuma", ComposeProject: "wdm-uptime-kuma"},
+		},
+		Failed: []types.StoppedApp{
+			{AppID: "freshrss", ComposeProject: "wdm-freshrss", Error: "daemon unreachable"},
+		},
+	})
+
+	assert.JSONEq(t, `{
+		"stopped":[{"app_id":"uptime-kuma","compose_project":"wdm-uptime-kuma"}],
+		"failed":[{"app_id":"freshrss","compose_project":"wdm-freshrss","error":"daemon unreachable"}]
+	}`, got)
+}
+
+func TestStopAllResult_JSONContract_OmitsEmptyOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	got := mustMarshalJSON(t, types.StopAllResult{})
+
+	assert.JSONEq(t, `{}`, got)
+}
+
 func TestValidationResult_JSONContract_PopulatedFields(t *testing.T) {
 	t.Parallel()
 
@@ -452,6 +478,9 @@ func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing
 		{name: "StepRestartConfirm", got: types.StepRestartConfirm, want: "step_restart_confirm"},
 		{name: "StepRestartExecute", got: types.StepRestartExecute, want: "step_restart_execute"},
 		{name: "StepRestartStatus", got: types.StepRestartStatus, want: "step_restart_status"},
+		{name: "StepStopAllPlanning", got: types.StepStopAllPlanning, want: "step_stop_all_planning"},
+		{name: "StepStopAllConfirm", got: types.StepStopAllConfirm, want: "step_stop_all_confirm"},
+		{name: "StepStopAllExecute", got: types.StepStopAllExecute, want: "step_stop_all_execute"},
 		{name: "StepRestorePlanning", got: types.StepRestorePlanning, want: "step_restore_planning"},
 		{name: "StepRestoreConfirm", got: types.StepRestoreConfirm, want: "step_restore_confirm"},
 		{name: "StepRestoreExecute", got: types.StepRestoreExecute, want: "step_restore_execute"},

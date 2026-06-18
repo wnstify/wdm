@@ -101,6 +101,12 @@ func TestCommandInjection_NameShapedInputsRefuseOWASPPayloads(t *testing.T) {
 			},
 		},
 		{
+			name: "compose stop project name",
+			call: func(ctx context.Context, client Client, payload string) error {
+				return ComposeStop(ctx, client, project(payload))
+			},
+		},
+		{
 			name: "container list project name",
 			call: func(ctx context.Context, client Client, payload string) error {
 				_, err := InspectProjectContainers(ctx, client, payload)

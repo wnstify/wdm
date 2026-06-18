@@ -63,6 +63,13 @@ const (
 	// StepRestartStatus reports post-restart status verification.
 	StepRestartStatus = "step_restart_status"
 
+	// StepStopAllPlanning reports stop-all managed-stack enumeration.
+	StepStopAllPlanning = "step_stop_all_planning"
+	// StepStopAllConfirm reports stop-all confirmation gating.
+	StepStopAllConfirm = "step_stop_all_confirm"
+	// StepStopAllExecute reports per-stack docker compose stop execution.
+	StepStopAllExecute = "step_stop_all_execute"
+
 	// StepRestorePlanning reports config-restore planning.
 	StepRestorePlanning = "step_restore_planning"
 	// StepRestoreConfirm reports config-restore confirmation gating.

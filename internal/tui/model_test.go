@@ -55,6 +55,7 @@ func TestModel_NavigationBackAndQuitStayVisible(t *testing.T) {
 	m = updateModel(t, m, downKey())
 	m = updateModel(t, m, downKey())
 	m = updateModel(t, m, downKey())
+	m = updateModel(t, m, downKey())
 
 	view := m.View()
 	assert.Contains(t, view, "> Backups [selected]")

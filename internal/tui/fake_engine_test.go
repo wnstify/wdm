@@ -18,6 +18,9 @@ type fakeEngine struct {
 	restartResult          *types.RestartResult
 	restartErr             error
 	restartCalls           []string
+	stopAllResult          *types.StopAllResult
+	stopAllErr             error
+	stopAllCalls           int
 	validationResult       *types.ValidationResult
 	validationErr          error
 	validateCalls          []string
@@ -145,6 +148,16 @@ func (f *fakeEngine) Restart(
 ) (*types.RestartResult, error) {
 	f.restartCalls = append(f.restartCalls, req.AppID)
 	return f.restartResult, f.restartErr
+}
+
+func (f *fakeEngine) StopAll(
+	_ context.Context,
+	_ types.StopAllRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.StopAllResult, error) {
+	f.stopAllCalls++
+	return f.stopAllResult, f.stopAllErr
 }
 
 func (f *fakeEngine) ValidateConfig(_ context.Context, appID string) (*types.ValidationResult, error) {

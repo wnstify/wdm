@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## Unreleased
+
+### Added
+- Added a "Stop all apps" action to the dashboard and a `wdm apps stop-all`
+  command that runs `docker compose stop` against every managed stack at once.
+  It preserves all data (containers, networks, and named volumes stay defined),
+  continues on error so one unreachable stack does not block the rest, and exits
+  nonzero when any stack fails.
+
 ## v1.0.3 - 2026-06-18
 
 ### Fixed

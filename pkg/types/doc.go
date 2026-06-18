@@ -21,6 +21,8 @@
 //     UpdateRequest/Result,
 //     RemoveRequest/Result — lifecycle method payloads (PRD §17, §19, §20)
 //   - RestartRequest/Result,
+//     StopAllRequest/Result, StoppedApp — batch "stop all apps"
+//     payloads (issue #27)
 //     ValidationResult,
 //     BackupInfo,
 //     RestoreBackupRequest/Result,
@@ -52,6 +54,7 @@
 //   - Progress,
 //     StepInstall* / StepUpdate* /
 //     StepRemove* / StepRestart* /
+//     StepStopAll* /
 //     StepRestore* / StepDelete* /
 //     StepCatalogUpdate* /
 //     StepSelfUpdate*

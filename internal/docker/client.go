@@ -220,6 +220,13 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 			typedInv.projectName,
 			"restart",
 		)
+	case composeStopInvocation:
+		return buildComposeProjectCommand(
+			typedInv.composeFile,
+			typedInv.envFile,
+			typedInv.projectName,
+			"stop",
+		)
 	case composeDownInvocation:
 		return buildComposeProjectCommand(
 			typedInv.composeFile,
@@ -603,7 +610,7 @@ func isComposeProjectArgv(argv []string) bool {
 	}
 
 	switch argv[7] {
-	case "pull", "restart", "down":
+	case "pull", "restart", "stop", "down":
 		return len(argv) == 8
 	case "up":
 		return len(argv) == 9 && argv[8] == "-d" ||

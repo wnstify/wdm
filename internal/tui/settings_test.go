@@ -90,7 +90,7 @@ func loadSettingsScreen(t *testing.T, eng *fakeEngine) model {
 	t.Helper()
 
 	m := newReadyModel(eng)
-	for range 4 {
+	for dashboardActions[m.cursor] != "Settings" {
 		m = updateModel(t, m, downKey())
 	}
 
