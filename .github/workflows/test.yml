@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   test:
@@ -20,4 +21,19 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Test and coverage
+        env:
+          WDM_COVERAGE_PROFILE: coverage.out
+          WDM_COVERAGE_FILTERED_PROFILE: coverage-filtered.out
+          WDM_COVERAGE_SUMMARY: coverage-summary.txt
         run: make coverage-check
+      - name: Upload coverage to Codecov
+        if: github.repository == 'wnstify/wdm' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: codecov/codecov-action@a99c28d3f0da835de33ff2feb2e15691c7b9641f # v7
+        with:
+          use_oidc: true
+          files: coverage-filtered.out
+          disable_search: true
+          flags: go
+          name: wdm-go
+          fail_ci_if_error: true
+          verbose: true

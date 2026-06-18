@@ -7,6 +7,7 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/wnstify/wdm)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/wnstify/wdm/test.yml?branch=main&label=CI)](https://github.com/wnstify/wdm/actions/workflows/test.yml)
+[![Codecov](https://codecov.io/gh/wnstify/wdm/branch/main/graph/badge.svg)](https://codecov.io/gh/wnstify/wdm)
 [![Release](https://img.shields.io/github/v/release/wnstify/wdm?sort=semver)](https://github.com/wnstify/wdm/releases)
 [![Donate](https://img.shields.io/badge/Support-Webnestify%20Education-2ea44f)](https://webnestify.org/donate/)
 
