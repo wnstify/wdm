@@ -22,6 +22,14 @@ The maintainers follow coordinated vulnerability disclosure for confirmed securi
 
 Confirmed vulnerabilities are published through GitHub Security Advisories when appropriate. Release notes or changelog entries may reference the advisory after disclosure. If no vulnerabilities have been confirmed for a release, there may be no advisory to publish.
 
+## Secrets and Credentials
+
+Project secrets must stay out of the repository. Do not commit API tokens, passwords, private keys, signing keys, `.env` files, or other credentials. Local-only material belongs outside Git-tracked paths or in ignored local paths.
+
+Repository and release credentials are stored in GitHub as repository or organization secrets. Access is limited to the maintainer account and to GitHub Actions jobs that need the credential for a specific task. The production Ed25519 release signing key is available only to the tag-gated signed-release job; branch builds, pull requests, and manual dry-runs do not receive it.
+
+Rotate a project secret when it may have been exposed, when the maintainer account or repository settings change in a way that affects access, or when the secret's purpose changes. Release signing key rotation requires updating the GitHub Actions secret and committing the matching public key in `internal/release/signing_public_key.pem` with the next signed release.
+
 ## Release Verification
 
 `wdm` release artifacts are signed with [cosign](https://github.com/sigstore/cosign)/Sigstore using keyless signing through GitHub Actions OIDC. In-product verification is Go-native; the human verification command below uses `cosign` and pins the same trust anchors the product code pins.
