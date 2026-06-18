@@ -10,7 +10,21 @@ changelog=$1
 version=$2
 output=$3
 
+# Strip both single-line (<!-- x -->) and multi-line HTML comment blocks so
+# internal notes never leak into public release notes. Comment handling runs
+# before the section toggle so a comment line never opens, closes, or prints a
+# section.
 awk -v version="$version" '
+	in_comment {
+		if (index($0, "-->")) {
+			in_comment = 0
+		}
+		next
+	}
+	/<!--/ && $0 !~ /-->/ {
+		in_comment = 1
+		next
+	}
 	$0 == "## " version || index($0, "## " version " ") == 1 {
 		in_section = 1
 		next
