@@ -159,6 +159,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
@@ -238,6 +239,28 @@ jobs:
           grep -q '"spdxVersion"[[:space:]]*:[[:space:]]*"SPDX-2.3"' \
             dist/wdm-linux-amd64.spdx.json
           echo "SBOM OK: dist/wdm-linux-amd64.spdx.json (SPDX-2.3 JSON)"
+
+      - name: Resolve catalog freshness base
+        id: catalog-freshness-base
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            base="$(git tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname |
+              awk -v current="${GITHUB_REF_NAME}" '$0 != current { print; exit }')"
+            if [ -z "$base" ]; then
+              base="$(git rev-list --max-parents=0 HEAD)"
+              echo "no previous v* tag found; using root commit for catalog freshness check: $base"
+            fi
+          else
+            base="origin/main"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "catalog freshness base: $base"
+
+      - name: Check catalog freshness
+        env:
+          WDM_CATALOG_BASE_REF: ${{ steps.catalog-freshness-base.outputs.base }}
+        run: make catalog-freshness catalog-freshness-test
 
       - name: Package catalog-stable.tar.gz
         run: |
@@ -573,14 +596,11 @@ jobs:
       - name: Extract release notes from CHANGELOG.md
         run: |
           set -euo pipefail
-          # Pull the body of the `## v1.0.0` section (everything after its
-          # heading up to the next `## ` heading), drop the single-line HTML
-          # comment, and fail closed if no non-whitespace content remains.
+          # Pull the body of the tag's CHANGELOG.md section, drop single-line
+          # HTML comments, and fail closed if no non-whitespace content remains.
           # RELEASE_NOTES.md feeds `gh release create --notes-file`; it is NOT
           # a release asset.
-          awk '/^## v1\.0\.0([[:space:]]|$)/{c=1;next} c&&/^## /{c=0} c{print}' CHANGELOG.md \
-            | grep -v '^<!--.*-->$' > dist/RELEASE_NOTES.md
-          grep -q '[^[:space:]]' dist/RELEASE_NOTES.md || { echo "release notes are empty"; exit 1; }
+          sh scripts/extract-release-notes.sh CHANGELOG.md "${GITHUB_REF_NAME}" dist/RELEASE_NOTES.md
           echo "release notes extracted: dist/RELEASE_NOTES.md"
 
       - name: Assert the seven release assets and create the GitHub Release
