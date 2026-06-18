@@ -130,9 +130,9 @@ type Input struct {
 	// templates keep shell-style ${VAR} references for
 	// env-supplied values (Compose's runtime --env-file substitution
 	// per the confirmation rules); any {{.Identifier }} references
-	// are substituted from [Values] at render time. The curated v1
-	// templates carry no {{... }} actions, so rendered output equals
-	// the input byte-for-byte.
+	// are substituted from [Values] at render time. Curated templates
+	// should use Go-template actions only for values that must be
+	// resolved before Compose runs, such as built-in UID/GID.
 	ComposeTemplate string
 
 	// Placeholders is the declared placeholder set, projected from
@@ -240,9 +240,10 @@ type RenderedStack struct {
 	// labels; [RenderCompose] remains useful for unit-level template
 	// debugging where label state is irrelevant.
 	// Repeated renders of the same Input are byte-identical:
-	// text/template Execute on action-free bodies is contiguous,
-	// yaml.v3 iteration follows the Content slice (no map iteration),
-	// and [RenderLabels] uses a fixed 2-space encoder indent.
+	// text/template Execute is deterministic and action-free bodies
+	// are emitted contiguously, yaml.v3 iteration follows the Content
+	// slice (no map iteration), and [RenderLabels] uses a fixed
+	// 2-space encoder indent.
 	ComposeBytes []byte
 
 	// EnvBytes is the rendered .env content carrying literal values

@@ -10,10 +10,11 @@ import (
 // [Input.Values] via text/template with Option("missingkey=error"),
 // so a reference to a key absent from Values surfaces as
 // [ErrComposeTemplateExecute] rather than "<no value>". No FuncMap
-// is registered: the curated v1 Compose templates carry no
-// {{... }} actions. Shell-style ${VAR} references are Compose's
-// runtime --env-file substitution and pass
-// through unchanged.
+// is registered: curated v1 Compose templates primarily keep
+// shell-style ${VAR} references for Compose's runtime --env-file
+// substitution, with only simple value substitutions such as built-in
+// UID/GID when a service must render host-user ownership directly.
+// Shell-style references pass through unchanged.
 // Structural validation runs before the template is parsed (as in
 // [RenderEnv]):
 //   - [ValidatePlaceholders] checks [Input.Placeholders] for empty
@@ -32,10 +33,11 @@ import (
 // but render cannot assume any Values entry is
 // non-sensitive: any {{.Identifier }} reference could carry a
 // secret.
-// Determinism: text/template Execute on an action-free body emits
-// the source bytes contiguously, so the curated v1 templates
-// render byte-stably across Go versions and architectures.
-// RenderCompose performs no map iteration or YAML serialization;
+// Determinism: text/template Execute is deterministic for the same
+// input values, and on an action-free body emits the source bytes
+// contiguously. RenderCompose performs no map iteration or YAML
+// serialization, so output stays stable across Go versions and
+// architectures for a fixed input.
 // label enforcement and mount verification land in [RenderLabels].
 // The render boundary stays pure per / operational
 // protocol step 4: no filesystem I/O, no internal/* sibling imports

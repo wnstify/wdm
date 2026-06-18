@@ -3,8 +3,26 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
-## v1.0.0 - YYYY-MM-DD
-<!-- Release date: replace YYYY-MM-DD with the date the v1.0.0 tag is published. -->
+## v1.0.1 - 2026-06-18
+
+### Added
+- Added the verified one-line installer script and installer tests.
+- Seeded the stable catalog during installer bootstrap so a fresh install can
+  start with a local verified catalog.
+
+### Fixed
+- Fixed Stoat installs on systems where the installing user's UID/GID is not
+  `1000:1000`; LiveKit now runs as the installing user so it can read the
+  generated `0600` `livekit.yml` config.
+- Preserved existing catalog data when the installer seeds a catalog, with
+  rollback on partial promotion failures.
+- Preserved existing installer directory permissions.
+
+### Security
+- Added DCO enforcement, CodeQL analysis, OpenSSF Scorecard, Codecov reporting,
+  and public security governance documentation.
+
+## v1.0.0 - 2026-06-17
 
 The first public release of `wdm` (Webnestify Docker Manager), a Go terminal
 application combining a Bubble Tea TUI and a CLI for installing, updating, and

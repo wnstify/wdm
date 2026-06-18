@@ -90,7 +90,9 @@ need operator follow-up:
   posture: the entrypoint starts as root, chowns its named volume, and drops to
   the image uid, which needs the five init / privilege-drop caps. `garage` is the
   lone zero-cap data service. `caddy` adds only `NET_BIND_SERVICE`. The Rust
-  services, `web`, `livekit`, and both init containers run with zero added caps.
+  services, `web`, `livekit`, and both init containers run with zero added caps;
+  LiveKit runs as the installing uid/gid so it can read its 0600 config artifact
+  without widening secret-file permissions.
 - `security_opt: no-new-privileges`, `ipc: private`, and tmpfs for ephemeral
   writes on every container.
 - Named volumes for all persistent data (never `docker compose down -v`).
