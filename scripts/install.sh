@@ -303,10 +303,14 @@ seed_catalog() {
 		die "refusing to seed catalog through a symlinked catalog directory"
 	fi
 
-	rm -rf "$catalogs_dir/stable" "$catalogs_dir/templates" ||
-		die "failed to replace existing catalog"
-	mv "$extract_dir/stable" "$catalogs_dir/stable" ||
+	mkdir -p "$catalogs_dir/stable" ||
+		die "failed to create stable catalog directory"
+	rm -f "$catalogs_dir/stable/catalog.yaml" ||
+		die "failed to replace existing catalog manifest"
+	mv "$extract_dir/stable/catalog.yaml" "$catalogs_dir/stable/catalog.yaml" ||
 		die "failed to install stable catalog"
+	rm -rf "$catalogs_dir/templates" ||
+		die "failed to replace existing catalog templates"
 	mv "$extract_dir/templates" "$catalogs_dir/templates" ||
 		die "failed to install catalog templates"
 }

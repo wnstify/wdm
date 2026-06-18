@@ -411,10 +411,55 @@ run_symlink_catalog_root_failure_case() {
 	rm -rf "$tmpdir"
 }
 
+run_existing_catalog_versions_success_case() {
+	name="existing catalog versions are preserved"
+	scenario="success"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home/.local/share/wdm/catalogs/stable/.versions/v1.0.0"
+	printf '%s\n' "snapshot" >"$tmpdir/home/.local/share/wdm/catalogs/stable/.versions/v1.0.0/provenance.txt"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	snapshot=$tmpdir/home/.local/share/wdm/catalogs/stable/.versions/v1.0.0/provenance.txt
+	manifest=$tmpdir/home/.local/share/wdm/catalogs/stable/catalog.yaml
+	if [ "$status" -ne 0 ]; then
+		printf '%s\n' "not ok - $name: installer failed" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$manifest" ]; then
+		printf '%s\n' "not ok - $name: active manifest missing" >&2
+		failures=$((failures + 1))
+	elif [ ! -f "$snapshot" ]; then
+		printf '%s\n' "not ok - $name: version snapshot was removed" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
 run_private_install_dir_success_case
 run_xdg_data_home_success_case
 run_relative_xdg_data_home_success_case
 run_symlink_catalog_root_failure_case
+run_existing_catalog_versions_success_case
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \
 	"checksum manifest missing required asset: catalog-stable.tar.gz"
