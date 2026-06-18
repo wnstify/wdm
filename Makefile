@@ -4,7 +4,7 @@ BIN_DIR ?= bin
 CMD_DIR ?= ./cmd/wdm
 GO_E2E_TAG ?= docker_e2e
 
-.PHONY: build build-linux test test-race coverage coverage-check e2e lint vet fmt tidy clean help
+.PHONY: build build-linux test test-race coverage coverage-check catalog-freshness catalog-freshness-test release-notes-test e2e lint vet fmt tidy clean help
 
 build: ## Build local binary
 	$(GO) build -o $(BIN_DIR)/$(APP_NAME) $(CMD_DIR)
@@ -23,6 +23,15 @@ coverage: ## Run quick local coverage summary
 
 coverage-check: ## Run offline coverage gate
 	@GO=$(GO) scripts/check-coverage.sh
+
+catalog-freshness: ## Ensure catalog/template changes advance generated_at
+	sh scripts/check-catalog-freshness.sh
+
+catalog-freshness-test: ## Test the catalog freshness guard
+	sh scripts/check-catalog-freshness_test.sh
+
+release-notes-test: ## Test release notes extraction
+	sh scripts/extract-release-notes_test.sh
 
 e2e: ## Run Docker e2e tests
 	$(GO) test -tags $(GO_E2E_TAG) ./tests/e2e/...
