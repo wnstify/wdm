@@ -34,8 +34,25 @@ Use the project's Make targets:
 
 1. Fork the repository and create a topic branch for your change.
 2. Keep commits focused and atomic: one logical change per commit, with a clear message.
-3. Run `make lint` and `make test` before opening a pull request.
-4. Open a pull request against the default branch (`main`) describing what changed and why.
+3. Sign off every commit with `git commit -s` to certify the Developer Certificate of Origin.
+4. Run `make lint` and `make test` before opening a pull request.
+5. Open a pull request against the default branch (`main`) describing what changed and why.
+
+## Developer Certificate of Origin
+
+Every commit must include a `Signed-off-by:` trailer. The signoff certifies that you have the right to contribute the change under this project's license. Use:
+
+```sh
+git commit -s
+```
+
+For an existing commit, amend it with:
+
+```sh
+git commit --amend --signoff
+```
+
+The DCO check rejects pull requests with unsigned commits.
 
 ## A note on `PRD §N` references
 
