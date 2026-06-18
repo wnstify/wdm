@@ -315,7 +315,7 @@ func projectCatalogImagePins(pins []catalog.ImagePin) []types.CatalogImagePin {
 // projectCatalogResources projects the catalog resource profiles into
 // fresh [types.CatalogResource] values, nil when empty. Only the
 // recommended memory and CPU values are projected: the sizing view shows
-// what the install path selects when the host budget allows, and the
+// what the install path selects when the host guidance budget allows, and the
 // min/max band and pids cap are install-planning internals the form does
 // not surface.
 func projectCatalogResources(resources []catalog.ResourceProfile) []types.CatalogResource {

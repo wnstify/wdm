@@ -588,7 +588,7 @@ func writeCatalogImagePins(b *strings.Builder, pins []types.CatalogImagePin) {
 
 // writeCatalogResources appends the recommended-resources block to b, one
 // service per line with its recommended memory and CPU bands when the catalog
-// records them — what the install path selects when the host budget allows.
+// records them — what the install path selects when the host guidance budget allows.
 // Skipped when there are no resource bands.
 func writeCatalogResources(b *strings.Builder, resources []types.CatalogResource) {
 	if len(resources) == 0 {
