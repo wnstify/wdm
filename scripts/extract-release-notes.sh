@@ -17,8 +17,24 @@ awk -v version="$version" '
 	}
 	in_section && /^## / {
 		in_section = 0
+		in_comment = 0
 	}
-	in_section && $0 !~ /^<!--.*-->$/ {
+	!in_section {
+		next
+	}
+	in_comment {
+		if ($0 ~ /-->/) {
+			in_comment = 0
+		}
+		next
+	}
+	$0 ~ /^[[:space:]]*<!--/ {
+		if ($0 !~ /-->/) {
+			in_comment = 1
+		}
+		next
+	}
+	{
 		print
 	}
 ' "$changelog" >"$output"
