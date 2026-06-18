@@ -591,6 +591,51 @@ run_template_failure_rolls_back_case() {
 	rm -rf "$tmpdir"
 }
 
+run_template_failure_removes_partial_catalog_case() {
+	name="template promotion failure removes partial new catalog"
+	scenario="templates_promote_partial_failure"
+	tmpdir=$(mktemp -d "/tmp/wdm-install-test.XXXXXX") ||
+		exit 1
+	real_mv=$(command -v mv) || exit 1
+	mkdir -p "$tmpdir/bin" "$tmpdir/home"
+
+	write_base_fakes "$tmpdir/bin"
+	write_sha256sum_fake "$tmpdir/bin"
+	write_curl_fake "$tmpdir/bin"
+	write_tar_fake "$tmpdir/bin"
+	write_mv_fake "$tmpdir/bin"
+	test_path="$tmpdir/bin:${PATH:-}"
+
+	set +e
+	HOME="$tmpdir/home" \
+		PATH="$test_path" \
+		TMPDIR="/tmp" \
+		WDM_INSTALL_DIR="$tmpdir/home/.local/bin" \
+		WDM_INSTALL_TEST_REAL_MV="$real_mv" \
+		WDM_INSTALL_TEST_SCENARIO="$scenario" \
+		"$shell_path" "$install_script" >"$tmpdir/stdout" 2>"$tmpdir/stderr"
+	status=$?
+	set -e
+
+	templates=$tmpdir/home/.local/share/wdm/catalogs/templates
+	if [ "$status" -eq 0 ]; then
+		printf '%s\n' "not ok - $name: installer succeeded" >&2
+		failures=$((failures + 1))
+	elif ! contains "$tmpdir/stderr" "failed to install catalog templates"; then
+		printf '%s\n' "not ok - $name: expected template failure" >&2
+		printf '%s\n' "stderr:" >&2
+		sed -n '1,20p' "$tmpdir/stderr" >&2
+		failures=$((failures + 1))
+	elif [ -e "$templates" ]; then
+		printf '%s\n' "not ok - $name: partial templates remained" >&2
+		failures=$((failures + 1))
+	else
+		printf '%s\n' "ok - $name"
+	fi
+
+	rm -rf "$tmpdir"
+}
+
 run_manifest_failure_rolls_back_case() {
 	name="manifest promotion failure restores previous catalog"
 	scenario="manifest_promote_failure"
@@ -649,6 +694,7 @@ run_symlink_catalog_root_failure_case
 run_existing_catalog_versions_success_case
 run_catalog_live_promotion_stays_in_catalog_dir_case
 run_template_failure_rolls_back_case
+run_template_failure_removes_partial_catalog_case
 run_manifest_failure_rolls_back_case
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \

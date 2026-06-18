@@ -313,6 +313,7 @@ seed_catalog() {
 	new_manifest="$catalog_stage/catalog.yaml.new"
 	previous_templates="$catalogs_dir/.templates.previous.$stage_name"
 	previous_manifest="$catalogs_dir/stable/.catalog.yaml.previous.$stage_name"
+	templates_replace_started=
 
 	if [ -e "$previous_templates" ] || [ -e "$previous_manifest" ]; then
 		die "catalog rollback path already exists"
@@ -328,6 +329,7 @@ seed_catalog() {
 			die "failed to preserve existing catalog templates"
 	fi
 
+	templates_replace_started=1
 	mv "$new_templates" "$catalogs_dir/templates" || {
 		restore_catalog
 		die "failed to install catalog templates"
@@ -345,6 +347,7 @@ seed_catalog() {
 		die "failed to install stable catalog"
 	}
 
+	templates_replace_started=
 	rm -rf "$previous_templates" "$previous_manifest" "$catalog_stage"
 	catalog_stage=
 	previous_templates=
@@ -377,8 +380,10 @@ restore_catalog() {
 	if [ -f "${previous_manifest:-}" ]; then
 		mv "$previous_manifest" "$catalogs_dir/stable/catalog.yaml" || :
 	fi
-	if [ -e "${previous_templates:-}" ]; then
+	if [ "${templates_replace_started:-}" = "1" ]; then
 		rm -rf "$catalogs_dir/templates" || :
+	fi
+	if [ -e "${previous_templates:-}" ]; then
 		mv "$previous_templates" "$catalogs_dir/templates" || :
 	fi
 }
