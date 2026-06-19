@@ -67,5 +67,10 @@ a normal user who belongs to the docker group.`,
 	// and `self-update apply` (binary self-update, PRD §14). Names settled by
 	root.AddCommand(newSelfUpdateCmd(newEngine))
 
+	// Top-level destructive system command (PRD §39, issue #29): `uninstall`
+	// tears down every managed app and removes wdm's own footprint. It sits
+	// at the root, not under `apps`, because it acts on wdm itself.
+	root.AddCommand(newUninstallCmd(newEngine))
+
 	return root
 }
