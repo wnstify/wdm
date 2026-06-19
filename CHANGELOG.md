@@ -6,6 +6,15 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
 ## Unreleased
 
 ### Added
+- Added an "Uninstall wdm" action to the dashboard and a top-level `wdm uninstall`
+  command that tears down every managed app with `docker compose down --rmi all`
+  (removing containers, networks, and images) and then removes `wdm`'s own
+  footprint, including the binary. Named volumes and every `~/docker/<app>/` stack
+  directory are kept; this is never `docker compose down -v` and no user data is
+  deleted. Scope is wdm-managed apps and wdm's footprint only. It is fail-closed:
+  if any stack fails to tear down it aborts before removing anything, leaves `wdm`
+  installed, lists the failed stacks, and exits nonzero. The `--yes` flag accepts
+  the destructive confirmation without prompting.
 - Added a "Stop all apps" action to the dashboard and a `wdm apps stop-all`
   command that runs `docker compose stop` against every running managed stack at
   once. It targets only apps with a running container, preserves all data
