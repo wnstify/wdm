@@ -28,7 +28,9 @@ import (
 // stack's images are removed, but all named volumes and every ~/docker/<app>/
 // stack directory are KEPT. After every stack is down, the wdm-created Docker
 // networks (declared external in the rendered compose, so compose never removes
-// them) are dropped best-effort so "docker is clean"; a network that cannot be
+// them) are dropped best-effort so "docker is clean"; a follow-up label-based
+// sweep then drops every remaining wdm.managed=true network, including ones
+// orphaned by an app the operator previously deleted. A network that cannot be
 // removed is reported, never blocking footprint removal. Self-uninstall never
 // deletes user data.
 // Lock posture (PRD §26): Uninstall is a state-changing engine entry, so the
@@ -111,6 +113,20 @@ func (e *Engine) Uninstall(
 	// can be dropped. This is best-effort: it never aborts and never blocks
 	// footprint removal (PRD §39).
 	removedNetworks, retainedNetworks := e.removeManagedNetworks(ctx, client, networks, onProgress)
+
+	// Sweep every remaining wdm.managed=true network, including ones orphaned by
+	// an app the operator previously deleted (its compose file is gone, so the
+	// compose-derived discovery above can no longer find them). The sweep dedups
+	// against the names already removed, so a network dropped via the compose
+	// path is not listed twice. Like the step above it is best-effort and never
+	// aborts the uninstall (PRD §39).
+	removedNetworks, retainedNetworks = e.sweepManagedNetworks(
+		ctx,
+		client,
+		removedNetworks,
+		retainedNetworks,
+		onProgress,
+	)
 
 	removed, err := e.removeFootprint(ctx, handle, onProgress)
 	if err != nil {
@@ -704,6 +720,79 @@ func (e *Engine) removeManagedNetworks(
 		}
 		removed = append(removed, name)
 	}
+	return removed, retained
+}
+
+// sweepManagedNetworks drops every remaining wdm.managed=true Docker network
+// after the compose-derived [Engine.removeManagedNetworks] pass and BEFORE any
+// footprint removal (PRD §39). It closes the orphan gap: a network labeled by a
+// previous install whose app the operator later deleted no longer has a compose
+// file, so the compose-derived discovery cannot find it — but the label still
+// can. The list is discovered through [docker.ListManagedNetworks]; each name
+// not already handled (deduped against the names this run already removed or
+// retained) is dropped best-effort with [docker.RemoveNetworkIfPresent].
+//
+// Every failure mode is a non-fatal cleanup degradation, never a fail-closed
+// abort: a list failure (docker problem) is swallowed and the prior results are
+// returned unchanged; a per-network removal failure is appended to retained and
+// the loop continues; context cancellation between removals stops the sweep and
+// returns what was gathered. Footprint removal proceeds regardless.
+func (e *Engine) sweepManagedNetworks(
+	ctx context.Context,
+	client docker.Client,
+	removed []string,
+	retained []types.RetainedNetwork,
+	onProgress types.ProgressFn,
+) ([]string, []types.RetainedNetwork) {
+	if err := ctx.Err(); err != nil {
+		return removed, retained
+	}
+
+	names, err := docker.ListManagedNetworks(ctx, client)
+	if err != nil {
+		// Best-effort cleanup degradation: a daemon problem listing the managed
+		// networks must not fail the uninstall. The compose-derived results
+		// stand and footprint removal proceeds.
+		return removed, retained
+	}
+
+	// Seed the seen set from the names already handled this run so a network
+	// dropped (or retained) via the compose path is not attempted or listed
+	// twice.
+	seen := make(map[string]struct{}, len(removed)+len(retained))
+	for _, name := range removed {
+		seen[name] = struct{}{}
+	}
+	for _, network := range retained {
+		seen[network.Name] = struct{}{}
+	}
+
+	swept := 0
+	for _, name := range names {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+
+		if err := ctx.Err(); err != nil {
+			return removed, retained
+		}
+
+		if onProgress != nil && swept == 0 {
+			onProgress(types.StepUninstallNetworkSweep, 89, "sweeping orphaned wdm-managed networks")
+		}
+		swept++
+
+		if err := docker.RemoveNetworkIfPresent(ctx, client, name); err != nil {
+			retained = append(retained, types.RetainedNetwork{
+				Name:   name,
+				Reason: err.Error(),
+			})
+			continue
+		}
+		removed = append(removed, name)
+	}
+
 	return removed, retained
 }
 
