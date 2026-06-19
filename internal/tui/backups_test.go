@@ -126,8 +126,8 @@ func TestFormatBackupTimeRendersUTCOrUnknown(t *testing.T) {
 
 func backupsFlowFake() *fakeEngine {
 	return &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "alpha", TemplateName: "Alpha"},
+		listStatusApps: []types.AppRuntimeStatus{
+			{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"},
 		},
 		backups: []types.BackupInfo{
 			{
@@ -176,9 +176,9 @@ func loadBackupsAppsScreenWithSender(t *testing.T, eng engine.Engine, send func(
 	m := newModelWithContextSender(t.Context(), eng, send)
 	m.width = minTerminalWidth
 	m.height = minTerminalHeight
-	m = updateModel(t, m, downKey())
-	m = updateModel(t, m, downKey())
-	m = updateModel(t, m, downKey())
+	for dashboardActions[m.cursor] != "Backups" {
+		m = updateModel(t, m, downKey())
+	}
 	next, cmd := m.Update(enterKey())
 	m = assertModel(t, next)
 	require.NotNil(t, cmd)

@@ -12,12 +12,18 @@ type fakeEngine struct {
 	listApps               []types.AppInfo
 	listErr                error
 	listCalls              int
+	listStatusApps         []types.AppRuntimeStatus
+	listStatusErr          error
+	listStatusCalls        int
 	statuses               map[string]*types.AppStatus
 	statusErr              error
 	statusCalls            []string
 	restartResult          *types.RestartResult
 	restartErr             error
 	restartCalls           []string
+	stopAllResult          *types.StopAllResult
+	stopAllErr             error
+	stopAllCalls           int
 	validationResult       *types.ValidationResult
 	validationErr          error
 	validateCalls          []string
@@ -92,6 +98,11 @@ func (f *fakeEngine) List(context.Context) ([]types.AppInfo, error) {
 	return f.listApps, f.listErr
 }
 
+func (f *fakeEngine) ListStatus(context.Context) ([]types.AppRuntimeStatus, error) {
+	f.listStatusCalls++
+	return f.listStatusApps, f.listStatusErr
+}
+
 func (f *fakeEngine) Status(_ context.Context, appID string) (*types.AppStatus, error) {
 	f.statusCalls = append(f.statusCalls, appID)
 	if f.statusErr != nil {
@@ -145,6 +156,16 @@ func (f *fakeEngine) Restart(
 ) (*types.RestartResult, error) {
 	f.restartCalls = append(f.restartCalls, req.AppID)
 	return f.restartResult, f.restartErr
+}
+
+func (f *fakeEngine) StopAll(
+	_ context.Context,
+	_ types.StopAllRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.StopAllResult, error) {
+	f.stopAllCalls++
+	return f.stopAllResult, f.stopAllErr
 }
 
 func (f *fakeEngine) ValidateConfig(_ context.Context, appID string) (*types.ValidationResult, error) {

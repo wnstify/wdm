@@ -17,8 +17,8 @@ func TestModel_UpdateFlowListsManagedAppsAndCallsEngineUpdate(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "alpha", TemplateName: "Alpha", NeedsAttention: false},
+		listStatusApps: []types.AppRuntimeStatus{
+			{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"},
 		},
 		updateResult: &types.UpdateResult{
 			AppID:                   "alpha",
@@ -62,8 +62,8 @@ func TestModel_UpdateFlowRendersDatabaseRiskConfirmationMessageVerbatim(t *testi
 	sender := newRecordingSender()
 	fake := &confirmingUpdateEngine{
 		fakeEngine: &fakeEngine{
-			listApps: []types.AppInfo{
-				{AppID: "alpha", TemplateName: "Alpha"},
+			listStatusApps: []types.AppRuntimeStatus{
+				{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"},
 			},
 			updateResult: &types.UpdateResult{AppID: "alpha"},
 		},

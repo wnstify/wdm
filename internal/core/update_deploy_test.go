@@ -640,12 +640,13 @@ func TestUpdate_NeedsAttentionMarkerBasePreference(t *testing.T) {
 // end-to-end needs-attention proof (the invariant, / §18 /
 // an induced deploy failure restores the previous config (so the .wdm.lock
 // is byte-identical with last_successful_operation still pointing at the
-// prior install), a subsequent Engine.Status reports needs_attention through the
-// EXISTING frozen §18 runtime-vs-config conditions — here container_exited,
-// because the failed force-recreate left a stopped container while the
-// restored config matches the old image. A healthy stack still reports
-// running. The marking needs no new manifest field and no manifest
-// mutation on the sad path.
+// prior install), a subsequent Engine.Status surfaces the failure through the
+// EXISTING frozen §18 runtime-vs-config conditions. The failed force-recreate
+// left the single managed container down, so the read-only Status path reports
+// the calm app-level "stopped" state while the per-service detail still
+// carries the container_exited signal. A healthy stack still reports running.
+// The marking needs no new manifest field and no manifest mutation on the
+// sad path.
 func TestUpdate_RestoredFailureSurfacesNeedsAttentionViaStatus(t *testing.T) {
 	t.Parallel()
 
@@ -682,11 +683,17 @@ func TestUpdate_RestoredFailureSurfacesNeedsAttentionViaStatus(t *testing.T) {
 	status, err := fx.eng.Status(t.Context(), fx.appID)
 	require.NoError(t, err)
 	require.NotNil(t, status)
-	assert.Equal(t, "needs_attention", status.State,
-		"a restored-but-broken stack surfaces needs_attention via the §18 conditions")
-	assert.True(t, status.NeedsAttention)
-	assert.Contains(t, status.AttentionReasons, "container_exited",
-		"the failed force-recreate's stopped container drives the §18 marking")
+	// The failed force-recreate left the single managed container down. With
+	// no managed container running, the read-only Status path reports the
+	// calm app-level "stopped" state; the per-service detail still carries
+	// the §18 container_exited signal so `apps status` shows the crash.
+	assert.Equal(t, "stopped", status.State,
+		"a fully-down stack reports the calm stopped state at app level")
+	assert.False(t, status.NeedsAttention)
+	require.Len(t, status.Services, 1)
+	assert.Equal(t, "exited", status.Services[0].State)
+	assert.True(t, status.Services[0].NeedsAttention,
+		"the failed force-recreate's stopped container drives the §18 service-level marking")
 
 	// Control: a healthy stack still reports running through the same path.
 	healthyInspect := statusContainerInspectStdout(t, "app", fx.appID, hostPort, "running", true, false, 0, "healthy")

@@ -31,8 +31,10 @@ type fakeEngine struct {
 	removeResult        *types.RemoveResult
 	statusResult        *types.AppStatus
 	listResult          []types.AppInfo
+	listStatusResult    []types.AppRuntimeStatus
 	settings            *types.Settings
 	restartResult       *types.RestartResult
+	stopAllResult       *types.StopAllResult
 	validationResult    *types.ValidationResult
 	backupsResult       []types.BackupInfo
 	restoreResult       *types.RestoreBackupResult
@@ -78,6 +80,13 @@ func (f *fakeEngine) List(_ context.Context) ([]types.AppInfo, error) {
 		return nil, f.err
 	}
 	return f.listResult, nil
+}
+
+func (f *fakeEngine) ListStatus(_ context.Context) ([]types.AppRuntimeStatus, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.listStatusResult, nil
 }
 
 func (f *fakeEngine) Status(_ context.Context, appID string) (*types.AppStatus, error) {
@@ -173,6 +182,20 @@ func (f *fakeEngine) Restart(
 		return nil, f.err
 	}
 	return f.restartResult, nil
+}
+
+func (f *fakeEngine) StopAll(
+	_ context.Context,
+	_ types.StopAllRequest,
+	onProgress engine.ProgressFn,
+	confirmer types.Confirmer,
+) (*types.StopAllResult, error) {
+	f.progressWasNil = onProgress == nil
+	f.confirmer = confirmer
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.stopAllResult, nil
 }
 
 func (f *fakeEngine) ValidateConfig(_ context.Context, _ string) (*types.ValidationResult, error) {

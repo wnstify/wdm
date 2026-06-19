@@ -22,12 +22,13 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 | Command | Description |
 |---|---|
-| `wdm apps list` | List managed Docker Compose stacks. |
+| `wdm apps list` | List managed Docker Compose stacks with their live runtime state. |
 | `wdm apps install <app-id>` | Install and start a curated stack. |
 | `wdm apps status <app-id>` | Show the runtime status of a managed stack. |
 | `wdm apps logs <app-id>` | Stream redacted logs from a stack. |
 | `wdm apps update <app-id>` | Update a stack to the current catalog version. |
 | `wdm apps restart <app-id>` | Restart a stack's containers in place. |
+| `wdm apps stop-all` | Stop every running managed stack at once, preserving all data. |
 | `wdm apps remove <app-id>` | Remove a stack, keeping its files and volumes. |
 | `wdm apps delete <app-id>` | Permanently delete a stack's files and directory. |
 | `wdm apps validate <app-id>` | Validate a stack's Docker Compose configuration. |
@@ -58,6 +59,13 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 - `--yes` — accept safe confirmations.
 - `--stack-path <path>` — override the default stack path.
+
+**`wdm apps stop-all`**
+
+- Runs `docker compose stop` against every managed stack that has at least one running container. Containers stop but stay defined; networks, named volumes, and all data are preserved (this is not `down`).
+- Targets only running apps: stacks that are already stopped are skipped and reported as "already stopped". When no app is running, it prints "No running apps to stop." and exits `0` without prompting.
+- Continues on error: every targeted (running) stack is attempted even if some fail, and the command exits nonzero when any targeted stack failed.
+- `--yes` — accept the safe stop confirmation without prompting.
 
 **`wdm apps remove <app-id>`**
 
@@ -129,6 +137,17 @@ Install a stack with a public domain and a catalog placeholder:
 
 ```sh
 wdm apps install nextcloud --domain cloud.example.com --set timezone=Europe/Berlin --yes
+```
+
+List every managed stack with its live runtime state. Plain output is one
+tab-separated `app_id<TAB>stack_path<TAB>state` line per stack; the `--json`
+envelope carries the same entries under the `apps` key, each with a live
+`state` (`running`, `stopped`, `needs_attention`, or `removed`) and `needs_attention`
+flag derived from real container state:
+
+```sh
+wdm apps list
+wdm apps list --json
 ```
 
 Get a stack's status as JSON for a script:

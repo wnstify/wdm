@@ -165,8 +165,8 @@ func TestModel_DeleteNameBackspaceRemovesLastRune(t *testing.T) {
 
 func removeFlowFake() *fakeEngine {
 	return &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "uptime-kuma", TemplateName: "Uptime Kuma"},
+		listStatusApps: []types.AppRuntimeStatus{
+			{AppInfo: types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma"}, State: "running"},
 		},
 		statuses: map[string]*types.AppStatus{
 			"uptime-kuma": {AppID: "uptime-kuma", State: "running"},

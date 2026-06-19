@@ -28,9 +28,16 @@ func TestAppsList_JSON_EmitsSingleEnvelopeUnderAppsKey(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{
-		listResult: []types.AppInfo{
-			{AppID: "vaultwarden", TemplateName: "Vaultwarden", StackPath: "/home/test/docker/vaultwarden", CatalogChannel: "stable"},
-			{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", StackPath: "/home/test/docker/uptime-kuma", CatalogChannel: "stable"},
+		listStatusResult: []types.AppRuntimeStatus{
+			{
+				AppInfo: types.AppInfo{AppID: "vaultwarden", TemplateName: "Vaultwarden", StackPath: "/home/test/docker/vaultwarden", CatalogChannel: "stable"},
+				State:   "running",
+			},
+			{
+				AppInfo:          types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", StackPath: "/home/test/docker/uptime-kuma", CatalogChannel: "stable", NeedsAttention: true},
+				State:            "needs_attention",
+				AttentionReasons: []string{"container_exited"},
+			},
 		},
 	}
 
@@ -47,23 +54,31 @@ func TestAppsList_JSON_EmitsSingleEnvelopeUnderAppsKey(t *testing.T) {
 	require.Len(t, apps, 2, "both managed stacks must appear under apps")
 
 	// Representative-key checks: the pkg/types contract tests own the
-	// exhaustive AppInfo field shape; here we only confirm the right
-	// payload reached the envelope under the apps key.
+	// exhaustive AppRuntimeStatus field shape; here we only confirm the
+	// right payload — including the LIVE state — reached the envelope under
+	// the apps key.
 	first, ok := apps[0].(map[string]any)
 	require.True(t, ok, "each apps entry must be a JSON object")
 	assert.Equal(t, "vaultwarden", first["app_id"])
 	assert.Equal(t, "/home/test/docker/vaultwarden", first["stack_path"])
+	assert.Equal(t, "running", first["state"], "the live runtime state must reach the JSON envelope")
+	assert.Equal(t, false, first["needs_attention"], "a running app must report needs_attention false")
+
+	second, ok := apps[1].(map[string]any)
+	require.True(t, ok, "each apps entry must be a JSON object")
+	assert.Equal(t, "needs_attention", second["state"], "a degraded app must surface its live state")
+	assert.Equal(t, true, second["needs_attention"], "a degraded app must report needs_attention true")
 }
 
 // TestAppsList_JSON_EmptyResultNormalizesToEmptyArray pins the nil ->
-// []types.AppInfo normalization documented on appsListPayload: a fresh
-// system with no managed stacks must emit "apps": [], not "apps": null,
-// so an NDJSON/jq consumer iterates a real empty array instead of
-// special-casing null.
+// []types.AppRuntimeStatus normalization documented on appsListPayload: a
+// fresh system with no managed stacks must emit "apps": [], not
+// "apps": null, so an NDJSON/jq consumer iterates a real empty array
+// instead of special-casing null.
 func TestAppsList_JSON_EmptyResultNormalizesToEmptyArray(t *testing.T) {
 	t.Parallel()
 
-	fake := &fakeEngine{listResult: nil}
+	fake := &fakeEngine{listStatusResult: nil}
 
 	stdout, _, err := runLeaf(t, fake, "apps", "list", "--json")
 	require.NoError(t, err)
@@ -84,15 +99,16 @@ func TestAppsList_JSON_EmptyResultNormalizesToEmptyArray(t *testing.T) {
 }
 
 // TestAppsList_Plain_EmitsTabSeparatedLines pins the plain-mode contract
-// (PRD §9): one stack per line as "<app_id>\t<stack_path>", tab-separated
-// so cut(1)/awk(1) parse without quoting, and no envelope bytes.
+// (PRD §9): one stack per line as "<app_id>\t<stack_path>\t<state>",
+// tab-separated so cut(1)/awk(1) parse without quoting, and no envelope
+// bytes. The state column carries the LIVE runtime state.
 func TestAppsList_Plain_EmitsTabSeparatedLines(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{
-		listResult: []types.AppInfo{
-			{AppID: "vaultwarden", StackPath: "/home/test/docker/vaultwarden"},
-			{AppID: "uptime-kuma", StackPath: "/home/test/docker/uptime-kuma"},
+		listStatusResult: []types.AppRuntimeStatus{
+			{AppInfo: types.AppInfo{AppID: "vaultwarden", StackPath: "/home/test/docker/vaultwarden"}, State: "running"},
+			{AppInfo: types.AppInfo{AppID: "uptime-kuma", StackPath: "/home/test/docker/uptime-kuma"}, State: "needs_attention"},
 		},
 	}
 
@@ -100,9 +116,9 @@ func TestAppsList_Plain_EmitsTabSeparatedLines(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t,
-		"vaultwarden\t/home/test/docker/vaultwarden\nuptime-kuma\t/home/test/docker/uptime-kuma\n",
+		"vaultwarden\t/home/test/docker/vaultwarden\trunning\nuptime-kuma\t/home/test/docker/uptime-kuma\tneeds_attention\n",
 		stdout,
-		"plain list must emit one tab-separated app_id/stack_path line per stack")
+		"plain list must emit one tab-separated app_id/stack_path/state line per stack")
 	assert.False(t, strings.HasPrefix(strings.TrimSpace(stdout), `{"schema"`),
 		"plain mode stdout must not be a JSON envelope")
 }
@@ -111,7 +127,7 @@ func TestAppsList_Plain_EmitsTabSeparatedLines(t *testing.T) {
 func TestAppsList_Plain_EmptyEmitsNothing(t *testing.T) {
 	t.Parallel()
 
-	fake := &fakeEngine{listResult: nil}
+	fake := &fakeEngine{listStatusResult: nil}
 
 	stdout, _, err := runLeaf(t, fake, "apps", "list")
 	require.NoError(t, err)
