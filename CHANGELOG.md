@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
-## Unreleased
+## v1.0.4 - 2026-06-20
 
 ### Added
 - Added per-app resource management: a top-level `wdm resources <app>` command
@@ -14,9 +14,13 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   `--service`, `--yes`, `--stack-path`, `--json`) it changes the selected
   service's limits: `wdm` validates the request against the catalog bands, backs
   up the config, rewrites only the resource variables in the stack's `.env`
-  (every secret and unrelated value is preserved), re-renders the Compose file,
-  validates it fail-closed, and recreates the container (a brief downtime).
-  Limits left unset are kept as-is; an explicit empty or zero value is rejected.
+  in place (every secret, derived value, and unrelated line is preserved
+  byte-for-byte; the Compose file is left unchanged), re-checks the on-disk
+  Compose against the catalog policy, validates it fail-closed, and recreates
+  the container (a brief downtime). Limits left unset are kept as-is; an
+  explicit empty or zero value is rejected, and an out-of-band value is
+  reported with the allowed range. `--service` defaults to the app's primary
+  (first adjustable) service.
   The new limits live in the `.env`, so they survive catalog updates, and no new
   stack or override file is created.
 - Labeled every `wdm`-created Docker network at install with the Webnestify
