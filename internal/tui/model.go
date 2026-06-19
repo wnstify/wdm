@@ -27,6 +27,7 @@ var dashboardActions = []string{
 	"Settings",
 	"Update catalog",
 	"Update wdm",
+	"Uninstall wdm",
 }
 
 type screen int
@@ -37,6 +38,8 @@ const (
 	screenCheckApps
 	screenStopAll
 	screenStopAllResult
+	screenUninstall
+	screenUninstallResult
 	screenAppActions
 	screenFirstRunWelcome
 	screenFirstRunSystemCheck
@@ -119,6 +122,8 @@ type model struct {
 	selfUpdateResult *types.SelfUpdateResult
 
 	stopAllResult *types.StopAllResult
+
+	uninstallResult *types.UninstallResult
 
 	// launchCheckActive is true while the daily-on-launch update check runs, so
 	// the dashboard renders launchCheckNotice. launchCheckBanner holds
@@ -373,10 +378,39 @@ func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.screen = screenRestoreResult
 		}
+	case uninstallFinishedMsg:
+		return m.applyUninstallFinished(msg)
 	default:
 		if next, ok := m.updateDistributionFinishedMsg(msg); ok {
 			return next, nil
 		}
+	}
+	return m, nil
+}
+
+// applyUninstallFinished settles the model after Engine.Uninstall returns
+// and decides whether to quit. Uninstall is fail-closed: on a full success
+// (no error, no failed stacks) the running binary is already gone from
+// disk, so the model advances to the result screen and returns tea.Quit so
+// the program exits after the result has been rendered. On an abort (a
+// non-empty Failed) or a whole-operation error (a declined confirmation,
+// lock contention, cancellation), wdm is still installed: the result/error
+// is shown on the uninstall screens and the program keeps running so the
+// user can read the outcome and return to the dashboard.
+func (m model) applyUninstallFinished(msg uninstallFinishedMsg) (tea.Model, tea.Cmd) {
+	m.busy = false
+	m.err = msg.err
+	m.uninstallResult = msg.result
+
+	if msg.result == nil {
+		// A whole-operation error returned no result; stay on the uninstall
+		// screen and surface the error there.
+		return m, nil
+	}
+
+	m.screen = screenUninstallResult
+	if msg.err == nil && len(msg.result.Failed) == 0 {
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -560,7 +594,7 @@ func (m *model) back() {
 	case screenInstallForm:
 		m.screen = screenInstallCatalog
 		m.err = nil
-	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenPlaceholder, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
+	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenPlaceholder, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
 		m.screen = screenDashboard
 		m.firstRun = false
 		m.err = nil
@@ -633,6 +667,15 @@ func (m model) selectDashboardAction() (tea.Model, tea.Cmd) {
 		m.selfUpdateResult = nil
 		m.progress = progressMsg{}
 		return m, m.checkSelfUpdateCmd()
+	}
+
+	if dashboardActions[m.cursor] == "Uninstall wdm" {
+		m.screen = screenUninstall
+		m.busy = true
+		m.err = nil
+		m.uninstallResult = nil
+		m.progress = progressMsg{}
+		return m, m.uninstallCmd()
 	}
 
 	if dashboardActions[m.cursor] != "Check my apps" {
@@ -849,6 +892,8 @@ func (m model) distributionScreenView() (string, bool) {
 		return m.catalogUpdateScreenView(), true
 	case screenSelfUpdate, screenSelfUpdateResult:
 		return m.selfUpdateScreenView(), true
+	case screenUninstall, screenUninstallResult:
+		return m.uninstallScreenView(), true
 	default:
 		return "", false
 	}
