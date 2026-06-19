@@ -64,7 +64,7 @@ func (m model) stopAllView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -76,7 +76,7 @@ func (m model) stopAllResultView() string {
 	result := m.stopAllResult
 	if result == nil {
 		b.WriteString("No stop result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -121,6 +121,6 @@ func (m model) stopAllResultView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }

@@ -46,7 +46,7 @@ func (m model) firstRunSystemCheckView() string {
 	b.WriteString("Docker and Compose readiness are checked by the install engine before deployment.\n")
 	b.WriteString("The install flow will also validate generated files, Compose config, paths, ports, and confirmation gates.\n\n")
 	b.WriteString("> Continue to choose app [selected]\n\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -69,7 +69,7 @@ func (m model) firstRunWelcomeView() string {
 		b.WriteByte('\n')
 	}
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

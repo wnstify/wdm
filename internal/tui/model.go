@@ -472,9 +472,20 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		// Text-entry screens must receive printable runes, including 'q'.
+		// Quit also binds ctrl+c (a non-rune key), so gate only the rune case
+		// and let it fall through to updateScreenSpecificKey for typing.
+		if m.isTextEntryScreen() && msg.Type == tea.KeyRunes {
+			break
+		}
 		m.exiting = true
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
+		// Same as Quit: 'b' is a printable rune that must reach the field on
+		// text-entry screens, while esc (a non-rune key) still cancels/goes back.
+		if m.isTextEntryScreen() && msg.Type == tea.KeyRunes {
+			break
+		}
 		m.back()
 	case m.tooSmall():
 		return m, nil
@@ -493,6 +504,17 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// isTextEntryScreen reports whether the current screen accepts typed text, so
+// the global 'b'/'q' shortcuts must not shadow runes destined for a field.
+func (m model) isTextEntryScreen() bool {
+	switch m.screen {
+	case screenInstallForm, screenSettings, screenDeleteName:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m model) updateScreenSpecificKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
@@ -957,7 +979,7 @@ func (m model) dashboardView() string {
 	m.writeLaunchCheckStatus(&b)
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -994,7 +1016,7 @@ func (m model) placeholderView() string {
 	b.WriteString(titleStyle().Render(dashboardActions[m.cursor]))
 	b.WriteString("\n\n")
 	b.WriteString("This screen lands later in Wave H.\n\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1034,7 +1056,7 @@ func (m model) checkAppsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1047,7 +1069,7 @@ func (m model) appActionsView() string {
 		b.WriteString("Working on ")
 		b.WriteString(m.activeAppID())
 		b.WriteString("...\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -1091,7 +1113,7 @@ func (m model) appActionsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1167,6 +1189,9 @@ func titleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true)
 }
 
-func helpLine() string {
+func (m model) helpLine() string {
+	if m.isTextEntryScreen() {
+		return "Enter: select    Esc: back    Ctrl+C: quit\n"
+	}
 	return "Enter: select    Back: b    Quit: q\n"
 }

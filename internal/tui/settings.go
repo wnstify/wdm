@@ -153,11 +153,11 @@ func (m model) settingsView() string {
 	switch {
 	case m.busy && m.settings == nil:
 		b.WriteString("Loading settings...\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	case m.busy:
 		b.WriteString("Saving settings...\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	case m.err != nil:
 		b.WriteString("Settings failed: ")
@@ -204,6 +204,6 @@ func (m model) settingsView() string {
 	b.WriteByte('\n')
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
