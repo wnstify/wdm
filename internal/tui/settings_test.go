@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -84,6 +85,49 @@ func TestModel_SettingsInputBackspaceRemovesLastRuneAndClearsMessage(t *testing.
 	m.settingsCursor = 0
 	m.settingsFields[0].value = ""
 	assert.Empty(t, m.deleteSettingsInputRune().settingsFields[0].value)
+}
+
+func TestModel_SettingsKeyNavigationAndEditing(t *testing.T) {
+	t.Parallel()
+
+	// The settings key handler is exercised directly: the top-level Update
+	// intercepts Back ("b"/"esc") before screen-specific keys, so driving the
+	// editing arms through Update would never reach them for those runes.
+	m := model{
+		keys: defaultKeyMap(),
+		settingsFields: []settingsField{
+			{key: "timezone", value: ""},
+			{key: "base_stack_path", value: ""},
+		},
+		settingsCursor:  1,
+		settingsMessage: "Settings saved",
+	}
+
+	// Up moves the cursor toward the first field.
+	next, cmd := m.updateSettingsKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, 0, m.settingsCursor, "Up must decrement the settings cursor")
+
+	// Rune and Space input both append to the focused field and clear the
+	// persisted-status message.
+	next, cmd = m.updateSettingsKey(runeKey('x'))
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	next, cmd = m.updateSettingsKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	next, cmd = m.updateSettingsKey(runeKey('y'))
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, "x y", m.settingsFields[0].value)
+	assert.Empty(t, m.settingsMessage)
+
+	// Backspace deletes the last rune of the focused field.
+	next, cmd = m.updateSettingsKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, "x ", m.settingsFields[0].value)
 }
 
 func loadSettingsScreen(t *testing.T, eng *fakeEngine) model {
