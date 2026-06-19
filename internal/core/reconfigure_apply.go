@@ -3,8 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,10 +23,17 @@ import (
 // [Engine.applyUpdate]'s ordering and sad-path discipline: it engages
 // the per-stack exclusive flock, reconfirms managed identity through the
 // held fd, takes a config backup BEFORE any byte changes, rewrites the
-// stack (re-rendering with the new resource vars while preserving every
-// secret and unrelated .env value), validates the rewritten compose,
-// confirms the recreate, recreates with up -d --force-recreate, commits
-// the manifest, and verifies status.
+// stack (editing ONLY the targeted resource-limit lines in the existing
+// .env in place while preserving every secret, derived value, comment,
+// and unrelated line byte-for-byte), validates the unchanged compose
+// against the edited .env, confirms the recreate, recreates with up -d
+// --force-recreate, commits the manifest, and verifies status.
+// Unlike the update path it does NOT re-render the .env or compose from
+// the catalog template: a re-render recomputes derived values (such as a
+// public-URL built from an install-only domain input) that were never
+// persisted to .env, so it would fail for derived-domain apps. The
+// in-place edit changes only the resource vars and leaves the rest of
+// the install-time .env intact.
 // Sad-path boundary: a fault after the rewrite exposed the new bytes and
 // before the manifest commit restores the backup byte-for-byte via the
 // shared [Engine.restoreUpdateOnFailure]. A backup-creation failure
@@ -74,8 +81,10 @@ func (e *Engine) applyReconfigure(
 
 	// The atomic write is the first byte-exposing step, so from here
 	// through the manifest commit every fault routes through the sad path:
-	// restore the snapshot byte-for-byte and surface a typed error.
-	if err := writeUpdateFiles(ctx, rewrite, redactor); err != nil {
+	// restore the snapshot byte-for-byte and surface a typed error. Only
+	// .env changes — the compose and sidecar artifacts are untouched — so
+	// the reconfigure writes the .env alone rather than the full file set.
+	if err := writeReconfigureEnv(ctx, rewrite, redactor); err != nil {
 		return nil, e.restoreReconfigureOnFailure(err, plan, existing, backupPath, redactor, onProgress)
 	}
 	if err := runReconfigureDeployment(ctx, client, plan, rewrite, existing, confirmer, backupPath, onProgress); err != nil {
@@ -117,17 +126,21 @@ func createReconfigureBackup(plan *reconfigurePlan, onProgress types.ProgressFn)
 	return snapshotPath, nil
 }
 
-// rewriteReconfigureStack resolves the placeholder map from the running
-// stack, seeds the targeted service's NEW resource limit values, renders
-// the artifacts in memory, and verifies no secret leaks into a non-secret
-// artifact. It is PURE — it writes nothing — so any fault propagates
-// unchanged with its own typed code and hint, and the caller can route
-// the later write and deploy through the restore sad path without a
-// pre-exposure refusal inheriting a config-restore hint.
-// The new resource values are injected into resolvedValues BEFORE the
-// install-built-in reuse pass, which skips keys already resolved, so the
-// reconfigure values win while every secret and unrelated .env value is
-// reused byte-for-byte exactly as the update rewrite does.
+// rewriteReconfigureStack edits ONLY the targeted service's three
+// resource-limit lines in the existing stack .env, in place, preserving
+// every other line — secrets, derived values, comments, ordering —
+// byte-for-byte. It does NOT re-render the .env or compose from the
+// catalog template: a re-render would recompute derived values (such as
+// a public URL built from an install-only domain input) that were never
+// persisted to .env, so it would fail for derived-domain apps. The
+// compose template is left exactly as installed; only the resource vars
+// the compose already reads from .env at up time change.
+// It is PURE — it writes nothing — so any fault propagates unchanged
+// with its own typed code and hint, and the caller can route the later
+// write and deploy through the restore sad path. The returned plan
+// carries the edited .env bytes and the unchanged on-disk compose bytes
+// for the fail-closed compose-config validation; the recreate reads both
+// files from disk via [installComposeProject].
 func (e *Engine) rewriteReconfigureStack(
 	ctx context.Context,
 	plan *reconfigurePlan,
@@ -137,149 +150,202 @@ func (e *Engine) rewriteReconfigureStack(
 		return nil, err
 	}
 	if onProgress != nil {
-		onProgress(types.StepReconfigureRender, 30, "rendering reconfigured stack")
+		onProgress(types.StepReconfigureRender, 30, "rewriting reconfigured stack .env")
 	}
 
-	rewrite, err := e.resolveReconfigureRewritePlan(plan)
-	if err != nil {
-		return nil, err
-	}
-
-	secretLiterals := slices.Concat(rewrite.generatedValues, rewrite.reusedSecretValues)
-	redactor := security.NewActiveRedactor(secretLiterals)
-
-	input, err := e.installRenderInput(ctx, rewrite)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		return nil, redactedVerificationError(
-			redactor,
-			"reconfigure templates could not be loaded",
-			"refresh the catalog and retry",
-			err,
-		)
-	}
-	envStack, err := render.RenderEnv(input)
-	if err != nil {
-		return nil, redactedVerificationError(
-			redactor,
-			"env template could not be rendered",
-			"refresh the catalog and retry",
-			err,
-		)
-	}
-	composeStack, err := render.RenderLabels(input)
-	if err != nil {
-		return nil, redactedVerificationError(
-			redactor,
-			"compose template could not be rendered",
-			"refresh the catalog and retry",
-			err,
-		)
-	}
-
-	rewrite.rendered = render.RenderedStack{
-		ComposeBytes:    composeStack.ComposeBytes,
-		EnvBytes:        envStack.EnvBytes,
-		AdditionalFiles: composeStack.AdditionalFiles,
-		ConfigArtifacts: composeStack.ConfigArtifacts,
-		ServiceLabels:   composeStack.ServiceLabels,
-		VolumeMounts:    composeStack.VolumeMounts,
-	}
-
-	// Reuse the install-arc catalog-vs-template guards exactly as the
-	// update rewrite does: a reconfigure must not let a drifted catalog
-	// slip past the same image-pin, public-bind, privilege, socket,
-	// module-mount, or IPAM checks.
-	if err := verifyImagePinsMatchTemplate(redactor, rewrite.app, rewrite.rendered.ComposeBytes); err != nil {
-		return nil, err
-	}
-	if err := verifyPublicBindsMatchCatalog(redactor, rewrite.app, rewrite.rendered.ComposeBytes); err != nil {
-		return nil, err
-	}
-	if err := verifyContainerPrivilegeMatchCatalog(redactor, rewrite.app, rewrite.rendered.ComposeBytes); err != nil {
-		return nil, err
-	}
-	if err := verifySocketPolicyMatchCatalog(redactor, rewrite.app, rewrite.rendered.ComposeBytes); err != nil {
-		return nil, err
-	}
-	if err := verifyHostModuleMountMatchCatalog(redactor, rewrite.app, rewrite.rendered.ComposeBytes); err != nil {
-		return nil, err
-	}
-	if err := verifyNetworkIPAMMatchCatalog(redactor, rewrite.app, rewrite.rendered.ComposeBytes); err != nil {
-		return nil, err
-	}
-	if err := verifyRenderedNonSecretArtifacts(redactor, secretLiterals, rewrite.rendered, nil); err != nil {
-		return nil, err
-	}
-	return rewrite, nil
-}
-
-// resolveReconfigureRewritePlan builds the [installPlan] the shared
-// render and write helpers consume, with the resolved placeholder map
-// sourced from the running stack — identical to the update rewrite
-// ([Engine.resolveUpdateRewritePlan]) EXCEPT that the targeted service's
-// three resource vars are seeded with the new values before the
-// install-built-in reuse pass. Because [reuseUpdateBuiltins] skips keys
-// already present in resolvedValues, the seeded reconfigure values are
-// authoritative while every other .env key — secrets, non-secret
-// placeholders, the other services' resource vars, UID/GID — is reused
-// verbatim.
-func (e *Engine) resolveReconfigureRewritePlan(plan *reconfigurePlan) (*installPlan, error) {
 	existingEnv, err := state.ReadStackEnv(plan.stackPath)
 	if err != nil {
 		return nil, err
+	}
+	envBytes, err := readStackFile(plan.stackPath, installEnvFilename)
+	if err != nil {
+		return nil, err
+	}
+	composeBytes, err := readStackFile(plan.stackPath, installComposeFilename)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect the secret-typed values already in the .env so the redactor
+	// scrubs them from any later write or deploy fault. Provenance does not
+	// matter here: every secret-typed placeholder value is sensitive.
+	secretLiterals := collectStackSecretValues(plan.app, existingEnv)
+	redactor := security.NewActiveRedactor(secretLiterals)
+
+	key := serviceKey(plan.service)
+	newEnv, err := rewriteResourceEnvLines(envBytes, key, plan.memory, plan.cpus, plan.pids)
+	if err != nil {
+		return nil, redactedVerificationError(
+			redactor,
+			"resource limits could not be applied to the stack .env",
+			"the stack .env is corrupt; reinstall the app to restore managed state",
+			err,
+		)
 	}
 
 	rewrite := &installPlan{
 		app:            plan.app,
 		stackPath:      plan.stackPath,
 		composeProject: plan.composeProject,
-		resolvedValues: make(map[string]string, len(existingEnv)),
+		rendered: render.RenderedStack{
+			ComposeBytes: composeBytes,
+			EnvBytes:     newEnv,
+		},
 	}
 
-	declared := make(map[string]catalog.Placeholder, len(plan.app.Placeholders))
-	for _, ph := range plan.app.Placeholders {
-		if _, ok := declared[ph.Name]; ok {
-			return nil, catalogVerificationError(
-				"catalog contains duplicate placeholders",
-				"refresh the catalog and retry",
-				fmt.Errorf("duplicate placeholder %q", ph.Name),
-			)
-		}
-		declared[ph.Name] = ph
-		rewrite.placeholders = append(rewrite.placeholders, render.Placeholder{
-			Name:        ph.Name,
-			Type:        render.Type(ph.Type),
-			Required:    ph.Required,
-			Default:     ph.Default,
-			Regenerable: ph.Regenerable,
-		})
-
-		if err := rewrite.resolveUpdatePlaceholder(ph, existingEnv, e.generateSecret); err != nil {
-			return nil, err
-		}
-	}
-
-	// Seed the new resource vars BEFORE reuseUpdateBuiltins so they win
-	// over the existing .env copies; reuseUpdateBuiltins then reuses every
-	// other key verbatim.
-	key := serviceKey(plan.service)
-	if err := rewrite.addSyntheticResolvedValue("MEMORY_LIMIT_"+key, plan.memory); err != nil {
-		return nil, err
-	}
-	if err := rewrite.addSyntheticResolvedValue("CPUS_LIMIT_"+key, plan.cpus); err != nil {
-		return nil, err
-	}
-	if err := rewrite.addSyntheticResolvedValue("PIDS_LIMIT_"+key, strconv.Itoa(plan.pids)); err != nil {
-		return nil, err
-	}
-
-	if err := reuseUpdateBuiltins(rewrite, existingEnv, declared); err != nil {
+	// The compose is unchanged from install, so the install-arc
+	// catalog-vs-template guards have nothing new to verify. Keep only the
+	// cheap non-secret leak guard: it confirms the unchanged compose carries
+	// no secret literal, a defense-in-depth check that costs nothing.
+	if err := verifyRenderedNonSecretArtifacts(redactor, secretLiterals, rewrite.rendered, nil); err != nil {
 		return nil, err
 	}
 	return rewrite, nil
+}
+
+// readStackFile reads a single regular file under the stack directory by
+// its leaf name, path-safe-joined so a symlinked component cannot
+// redirect the read outside the stack. The bytes are returned verbatim so
+// the reconfigure can edit the .env in place and stage the unchanged
+// compose for validation.
+func readStackFile(stackPath, name string) ([]byte, error) {
+	path, err := security.SafeJoin(stackPath, name)
+	if err != nil {
+		return nil, usageValidationError(
+			"stack path is unsafe",
+			"remove symlinks from the stack path and retry",
+			err,
+		)
+	}
+	// G304 is suppressed: path is SafeJoin'd against the engine-controlled
+	// absolute stack path, so no symlinked component can redirect the read.
+	data, err := os.ReadFile(path) //nolint:gosec // G304: SafeJoin rejects symlink/traversal escapes from the stack root
+	if err != nil {
+		return nil, types.WrapError(
+			types.ErrCodeUsageValidation,
+			"stack file could not be read",
+			fmt.Sprintf("ensure %q exists and is readable", path),
+			err,
+		)
+	}
+	return data, nil
+}
+
+// collectStackSecretValues returns the secret-typed placeholder values
+// recorded in the stack .env. They seed the redactor so a later write or
+// deploy fault never echoes a secret, mirroring the update rewrite's
+// reusedSecretValues without re-resolving the placeholder map. A
+// secret-typed placeholder absent from the .env contributes nothing: the
+// in-place edit never touches it, so its absence cannot leak.
+func collectStackSecretValues(app catalog.App, env map[string]string) []string {
+	secrets := make([]string, 0, len(app.Placeholders))
+	for _, ph := range app.Placeholders {
+		if render.Type(ph.Type) != render.TypeSecret {
+			continue
+		}
+		if value, ok := env[ph.Name]; ok && value != "" {
+			secrets = append(secrets, value)
+		}
+	}
+	return secrets
+}
+
+// rewriteResourceEnvLines returns env with the targeted service's three
+// resource-limit assignments set to the new values, editing matching
+// lines in place and preserving every other byte — secrets, derived
+// values, comments, blank lines, and ordering. A targeted var absent from
+// the .env is appended in KEY=VALUE form in the stable
+// MEMORY/CPUS/PIDS order, matching the install writer's convention. A
+// trailing newline is preserved when present and added when an appended
+// line would otherwise abut a no-newline final line.
+func rewriteResourceEnvLines(env []byte, serviceKey, memory, cpus string, pids int) ([]byte, error) {
+	targets := map[string]string{
+		"MEMORY_LIMIT_" + serviceKey: memory,
+		"CPUS_LIMIT_" + serviceKey:   cpus,
+		"PIDS_LIMIT_" + serviceKey:   strconv.Itoa(pids),
+	}
+
+	hadTrailingNewline := len(env) > 0 && env[len(env)-1] == '\n'
+	lines := strings.Split(string(env), "\n")
+	// strings.Split on a trailing-newline buffer yields a final empty
+	// element; drop it so appends land before it and a single trailing
+	// newline is restored deterministically.
+	if hadTrailingNewline && len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	seen := make(map[string]bool, len(targets))
+	for i, line := range lines {
+		separator := strings.IndexByte(line, '=')
+		if separator < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:separator])
+		newValue, ok := targets[key]
+		if !ok {
+			continue
+		}
+		if seen[key] {
+			return nil, fmt.Errorf("resource var %q is duplicated in the stack .env", key)
+		}
+		seen[key] = true
+		lines[i] = key + "=" + newValue
+	}
+
+	// Append any targeted var the .env lacked, in stable order so the
+	// output is deterministic across runs.
+	for _, key := range []string{"MEMORY_LIMIT_" + serviceKey, "CPUS_LIMIT_" + serviceKey, "PIDS_LIMIT_" + serviceKey} {
+		if seen[key] {
+			continue
+		}
+		lines = append(lines, key+"="+targets[key])
+	}
+
+	out := strings.Join(lines, "\n")
+	if hadTrailingNewline || len(out) > 0 {
+		out += "\n"
+	}
+	return []byte(out), nil
+}
+
+// writeReconfigureEnv writes the edited .env atomically at secret-file
+// mode under the held per-stack flock. Only the .env changes — the
+// compose and sidecar artifacts are untouched by a reconfigure — so this
+// writes that single file rather than the full install file set. The
+// destination is re-validated for symlink-free ancestry before the write
+// (PRD §12, §13); [state.WriteFileAtomic] guarantees no half-written
+// file, so the step 3 backup stays intact for the restore path.
+func writeReconfigureEnv(ctx context.Context, rewrite *installPlan, redactor security.Redactor) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	envPath, err := security.SafeJoin(rewrite.stackPath, installEnvFilename)
+	if err != nil {
+		return usageValidationError(
+			"stack path is unsafe",
+			"remove symlinks from the stack path and retry",
+			err,
+		)
+	}
+	if err := validateInstallWritePath(rewrite.stackPath, envPath); err != nil {
+		return usageValidationError(
+			"reconfigure file path is unsafe",
+			"remove symlinks from the stack path and retry",
+			err,
+		)
+	}
+	if err := state.WriteFileAtomic(envPath, rewrite.rendered.EnvBytes, security.SecretFileMode); err != nil {
+		// The .env bytes carry secret literals, so a filesystem fault is
+		// scrubbed before any sink.
+		return types.WrapError(
+			types.ErrCodeGeneric,
+			"reconfigured stack .env could not be written",
+			"check stack directory permissions and retry",
+			newRedactedCause(redactor, err),
+		)
+	}
+	return nil
 }
 
 // runReconfigureDeployment runs the post-write, pre-commit span: compose

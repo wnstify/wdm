@@ -93,11 +93,14 @@ type Engine interface {
 	ResourceSettings(ctx context.Context, appID string) (*types.ResourceSettings, error)
 
 	// Reconfigure changes one managed service's resource limits (memory,
-	// CPUs, PIDs) after install (issue #28). It rewrites ONLY the resource
-	// vars in the stack's .env — every secret and unrelated value is
-	// preserved byte-for-byte — re-renders docker-compose.yml, validates
-	// via docker compose config, and recreates the container with
-	// docker compose up -d --force-recreate. Requested values are validated
+	// CPUs, PIDs) after install (issue #28). It edits ONLY the targeted
+	// resource-limit lines in the stack's .env in place — every secret,
+	// derived value, comment, and unrelated line is preserved byte-for-byte
+	// — leaves docker-compose.yml untouched, validates via docker compose
+	// config, and recreates the container with docker compose up -d
+	// --force-recreate. It does NOT re-render .env or compose from the
+	// catalog template, so apps with derived values built from install-only
+	// inputs reconfigure cleanly. Requested values are validated
 	// against the catalog's resource bands (min/max, allow_override): an
 	// out-of-band value or a service the catalog forbids overriding is
 	// refused fail-closed before any change. As a state-changing op it
