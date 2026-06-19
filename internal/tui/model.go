@@ -61,11 +61,13 @@ const (
 	screenCatalogUpdateResult
 	screenSelfUpdate
 	screenSelfUpdateResult
+	screenResources
 )
 
 var checkAppActions = []string{
 	"View details",
 	"Restart app",
+	"Manage resources",
 	"Remove app",
 	"Validate config",
 	"Return to dashboard",
@@ -114,6 +116,13 @@ type model struct {
 	runtimeLockStatus  *types.RuntimeLockStatus
 	runtimeLockCursor  int
 	runtimeLockMessage string
+
+	resourceSettings    *types.ResourceSettings
+	resourceLoadErr     error
+	resourceService     string
+	resourceFields      []resourceField
+	resourceFieldCursor int
+	reconfigureResult   *types.ReconfigureResult
 
 	catalogUpdateStatus *types.CatalogUpdateStatus
 	catalogUpdateResult *types.CatalogUpdateResult
@@ -293,7 +302,32 @@ func (m model) updateLoadMsg(msg tea.Msg) (tea.Model, bool) {
 		m.err = msg.err
 		m.selfUpdateStatus = msg.status
 	default:
+		return m.updateResourceLoadMsg(msg)
+	}
+	return m, true
+}
+
+// updateResourceLoadMsg settles the model after Engine.ResourceSettings
+// returns (issue #28). It is split out of updateLoadMsg to keep that
+// dispatcher under the cyclomatic budget; the routing default forwards here.
+func (m model) updateResourceLoadMsg(msg tea.Msg) (tea.Model, bool) {
+	settingsMsg, ok := msg.(resourceSettingsLoadedMsg)
+	if !ok {
 		return m, false
+	}
+
+	m.busy = false
+	m.err = nil
+	m.resourceLoadErr = settingsMsg.err
+	m.resourceSettings = settingsMsg.settings
+	m.resourceFieldCursor = 0
+	m.resourceFields = nil
+	m.resourceService = ""
+	if settingsMsg.err == nil {
+		if svc := resourceServiceSettings(settingsMsg.settings); svc != nil {
+			m.resourceService = svc.Service
+			m.resourceFields = newResourceFields(svc)
+		}
 	}
 	return m, true
 }
@@ -343,6 +377,10 @@ func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.validation = msg.result
 		m.actionMessage = ""
+	case reconfigureFinishedMsg:
+		m.busy = false
+		m.err = msg.err
+		m.reconfigureResult = msg.result
 	case installFinishedMsg:
 		m.busy = false
 		m.err = msg.err
@@ -510,7 +548,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the global 'b'/'q' shortcuts must not shadow runes destined for a field.
 func (m model) isTextEntryScreen() bool {
 	switch m.screen {
-	case screenInstallForm, screenSettings, screenDeleteName:
+	case screenInstallForm, screenSettings, screenDeleteName, screenResources:
 		return true
 	default:
 		return false
@@ -530,6 +568,9 @@ func (m model) updateScreenSpecificKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool
 		return next, cmd, true
 	case screenDeleteName:
 		next, cmd := m.updateDeleteNameKey(msg)
+		return next, cmd, true
+	case screenResources:
+		next, cmd := m.updateResourcesKey(msg)
 		return next, cmd, true
 	default:
 		return m, nil, false
@@ -609,6 +650,14 @@ func (m *model) back() {
 		m.err = nil
 		m.removeResult = nil
 		m.deleteResult = nil
+	case screenResources:
+		m.screen = screenAppActions
+		m.err = nil
+		m.resourceLoadErr = nil
+		m.resourceSettings = nil
+		m.resourceService = ""
+		m.resourceFields = nil
+		m.reconfigureResult = nil
 	case screenBackupsList:
 		m.screen = screenBackupsApps
 		m.err = nil
@@ -734,6 +783,19 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.actionMessage = ""
 		return m, m.restartAppCmd(m.activeAppID())
+	case "Manage resources":
+		m.screen = screenResources
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		m.resourceLoadErr = nil
+		m.resourceSettings = nil
+		m.resourceService = ""
+		m.resourceFields = nil
+		m.resourceFieldCursor = 0
+		m.reconfigureResult = nil
+		m.progress = progressMsg{}
+		return m, m.loadResourceSettingsCmd(m.activeAppID())
 	case "Remove app":
 		m.screen = screenRemoveActions
 		m.err = nil
@@ -916,6 +978,8 @@ func (m model) distributionScreenView() (string, bool) {
 		return m.selfUpdateScreenView(), true
 	case screenUninstall, screenUninstallResult:
 		return m.uninstallScreenView(), true
+	case screenResources:
+		return m.resourcesView(), true
 	default:
 		return "", false
 	}
