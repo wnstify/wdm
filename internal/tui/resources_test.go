@@ -177,12 +177,158 @@ func TestModel_ResourcesPidsChangeParsesToIntPointer(t *testing.T) {
 		},
 	}
 
-	req, changed := m.reconfigureRequest()
+	req, changed, err := m.reconfigureRequest()
+	require.NoError(t, err)
 	assert.True(t, changed)
 	assert.Nil(t, req.Memory)
 	assert.Nil(t, req.CPUs)
 	require.NotNil(t, req.PIDs)
 	assert.Equal(t, 512, *req.PIDs)
+}
+
+// TestModel_ResourcesInvalidPidsSurfacesInlineErrorAndDoesNotSubmit is the
+// Task 1 / issue #28 regression: a changed-but-unparseable PIDs field
+// combined with another changed field must surface an inline error and NOT
+// submit — instead of silently dropping the PIDs input. Without the fix the
+// reconfigure would run reporting success while ignoring the bad PIDs value.
+func TestModel_ResourcesInvalidPidsSurfacesInlineErrorAndDoesNotSubmit(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		statuses:          map[string]*types.AppStatus{"alpha": {AppID: "alpha", State: "running"}},
+		listStatusApps:    []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha"}, State: "running"}},
+		resourceSettings:  resourceSettingsFixture(),
+		reconfigureResult: &types.ReconfigureResult{AppID: "alpha", Service: "web"},
+	}
+	m := loadResourcesScreen(t, fake)
+
+	// Change Memory (valid) AND PIDs (invalid) so `changed` is true but the
+	// PIDs value cannot parse.
+	for range "512m" {
+		m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	m = typeIntoResourceField(t, m, "1g")
+	m = updateModel(t, m, enterKey()) // memory -> cpus
+	m = updateModel(t, m, enterKey()) // cpus -> pids
+	for range "256" {
+		m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	m = typeIntoResourceField(t, m, "1.5") // not a whole number
+	m = updateModel(t, m, enterKey())      // pids -> apply
+	next, cmd := m.Update(enterKey())      // submit
+	m = assertModel(t, next)
+
+	require.Nil(t, cmd, "an invalid PIDs value must not dispatch a reconfigure command")
+	assert.Empty(t, fake.reconfigureRequests, "an invalid PIDs value must not reach the engine")
+	require.Error(t, m.err)
+	assert.Contains(t, m.View(), "PIDs limit must be a whole number")
+	assert.Equal(t, screenResources, m.screen, "the user stays on the screen to correct the value")
+}
+
+func TestModel_ResourcesNoAdjustableServiceSubmitRefused(t *testing.T) {
+	t.Parallel()
+
+	m := model{resourceService: ""}
+	next, cmd := m.submitReconfigure()
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	require.Error(t, m.err)
+	assert.Contains(t, m.err.Error(), "no adjustable service")
+}
+
+func TestModel_ResourcesBackspaceOnEmptyFieldIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		statuses:         map[string]*types.AppStatus{"alpha": {AppID: "alpha", State: "running"}},
+		listStatusApps:   []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha"}, State: "running"}},
+		resourceSettings: resourceSettingsFixture(),
+	}
+	m := loadResourcesScreen(t, fake)
+
+	// Clear the memory field fully, then an extra backspace must be a no-op.
+	for range "512m" {
+		m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	assert.Empty(t, m.resourceFields[m.resourceFieldCursor].value)
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	assert.Empty(t, m.resourceFields[m.resourceFieldCursor].value, "backspace on an empty field is a no-op")
+}
+
+func TestModel_ResourcesEditingIgnoredOnApplyRow(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		statuses:         map[string]*types.AppStatus{"alpha": {AppID: "alpha", State: "running"}},
+		listStatusApps:   []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha"}, State: "running"}},
+		resourceSettings: resourceSettingsFixture(),
+	}
+	m := loadResourcesScreen(t, fake)
+
+	originals := make([]string, len(m.resourceFields))
+	for i := range m.resourceFields {
+		originals[i] = m.resourceFields[i].value
+	}
+
+	// Step the cursor onto the "Apply changes" row (past every field).
+	for range m.resourceFields {
+		m = updateModel(t, m, enterKey())
+	}
+	require.Equal(t, len(m.resourceFields), m.resourceFieldCursor)
+
+	// Typing and backspace on the apply row must not mutate any field.
+	m = updateModel(t, m, runeKey('x'))
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeySpace})
+
+	for i := range m.resourceFields {
+		assert.Equal(t, originals[i], m.resourceFields[i].value,
+			"input on the apply row must not edit a field value")
+	}
+}
+
+func TestModel_ResourcesUpDownNavigationStaysInBounds(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		statuses:         map[string]*types.AppStatus{"alpha": {AppID: "alpha", State: "running"}},
+		listStatusApps:   []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha"}, State: "running"}},
+		resourceSettings: resourceSettingsFixture(),
+	}
+	m := loadResourcesScreen(t, fake)
+
+	// Up at the top row is clamped to 0.
+	require.Zero(t, m.resourceFieldCursor)
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	assert.Zero(t, m.resourceFieldCursor, "up at the top row stays at 0")
+
+	// Down past the apply row is clamped to len(fields).
+	for range len(m.resourceFields) + 3 {
+		m = updateModel(t, m, downKey())
+	}
+	assert.Equal(t, len(m.resourceFields), m.resourceFieldCursor,
+		"down is clamped to the apply row")
+
+	// Up from the apply row moves back into the fields.
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	assert.Equal(t, len(m.resourceFields)-1, m.resourceFieldCursor,
+		"up from the apply row moves to the last field")
+}
+
+func TestModel_ResourcesSpaceTypedIntoField(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		statuses:         map[string]*types.AppStatus{"alpha": {AppID: "alpha", State: "running"}},
+		listStatusApps:   []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha"}, State: "running"}},
+		resourceSettings: resourceSettingsFixture(),
+	}
+	m := loadResourcesScreen(t, fake)
+
+	before := m.resourceFields[m.resourceFieldCursor].value
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeySpace})
+	assert.Equal(t, before+" ", m.resourceFields[m.resourceFieldCursor].value,
+		"space appends to the focused field")
 }
 
 func TestModel_ResourcesConfirmationFlowSurfacesEngineConfirmation(t *testing.T) {

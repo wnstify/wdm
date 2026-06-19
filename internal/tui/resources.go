@@ -188,7 +188,11 @@ func (m model) submitReconfigure() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	req, changed := m.reconfigureRequest()
+	req, changed, err := m.reconfigureRequest()
+	if err != nil {
+		m.err = err
+		return m, nil
+	}
 	if !changed {
 		m.err = fmt.Errorf("no resource limits changed")
 		return m, nil
@@ -204,7 +208,10 @@ func (m model) submitReconfigure() (tea.Model, tea.Cmd) {
 // field the user changed maps to a non-nil pointer (set). changed reports
 // whether any field differs, so the screen can refuse a no-op submit before
 // touching the engine, matching the engine's own usage-error contract.
-func (m model) reconfigureRequest() (req types.ReconfigureRequest, changed bool) {
+// A changed PIDs field that does not parse to a whole number is a user
+// error, not a silent drop: it returns a non-nil err so the screen surfaces
+// an inline message instead of submitting a request that ignores the input.
+func (m model) reconfigureRequest() (req types.ReconfigureRequest, changed bool, err error) {
 	req = types.ReconfigureRequest{AppID: m.activeAppID(), Service: m.resourceService}
 
 	for _, field := range m.resourceFields {
@@ -219,13 +226,15 @@ func (m model) reconfigureRequest() (req types.ReconfigureRequest, changed bool)
 		case resourceFieldCPUs:
 			req.CPUs = &value
 		case resourceFieldPIDs:
-			if pids, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
-				req.PIDs = &pids
+			pids, convErr := strconv.Atoi(strings.TrimSpace(value))
+			if convErr != nil {
+				return types.ReconfigureRequest{}, false, fmt.Errorf("PIDs limit must be a whole number")
 			}
+			req.PIDs = &pids
 		}
 	}
 
-	return req, changed
+	return req, changed, nil
 }
 
 func (m model) reconfigureCmd(req types.ReconfigureRequest) tea.Cmd {
