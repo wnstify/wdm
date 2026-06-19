@@ -243,6 +243,8 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 		return buildNetworkCreateCommand(typedInv)
 	case removeNetworkInvocation:
 		return buildRemoveNetworkCommand(typedInv.name)
+	case managedNetworkListInvocation:
+		return buildManagedNetworkListCommand()
 	case removeNamedVolumeInvocation:
 		return buildRemoveNamedVolumeCommand(typedInv.name)
 	case projectContainerListInvocation:
@@ -443,6 +445,23 @@ func buildNetworkCreateCommand(inv networkCreateInvocation) (commandSpec, error)
 	}
 	argv = append(argv, networkName)
 	return commandSpec{argv: argv}, nil
+}
+
+// buildManagedNetworkListCommand builds the fixed label-filtered managed-network
+// list argv: `network ls --filter label=wdm.managed=true --format {{.Name}}`.
+// Every token is a constant, so no caller input reaches the argv; the matching
+// validator arm accepts only this exact shape (PRD §39).
+func buildManagedNetworkListCommand() (commandSpec, error) {
+	return commandSpec{
+		argv: []string{
+			"network",
+			"ls",
+			"--filter",
+			managedNetworkLabelFilter,
+			"--format",
+			managedNetworkListFormat,
+		},
+	}, nil
 }
 
 func buildRemoveNetworkCommand(name string) (commandSpec, error) {
@@ -675,6 +694,16 @@ func validateNetworkArgv(argv []string) error {
 	case len(argv) == 3 && argv[1] == "rm":
 		_, err := validateNetworkName(argv[2])
 		return err
+	case len(argv) == 6 &&
+		argv[1] == "ls" &&
+		argv[2] == "--filter" &&
+		argv[3] == managedNetworkLabelFilter &&
+		argv[4] == "--format" &&
+		argv[5] == managedNetworkListFormat:
+		// The managed-network sweep list (PRD §39): the ONLY allowlisted
+		// `network ls` shape. Every token is a fixed literal, so any other
+		// `network ls` invocation still falls through to the default refusal.
+		return nil
 	default:
 		return unsupportedDockerArgv(argv)
 	}

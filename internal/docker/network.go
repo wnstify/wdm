@@ -51,6 +51,18 @@ const (
 	appNetworkLabelPrefix = "wdm.app="
 )
 
+// managedNetworkLabelFilter and managedNetworkListFormat are the fixed tokens
+// of the label-filtered managed-network list (`network ls --filter
+// label=wdm.managed=true --format {{.Name}}`). They are constants so the
+// builder and the last-gate validator match the exact same literals — the list
+// is the discovery half of the self-uninstall network sweep (PRD §39), finding
+// every wdm.managed=true network including ones orphaned by an app the operator
+// already deleted.
+const (
+	managedNetworkLabelFilter = "label=" + managedNetworkLabel
+	managedNetworkListFormat  = "{{.Name}}"
+)
+
 // EnsureNetwork ensures one network exists before compose deployment.
 // If it already exists, the internal flag must match exactly and, when the spec
 // pins a subnet (PRD §9), the existing subnet must match too; either mismatch is
@@ -183,6 +195,53 @@ func RemoveNetworkIfPresent(ctx context.Context, client Client, networkName stri
 	return err
 }
 
+// ListManagedNetworks returns the names of every Docker network carrying the
+// `wdm.managed=true` label, including ones orphaned by an app whose stack the
+// operator already deleted (its compose file is gone, so the compose-derived
+// network discovery can no longer find them). It is the discovery half of the
+// self-uninstall network sweep (PRD §39): the names feed the same best-effort
+// [RemoveNetworkIfPresent] cleanup, so a leftover labeled network no longer
+// survives an uninstall. The list is read through a strictly-allowlisted
+// `network ls --filter label=wdm.managed=true --format {{.Name}}` invocation;
+// names are parsed one per line, trimmed, with blank lines dropped. A daemon
+// failure propagates so the caller can treat it as a non-fatal cleanup
+// degradation and continue.
+func ListManagedNetworks(ctx context.Context, client Client) ([]string, error) {
+	if client == nil {
+		return nil, types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	res, err := client.Run(ctx, managedNetworkListInvocation{})
+	if err != nil {
+		return nil, err
+	}
+
+	return parseManagedNetworkNames(res.Stdout), nil
+}
+
+// parseManagedNetworkNames splits the `network ls --format {{.Name}}` output
+// into one network name per line, trimming surrounding whitespace and dropping
+// blank lines. Docker emits one name per line with a trailing newline; an empty
+// output (no managed networks) yields an empty slice. Unlike the strict inspect
+// parsers this tolerates blank lines rather than failing closed, because the
+// list only feeds the best-effort sweep — each name is still re-validated by
+// the strict network-name validator before any `network rm` reaches the daemon.
+func parseManagedNetworkNames(stdout string) []string {
+	names := []string{}
+	for line := range strings.Lines(stdout) {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 // verifyExistingNetworkSubnet refuses an existing network whose configured
 // subnet does not match the requested spec, the same fail-closed shape as the
 // internal-flag mismatch. When the spec pins no subnet there is nothing to
@@ -248,6 +307,15 @@ type removeNetworkInvocation struct {
 }
 
 func (removeNetworkInvocation) isDockerInvocation() {}
+
+// managedNetworkListInvocation maps to the label-filtered managed-network list
+// (`network ls --filter label=wdm.managed=true --format {{.Name}}`) so
+// [ListManagedNetworks] can discover every wdm.managed=true network, including
+// orphaned ones, for the self-uninstall sweep (PRD §39). It carries no fields:
+// the filter and format are fixed literals.
+type managedNetworkListInvocation struct{}
+
+func (managedNetworkListInvocation) isDockerInvocation() {}
 
 func validateNetworkSpec(network NetworkSpec) (NetworkSpec, error) {
 	name, err := validateNetworkName(network.Name)
