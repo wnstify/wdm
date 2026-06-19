@@ -101,6 +101,27 @@ type Engine interface {
 	// onProgress receives the step_stop_all_* events.
 	StopAll(ctx context.Context, req types.StopAllRequest, onProgress ProgressFn, confirmer Confirmer) (*types.StopAllResult, error)
 
+	// Uninstall tears down every managed stack and then removes wdm's own
+	// on-disk footprint, including the running binary (PRD §39, issue
+	// #29). For each managed stack it runs docker compose down --rmi all
+	// (NEVER -v): containers, the project network, and the stack's images
+	// are removed, but ALL named volumes and every ~/docker/<app>/ stack
+	// directory are KEPT — self-uninstall never deletes user data. It is
+	// wdm-managed scope only, never a system-wide prune. As a destructive
+	// state-changing op it holds the global runtime.lock once, takes the
+	// per-stack flock around each teardown, and consults confirmer once
+	// before the batch with a [types.ConfirmationKindUninstallDestructive]
+	// payload. Uninstall is fail-closed: if any stack teardown fails it
+	// ABORTS before removing any footprint, leaving wdm installed and
+	// listing the failed stacks in the result. Only when every stack tears
+	// down cleanly does it remove the config dir, the data/share dir, the
+	// state dir (with the runtime lock) last among directories, and the
+	// running binary plus its .previous sibling last of all. The core
+	// NEVER calls os.Exit: it returns the structured result and the
+	// CLI/TUI layer handles process exit. onProgress receives the
+	// step_uninstall_* events.
+	Uninstall(ctx context.Context, req types.UninstallRequest, onProgress ProgressFn, confirmer Confirmer) (*types.UninstallResult, error)
+
 	// ValidateConfig runs docker compose config --quiet against the
 	// managed stack's on-disk Compose file and reports the outcome (PRD
 	// §18:418 "Validate config", §18:427 compose-validation condition).

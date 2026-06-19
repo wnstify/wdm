@@ -316,6 +316,15 @@ func (c *crossoverCountingEngine) StopAll(
 	return nil, nil
 }
 
+func (c *crossoverCountingEngine) Uninstall(
+	context.Context,
+	types.UninstallRequest,
+	engine.ProgressFn,
+	types.Confirmer,
+) (*types.UninstallResult, error) {
+	return nil, nil
+}
+
 func (c *crossoverCountingEngine) ValidateConfig(context.Context, string) (*types.ValidationResult, error) {
 	return nil, nil
 }

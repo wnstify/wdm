@@ -35,6 +35,7 @@ type fakeEngine struct {
 	settings            *types.Settings
 	restartResult       *types.RestartResult
 	stopAllResult       *types.StopAllResult
+	uninstallResult     *types.UninstallResult
 	validationResult    *types.ValidationResult
 	backupsResult       []types.BackupInfo
 	restoreResult       *types.RestoreBackupResult
@@ -196,6 +197,20 @@ func (f *fakeEngine) StopAll(
 		return nil, f.err
 	}
 	return f.stopAllResult, nil
+}
+
+func (f *fakeEngine) Uninstall(
+	_ context.Context,
+	_ types.UninstallRequest,
+	onProgress engine.ProgressFn,
+	confirmer types.Confirmer,
+) (*types.UninstallResult, error) {
+	f.progressWasNil = onProgress == nil
+	f.confirmer = confirmer
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.uninstallResult, nil
 }
 
 func (f *fakeEngine) ValidateConfig(_ context.Context, _ string) (*types.ValidationResult, error) {

@@ -70,6 +70,15 @@ const (
 	// StepStopAllExecute reports per-stack docker compose stop execution.
 	StepStopAllExecute = "step_stop_all_execute"
 
+	// StepUninstallPlanning reports self-uninstall managed-stack enumeration.
+	StepUninstallPlanning = "step_uninstall_planning"
+	// StepUninstallConfirm reports self-uninstall confirmation gating.
+	StepUninstallConfirm = "step_uninstall_confirm"
+	// StepUninstallTeardown reports per-stack docker compose down --rmi all teardown.
+	StepUninstallTeardown = "step_uninstall_teardown"
+	// StepUninstallRemoveFootprint reports removal of wdm's on-disk footprint.
+	StepUninstallRemoveFootprint = "step_uninstall_remove_footprint"
+
 	// StepRestorePlanning reports config-restore planning.
 	StepRestorePlanning = "step_restore_planning"
 	// StepRestoreConfirm reports config-restore confirmation gating.

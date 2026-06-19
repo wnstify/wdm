@@ -470,6 +470,39 @@ func TestConfirmationKindDeleteDestructive_IsStable(t *testing.T) {
 	assert.Equal(t, "delete_destructive", types.ConfirmationKindDeleteDestructive)
 }
 
+func TestConfirmationKindUninstallDestructive_IsStable(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "uninstall_destructive", types.ConfirmationKindUninstallDestructive)
+}
+
+func TestProgressStepConstants_UninstallAreStableAndUnique(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "StepUninstallPlanning", got: types.StepUninstallPlanning, want: "step_uninstall_planning"},
+		{name: "StepUninstallConfirm", got: types.StepUninstallConfirm, want: "step_uninstall_confirm"},
+		{name: "StepUninstallTeardown", got: types.StepUninstallTeardown, want: "step_uninstall_teardown"},
+		{name: "StepUninstallRemoveFootprint", got: types.StepUninstallRemoveFootprint, want: "step_uninstall_remove_footprint"},
+	}
+
+	seen := make(map[string]string, len(cases))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.got)
+		})
+
+		previous, exists := seen[tc.got]
+		assert.Falsef(t, exists, "duplicate progress step value %q used by %s and %s", tc.got, previous, tc.name)
+		seen[tc.got] = tc.name
+	}
+}
+
 func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing.T) {
 	t.Parallel()
 

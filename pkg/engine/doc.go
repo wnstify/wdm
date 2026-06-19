@@ -15,7 +15,7 @@
 // via the compile-time type assertion in new.go.
 // Public surface:
 //   - [Engine] — read (List, ListStatus, Status, Logs), write (Install, Update,
-//     Remove, Restart, StopAll), settings (Settings, UpdateSettings),
+//     Remove, Restart, StopAll, Uninstall), settings (Settings, UpdateSettings),
 //     lifecycle (Close)
 //   - [Confirmer] — authorizes destructive actions (PRD §37); alias of
 //     [types.Confirmer]
