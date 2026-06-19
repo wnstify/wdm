@@ -260,12 +260,21 @@ func TestDeleteApp_RemovesExternalNetworksAfterDown(t *testing.T) {
 		}
 	}
 
+	confirmer := &fakeConfirmer{}
+	var steps []string
 	res, err := fx.eng.DeleteApp(t.Context(), types.DeleteRequest{
 		AppID:            fx.appID,
 		ConfirmationName: fx.appID,
-	}, nil, &fakeConfirmer{})
+	}, func(step string, _ float64, _ string) {
+		steps = append(steps, step)
+	}, confirmer)
 	require.NoError(t, err)
 	require.NotNil(t, res)
+
+	// The dedicated network-removal step fires only when the app actually has
+	// wdm-created networks — never the compose-down step's ID.
+	assert.Contains(t, steps, types.StepDeleteRemoveNetworks,
+		"the dedicated network-removal step must fire when networks exist")
 
 	assert.Equal(t, []string{"wdm_back", "wdm_front"}, removeCalls,
 		"both external networks must be targeted by network rm, in sorted order")

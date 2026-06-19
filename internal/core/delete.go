@@ -103,8 +103,9 @@ type deletePlan struct {
 // base root itself nor a suspiciously shallow path — so a symlinked or
 // escaping stack directory refuses, deleting nothing.
 // Teardown order (PRD §19:448-453): Confirmer (immediately before mutation)
-// → `docker compose down` (StepDeleteComposeDown; NEVER -v) → path-contained
-// file deletion (StepDeleteFiles). A nil confirmer refuses with
+// → `docker compose down` (StepDeleteComposeDown; NEVER -v) → best-effort
+// removal of the app's wdm-created networks (StepDeleteRemoveNetworks) →
+// path-contained file deletion (StepDeleteFiles). A nil confirmer refuses with
 // [types.ErrCodeUsageValidation]; a decline maps to
 // [types.ErrCodeUserCanceled] with ZERO trace (nothing downed, nothing
 // deleted); a confirmer error propagates wrapped. A `down` failure leaves
@@ -477,7 +478,7 @@ func (e *Engine) removeDeleteNetworks(
 		return nil, nil
 	}
 	if onProgress != nil {
-		onProgress(types.StepDeleteComposeDown, 70, fmt.Sprintf(
+		onProgress(types.StepDeleteRemoveNetworks, 70, fmt.Sprintf(
 			"removing %d wdm-created network(s)",
 			len(names),
 		))
