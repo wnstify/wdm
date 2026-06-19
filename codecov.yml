@@ -18,59 +18,41 @@ coverage:
 ignore:
   - "cmd/wdm/**"
 
-# Per-layer project floors. Each target sits a couple of points below the
-# measured coverage for that package so a genuine regression turns the
-# component red without flapping on normal churn.
+# Per-layer regression guard. Each component uses target: auto, so codecov
+# compares it against the base commit and only turns the component red on a
+# genuine coverage drop (beyond the threshold). No hardcoded line-coverage
+# number to calibrate or keep in sync with the codecov line metric.
 component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        threshold: 1%
   individual_components:
     - component_id: pkg_engine
       paths:
         - "pkg/engine/**"
-      statuses:
-        - type: project
-          target: 95%
     - component_id: pkg_types
       paths:
         - "pkg/types/**"
-      statuses:
-        - type: project
-          target: 95%
     - component_id: internal_core
       paths:
         - "internal/core/**"
-      statuses:
-        - type: project
-          target: 83%
     - component_id: internal_docker
       paths:
         - "internal/docker/**"
-      statuses:
-        - type: project
-          target: 88%
     - component_id: internal_release
       paths:
         - "internal/release/**"
-      statuses:
-        - type: project
-          target: 86%
     - component_id: internal_catalog
       paths:
         - "internal/catalog/**"
-      statuses:
-        - type: project
-          target: 86%
     - component_id: internal_state
       paths:
         - "internal/state/**"
-      statuses:
-        - type: project
-          target: 82%
     - component_id: internal_security
       paths:
         - "internal/security/**"
-      statuses:
-        - type: project
-          target: 90%
 
 comment: false
 
