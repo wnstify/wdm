@@ -24,9 +24,32 @@ Use the project's Make targets:
 | `make fmt` | Format the code. |
 | `make tidy` | Tidy `go.mod` and `go.sum`. |
 
-`make e2e` needs a working Docker daemon with the Compose V2 plugin.
+`make build` writes the binary to `bin/wdm`, and a from-source build reports its version as `dev`. `make e2e` needs a working Docker daemon with the Compose V2 plugin.
 
 GitHub Actions run the required unit, lint, vulnerability, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
+
+## Seed a catalog for local testing
+
+The signed catalog normally arrives through `wdm catalog update`. For local development against a from-source build, stage the in-repo catalog directly:
+
+```sh
+make dev-catalog-seed
+```
+
+This copies the in-repo catalog into `~/.local/share/wdm/catalogs/` (the `stable/catalog.yaml` manifest plus the shared `templates/` tree) so the dev build can read it. The seeded catalog is unverified and for local development only.
+
+The target refuses to run if a catalog already exists, so it will not clobber a real or verified install. Pass `FORCE=1` to replace an existing catalog:
+
+```sh
+make dev-catalog-seed FORCE=1
+```
+
+## Test a new app
+
+1. Add the app entry to `catalog/stable/catalog.yaml`.
+2. Add its templates under `templates/<app>/` (a `docker-compose.yml.tmpl` and an `.env.tmpl`).
+3. Re-seed the local catalog: `make dev-catalog-seed FORCE=1`.
+4. Install the new entry against the dev build: `./bin/wdm install <app>`.
 
 Major functional changes must add or update automated tests for the changed behavior. If a change cannot be covered by an automated test, explain the reason in the pull request and describe the manual verification performed.
 
@@ -65,5 +88,7 @@ Some code comments reference anchors such as `PRD §29`. These point to an inter
 ## Code of conduct and security
 
 This project follows our [Code of Conduct](CODE_OF_CONDUCT.md). Please report security issues as described in [SECURITY.md](SECURITY.md) rather than in public issues.
+
+The from-source build and `make dev-catalog-seed` flow is for development only. It does not exercise signed-release verification on install. Production trust comes from the signed installer and `wdm catalog update`, which is fail-closed: a missing or invalid signature stops the update. Never use a hand-seeded catalog as a production trust source.
 
 For the security design, trust boundaries, external interfaces, and assessed risks, see [SECURITY-DESIGN.md](SECURITY-DESIGN.md).
