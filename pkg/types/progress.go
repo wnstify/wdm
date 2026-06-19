@@ -76,6 +76,9 @@ const (
 	StepUninstallConfirm = "step_uninstall_confirm"
 	// StepUninstallTeardown reports per-stack docker compose down --rmi all teardown.
 	StepUninstallTeardown = "step_uninstall_teardown"
+	// StepUninstallNetworkSweep reports the label-based sweep of every remaining
+	// wdm.managed=true network, including orphaned ones, after teardown.
+	StepUninstallNetworkSweep = "step_uninstall_network_sweep"
 	// StepUninstallRemoveFootprint reports removal of wdm's on-disk footprint.
 	StepUninstallRemoveFootprint = "step_uninstall_remove_footprint"
 

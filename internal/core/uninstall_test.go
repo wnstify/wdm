@@ -32,6 +32,9 @@ type uninstallDockerClient struct {
 	networkRemoveStder map[string]string    // network name -> stderr to inject alongside the error
 	networkRemoveCalls []string             // network names network rm targeted, in order
 	onDown             func(project string) // optional hook fired after each teardown is recorded
+	managedNetworks    []string             // names the label-based sweep list returns
+	managedNetworkErr  error                // error to inject from the managed-network list
+	onNetworkRemove    func(name string)    // optional hook fired before each network rm is answered
 }
 
 func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
@@ -91,14 +94,22 @@ func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (d
 		return docker.CommandResult{}, nil
 	case "docker.removeNetworkInvocation":
 		name := invocationField(inv, "name:")
+		if c.onNetworkRemove != nil {
+			c.onNetworkRemove(name)
+		}
 		c.networkRemoveCalls = append(c.networkRemoveCalls, name)
 		if err := c.networkRemoveErr[name]; err != nil {
 			return docker.CommandResult{Stderr: c.networkRemoveStder[name]}, err
 		}
 		return docker.CommandResult{}, nil
+	case "docker.managedNetworkListInvocation":
+		if c.managedNetworkErr != nil {
+			return docker.CommandResult{}, c.managedNetworkErr
+		}
+		return docker.CommandResult{Stdout: strings.Join(c.managedNetworks, "\n")}, nil
 	default:
 		require.Failf(c.t, "unexpected invocation",
-			"uninstall must only run docker compose down --rmi all or network rm; got %T", inv)
+			"uninstall must only run docker compose down --rmi all, network rm, or network ls; got %T", inv)
 		return docker.CommandResult{}, nil
 	}
 }
@@ -623,4 +634,218 @@ func TestUninstall_TeardownFailureSkipsNetworkCleanup(t *testing.T) {
 	assert.Empty(t, client.networkRemoveCalls, "an aborted teardown must skip network cleanup")
 	assert.Empty(t, result.RemovedNetworks)
 	assert.Empty(t, result.RemovedPaths)
+}
+
+// The label-based sweep removes an orphaned wdm.managed=true network whose app
+// the operator already deleted — its compose file is gone, so compose-derived
+// discovery cannot find it, but the label can.
+func TestUninstall_SweepsOrphanedManagedNetwork(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_kuma"}, nil)
+	// "wdm_orphan" carries the managed label but belongs to no installed app.
+	client.managedNetworks = []string{"wdm_kuma", "wdm_orphan"}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	removed := append([]string(nil), result.RemovedNetworks...)
+	sort.Strings(removed)
+	assert.Equal(t, []string{"wdm_kuma", "wdm_orphan"}, removed)
+	assert.Empty(t, result.RetainedNetworks)
+}
+
+// A network already removed via the compose-derived path is not attempted or
+// listed twice when the sweep list also reports it.
+func TestUninstall_SweepDedupsComposeRemovedNetwork(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_kuma"}, nil)
+	// The sweep list reports the compose-removed "wdm_kuma" again plus an orphan.
+	client.managedNetworks = []string{"wdm_kuma", "wdm_orphan"}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// "wdm_kuma" was removed exactly once (compose path); the sweep skipped it.
+	kumaCount := 0
+	for _, name := range client.networkRemoveCalls {
+		if name == "wdm_kuma" {
+			kumaCount++
+		}
+	}
+	assert.Equal(t, 1, kumaCount, "a compose-removed network must not be swept again")
+
+	removed := append([]string(nil), result.RemovedNetworks...)
+	sort.Strings(removed)
+	assert.Equal(t, []string{"wdm_kuma", "wdm_orphan"}, removed)
+}
+
+// A network that FAILED removal via the compose-derived path lands in
+// RetainedNetworks; the sweep seeds its seen set from retained as well as
+// removed, so the same network reported by the sweep list is not attempted a
+// second time and is not duplicated in RetainedNetworks.
+func TestUninstall_SweepDedupsComposeRetainedNetwork(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_kuma"}, nil)
+	// The compose-derived removal of "wdm_kuma" fails, so it is retained.
+	client.networkRemoveErr["wdm_kuma"] = errors.New("network wdm_kuma has active endpoints")
+	// The sweep list reports the retained "wdm_kuma" again plus an orphan.
+	client.managedNetworks = []string{"wdm_kuma", "wdm_orphan"}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// "wdm_kuma" removal was attempted exactly once (compose path); the sweep
+	// skipped it because it was already in the retained seen set.
+	kumaCount := 0
+	for _, name := range client.networkRemoveCalls {
+		if name == "wdm_kuma" {
+			kumaCount++
+		}
+	}
+	assert.Equal(t, 1, kumaCount, "a compose-retained network must not be swept again")
+
+	// "wdm_kuma" appears exactly once in RetainedNetworks (no duplicate), and the
+	// orphan the sweep found was removed.
+	require.Len(t, result.RetainedNetworks, 1)
+	assert.Equal(t, "wdm_kuma", result.RetainedNetworks[0].Name)
+	assert.Contains(t, result.RetainedNetworks[0].Reason, "active endpoints")
+	assert.Equal(t, []string{"wdm_orphan"}, result.RemovedNetworks)
+}
+
+// A sweep removal failure is recorded in RetainedNetworks and the uninstall
+// still succeeds — the sweep never triggers the fail-closed abort.
+func TestUninstall_SweepRemovalFailureRetainsButRemovesFootprint(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma") // no external networks in compose
+	writeUninstallCompose(t, base, "uptime-kuma", nil, nil)
+	client.managedNetworks = []string{"wdm_orphan"}
+	client.networkRemoveErr["wdm_orphan"] = errors.New("network wdm_orphan has active endpoints")
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Len(t, result.RetainedNetworks, 1)
+	assert.Equal(t, "wdm_orphan", result.RetainedNetworks[0].Name)
+	assert.Contains(t, result.RetainedNetworks[0].Reason, "active endpoints")
+	assert.Empty(t, result.RemovedNetworks)
+
+	assert.NotEmpty(t, result.RemovedPaths)
+	assert.NoFileExists(t, binaryPath)
+}
+
+// A managed-network list failure is a non-fatal cleanup degradation: the sweep
+// is skipped and the uninstall completes with footprint removal.
+func TestUninstall_SweepListErrorIsNonFatal(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_kuma"}, nil)
+	client.managedNetworkErr = errors.New("docker daemon unreachable")
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// The compose-derived removal still stands; only the sweep degraded.
+	assert.Equal(t, []string{"wdm_kuma"}, result.RemovedNetworks)
+	assert.Empty(t, result.RetainedNetworks)
+	assert.NotEmpty(t, result.RemovedPaths)
+	assert.NoFileExists(t, binaryPath)
+}
+
+// No extra labeled networks beyond the compose-derived set makes the sweep a
+// no-op: nothing extra is removed or retained.
+func TestUninstall_SweepNoExtraNetworksIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_kuma"}, nil)
+	client.managedNetworks = []string{"wdm_kuma"} // already handled via compose path
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, []string{"wdm_kuma"}, result.RemovedNetworks)
+	assert.Equal(t, []string{"wdm_kuma"}, client.networkRemoveCalls)
+	assert.Empty(t, result.RetainedNetworks)
+}
+
+// Context cancellation between sweep removals stops the sweep before the next
+// removal: only the network attempted before cancellation reaches the daemon.
+// The subsequent footprint-removal step observes the canceled context and the
+// run returns a context error with no result.
+func TestUninstall_SweepRespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", nil, nil)
+	client.managedNetworks = []string{"wdm_first", "wdm_second"}
+	// Cancel the moment the first sweep removal runs, so the second is skipped.
+	client.onNetworkRemove = func(string) { cancel() }
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(ctx, types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, result)
+
+	// The sweep stopped at the second removal: only the first was attempted, and
+	// the footprint survives because removal aborted on the canceled context.
+	assert.Equal(t, []string{"wdm_first"}, client.networkRemoveCalls)
+	assert.FileExists(t, binaryPath)
 }

@@ -23,10 +23,16 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   (removing containers and images) and then removes `wdm`'s own
   footprint, including the binary. After every app is down it also removes the
   `wdm`-created Docker networks (declared `external` in the rendered compose, so
-  `docker compose down` never removes them), best-effort: a network already gone
-  counts as removed, and one that cannot be removed is reported with the exact
-  `docker network rm <name>` command to run manually and never aborts the
-  uninstall. Named volumes and every `~/docker/<app>/` stack directory are kept;
+  `docker compose down` never removes them), then sweeps every remaining network
+  carrying the `wdm.managed=true` label — including ones orphaned by an app you
+  deleted earlier, whose compose file is gone — so a self-uninstall leaves no
+  labeled networks behind. The sweep is best-effort: a network already gone
+  counts as removed, one that cannot be removed is reported with the exact
+  `docker network rm <name>` command to run manually, and a daemon problem
+  listing the networks degrades gracefully without aborting the uninstall.
+  Networks created before label support (pre-`wdm.managed=true`) are not matched
+  by the sweep and must be removed manually. Named volumes and every
+  `~/docker/<app>/` stack directory are kept;
   this is never `docker compose down -v` and no user data is deleted. Scope is
   wdm-managed apps and wdm's footprint only. It is fail-closed: if any stack fails
   to tear down it aborts before removing anything, leaves `wdm` installed, lists
