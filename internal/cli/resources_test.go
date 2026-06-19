@@ -176,6 +176,111 @@ func TestResources_StackPathMapsOntoRequest(t *testing.T) {
 		"--stack-path must map onto ReconfigureRequest.StackPath")
 }
 
+// --- Plain-text finish screen: the human-readable reconfigure output
+// covers both the running headline and the needs-attention headline, the
+// applied-limits block, the backup path, and the status message.
+
+func TestResources_Plain_FinishScreen_RunningHeadline(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		reconfigureResult: &types.ReconfigureResult{
+			AppID:      "vaultwarden",
+			Service:    "server",
+			Memory:     "1g",
+			CPUs:       "2.0",
+			PIDs:       300,
+			BackupPath: "/home/test/docker/vaultwarden/.wdm-backups/123-reconfigure",
+			Status:     &types.AppStatus{AppID: "vaultwarden", State: "running", Message: "all healthy"},
+		},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "resources", "vaultwarden", "--memory", "1g", "--yes")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "vaultwarden service server was reconfigured and is running.")
+	assert.Contains(t, stdout, "Applied limits:")
+	assert.Contains(t, stdout, "memory: 1g")
+	assert.Contains(t, stdout, "cpus:   2.0")
+	assert.Contains(t, stdout, "pids:   300")
+	assert.Contains(t, stdout, "Config backup: /home/test/docker/vaultwarden/.wdm-backups/123-reconfigure")
+	assert.Contains(t, stdout, "Status: running")
+	assert.Contains(t, stdout, "all healthy")
+}
+
+func TestResources_Plain_FinishScreen_NeedsAttentionHeadline(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		reconfigureResult: &types.ReconfigureResult{
+			AppID:   "vaultwarden",
+			Service: "server",
+			Memory:  "1g",
+			Status:  &types.AppStatus{AppID: "vaultwarden", State: "degraded", NeedsAttention: true},
+		},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "resources", "vaultwarden", "--memory", "1g", "--yes")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "see the status below for services that need attention.")
+	assert.Contains(t, stdout, "Status: degraded")
+	assert.NotContains(t, stdout, "and is running.")
+}
+
+func TestResources_Plain_FinishScreen_OmitsBackupAndStatusWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		reconfigureResult: &types.ReconfigureResult{AppID: "vaultwarden", Service: "server", Memory: "1g"},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "resources", "vaultwarden", "--memory", "1g", "--yes")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "was reconfigured and is running.")
+	assert.NotContains(t, stdout, "Config backup:", "an empty backup path is omitted")
+	assert.NotContains(t, stdout, "Status:", "an absent status block is omitted")
+}
+
+// --- Plain-text read-only view: covers the empty-services line and the
+// dash-rendering of absent band values.
+
+func TestResources_Plain_View_RendersDashesAndEmptyServices(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dashes_for_absent_values", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &fakeEngine{
+			resourceSettings: &types.ResourceSettings{
+				AppID: "vaultwarden",
+				Services: []types.ResourceServiceSettings{
+					{Service: "server", Adjustable: false},
+				},
+			},
+		}
+
+		stdout, _, err := runLeaf(t, fake, "resources", "vaultwarden")
+		require.NoError(t, err)
+		assert.Contains(t, stdout, "Service: server (not adjustable)")
+		assert.Contains(t, stdout, "current=- allowed min=- recommended=- max=-",
+			"absent string band values render as dashes")
+	})
+
+	t.Run("empty_services_line", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &fakeEngine{
+			resourceSettings: &types.ResourceSettings{AppID: "vaultwarden"},
+		}
+
+		stdout, _, err := runLeaf(t, fake, "resources", "vaultwarden")
+		require.NoError(t, err)
+		assert.Contains(t, stdout, "this app declares no adjustable resource limits")
+	})
+}
+
 // --- Error path: a typed engine error propagates and stdout stays empty
 // on both the read-only and reconfigure paths.
 

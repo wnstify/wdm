@@ -1,7 +1,9 @@
 package core_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -389,6 +391,363 @@ func TestReconfigure_BackupPrecedesRewrite(t *testing.T) {
 		"the backup holds the pre-change pids value")
 }
 
+// TestReconfigure_DeployFailureRestoresPreviousConfig drives a fault on
+// the recreate (docker compose up) AFTER the rewrite exposed the new .env
+// bytes and the config validation passed. The sad path must restore the
+// snapshot byte-for-byte (the resource var returns to its install value),
+// surface a typed error, and return no result.
+func TestReconfigure_DeployFailureRestoresPreviousConfig(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-deployfail-app"), nil)
+	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		if fmt.Sprintf("%T", inv) == "docker.composeUpInvocation" {
+			return docker.CommandResult{ExitCode: 1, Stderr: "recreate failed"}, errors.New("compose up rejected")
+		}
+		return docker.CommandResult{}, nil
+	}
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	var typed *types.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Contains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"the deploy must have been attempted before the restore")
+
+	// The sad path restored the snapshot: the resource var is back to its
+	// install value, byte-for-byte.
+	envAfter, err := os.ReadFile(fx.envPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(envAfter), "MEMORY_LIMIT_APP="+reconfigureInstallMemory,
+		"a deploy failure restores the pre-change .env")
+	assert.NotContains(t, string(envAfter), "MEMORY_LIMIT_APP=1g",
+		"the exposed new value must be rolled back after the deploy fault")
+	assert.Contains(t, string(envAfter), "DB_PASSWORD="+reconfigureSecretValue,
+		"the secret survives the restore byte-for-byte")
+}
+
+// TestReconfigure_ConfirmerDeclinedAbortsAndRestores proves a declined
+// recreate confirmation aborts before any Docker mutation and restores the
+// rewritten .env to its pre-change bytes. The confirmation gate runs after
+// the rewrite exposed the new bytes, so the decline routes through the same
+// sad path as a deploy fault.
+func TestReconfigure_ConfirmerDeclinedAbortsAndRestores(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-decline-app"), nil)
+	decliner := &fakeConfirmer{
+		confirmFn: func(context.Context, types.Confirmation) (bool, error) { return false, nil },
+	}
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, decliner)
+	require.Error(t, err)
+	assert.Nil(t, res)
+	var typed *types.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, types.ErrCodeUserCanceled, typed.Code,
+		"a declined recreate maps to the user-canceled code")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"a declined confirmation must not recreate the container")
+
+	envAfter, err := os.ReadFile(fx.envPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(envAfter), "MEMORY_LIMIT_APP="+reconfigureInstallMemory,
+		"a declined confirmation restores the pre-change .env")
+}
+
+// TestReconfigure_NilConfirmerRefusedAndRestores proves a nil confirmer is
+// refused fail-closed with a usage error before any Docker mutation, and
+// the rewritten .env is restored to its pre-change bytes.
+func TestReconfigure_NilConfirmerRefusedAndRestores(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-nilconf-app"), nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, nil)
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation")
+
+	envAfter, err := os.ReadFile(fx.envPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(envAfter), "MEMORY_LIMIT_APP="+reconfigureInstallMemory,
+		"a nil-confirmer refusal restores the pre-change .env")
+}
+
+// TestReconfigure_BackupFailureAbortsBeforeRewrite proves a backup-creation
+// failure aborts before the rewrite exposes any byte: docker-compose.yml is
+// replaced with a directory so the backup's regular-file copy fails AFTER
+// planning has read the (still-regular) .env. A typed generic error surfaces
+// and no Docker call runs.
+func TestReconfigure_BackupFailureAbortsBeforeRewrite(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-backupfail-app"), nil)
+	composePath := filepath.Join(fx.stackPath, "docker-compose.yml")
+	require.NoError(t, os.Remove(composePath))
+	require.NoError(t, os.Mkdir(composePath, 0o755)) // compose is now a directory
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	var typed *types.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, types.ErrCodeGeneric, typed.Code)
+	assert.ErrorContains(t, err, "config backup could not be created")
+	assert.Zero(t, fx.fake.calls, "a backup failure aborts before any Docker call")
+}
+
+// TestReconfigure_RewriteFailureAbortsBeforeDeploy proves a render fault in
+// the rewrite (a poisoned compose template) aborts before any byte is
+// written and before any Docker call: the backup ran, the on-disk .env is
+// unchanged, and no recreate happens. rewriteReconfigureStack is pure, so
+// the fault is pre-exposure and needs no restore.
+func TestReconfigure_RewriteFailureAbortsBeforeDeploy(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-rewritefail-app")
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		"templates/" + app.AppID + "/docker-compose.yml.tmpl": "services:\n  app:\n    image: ${X} {{ .Broken\n",
+		"templates/" + app.AppID + "/.env.tmpl": "DB_PASSWORD={{ .DB_PASSWORD }}\n" +
+			"MEMORY_LIMIT_APP={{ .MEMORY_LIMIT_APP }}\n" +
+			"CPUS_LIMIT_APP={{ .CPUS_LIMIT_APP }}\n" +
+			"PIDS_LIMIT_APP={{ .PIDS_LIMIT_APP }}\n",
+	}, app)
+	eng, stateDir := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallSecretGeneratorForTest(eng, func(security.Encoding) (string, error) {
+		t.Fatalf("no secret may be generated on reconfigure")
+		return "", nil
+	})
+	fake := &fakeDockerClient{}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+
+	stackBase := filepath.Join(filepath.Dir(stateDir), "stacks")
+	stackPath := filepath.Join(stackBase, app.AppID)
+	lock := updateStackLockForApp(app, stackPath)
+	lock.GeneratedFields = []string{"DB_PASSWORD"}
+	writeStatusStackLock(t, stackBase, app.AppID, lock)
+	envBytes := []byte(renderReconfigureEnv(map[string]string{
+		"DB_PASSWORD":      reconfigureSecretValue,
+		"MEMORY_LIMIT_APP": reconfigureInstallMemory,
+		"CPUS_LIMIT_APP":   reconfigureInstallCPUs,
+		"PIDS_LIMIT_APP":   reconfigureInstallPIDs,
+	}))
+	envPath := filepath.Join(stackPath, ".env")
+	require.NoError(t, os.WriteFile(envPath, envBytes, 0o600))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stackPath, "docker-compose.yml"),
+		[]byte("services:\n  app:\n    image: docker.io/example/app:1.0.0\n"),
+		0o644,
+	))
+
+	res, err := eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   app.AppID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertVerificationFailed(t, err)
+	assert.Zero(t, fake.calls, "a render fault aborts before any Docker call")
+
+	envAfter, err := os.ReadFile(envPath)
+	require.NoError(t, err)
+	assert.Equal(t, envBytes, envAfter, "a pre-exposure rewrite fault must not touch .env")
+}
+
+// TestReconfigure_MissingEnvResourceVarRefused proves readServiceResourceValues
+// refuses fail-closed when the targeted service's resource var is absent from
+// the stack .env: a corrupt/incomplete stack is a usage error, not a silent
+// default, and no backup or Docker call happens.
+func TestReconfigure_MissingEnvResourceVarRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-missingvar-app"), func(env map[string]string) {
+		delete(env, "PIDS_LIMIT_APP")
+	})
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "pids limit")
+	assert.Zero(t, fx.fake.calls)
+	assert.NoDirExists(t, fx.backupRoot, "a missing-var refusal aborts before the backup")
+}
+
+// TestReconfigure_NonIntegerEnvPidsRefused proves readServiceResourceValues
+// treats a non-integer PIDS_LIMIT in the .env as a corrupt-stack refusal
+// rather than a silent default.
+func TestReconfigure_NonIntegerEnvPidsRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-badpids-app"), func(env map[string]string) {
+		env["PIDS_LIMIT_APP"] = "not-a-number"
+	})
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "invalid pids limit")
+	assert.Zero(t, fx.fake.calls)
+}
+
+// TestReconfigure_ServiceNotInCatalogRefused proves a --service the catalog
+// declares no resource band for is refused fail-closed before any change.
+func TestReconfigure_ServiceNotInCatalogRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-nosvc-app"), nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "missing-service",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "service does not declare resource limits")
+	assert.Zero(t, fx.fake.calls)
+}
+
+// TestReconfigure_StackPathMismatchRefused proves a StackPath that does not
+// resolve to the managed stack for the app is refused fail-closed before any
+// change, guarding against reconfiguring an unexpected directory.
+func TestReconfigure_StackPathMismatchRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-pathmismatch-app"), nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:     fx.appID,
+		Service:   "app",
+		Memory:    strPtr("1g"),
+		StackPath: "/not/the/managed/stack",
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "stack path does not match")
+	assert.Zero(t, fx.fake.calls)
+}
+
+// TestReconfigure_ClosedEngineRefused proves Reconfigure and
+// ResourceSettings both return ErrClosed after the engine is closed,
+// before any lock acquisition or disk access.
+func TestReconfigure_ClosedEngineRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-closed-app"), nil)
+	require.NoError(t, fx.eng.Close())
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assert.ErrorIs(t, err, core.ErrClosed)
+
+	settings, err := fx.eng.ResourceSettings(t.Context(), fx.appID)
+	require.Error(t, err)
+	assert.Nil(t, settings)
+	assert.ErrorIs(t, err, core.ErrClosed)
+
+	assert.Zero(t, fx.fake.calls)
+}
+
+// TestReconfigure_TamperedPublicBindRefused proves the install-arc
+// public-bind scan is wired into the reconfigure re-render path: a tampered
+// catalog template that binds an undeclared port on 0.0.0.0 is refused with
+// the redacted verification error before any byte is written or recreate
+// runs. The backup precedes the rewrite, but no Docker call happens.
+func TestReconfigure_TamperedPublicBindRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-publicbind-app")
+	templates := reconfigureTemplates(app.AppID)
+	templates["templates/"+app.AppID+"/docker-compose.yml.tmpl"] = `services:
+  app:
+    image: docker.io/example/app:1.0.0
+    ports:
+      - "0.0.0.0:8099:8099"
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_APP}
+          cpus: ${CPUS_LIMIT_APP}
+        reservations:
+          pids: ${PIDS_LIMIT_APP}
+`
+	catalogFS := catalogFixtureFSWithFiles(t, templates, app)
+	eng, stateDir := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallSecretGeneratorForTest(eng, func(security.Encoding) (string, error) {
+		t.Fatalf("no secret may be generated on reconfigure")
+		return "", nil
+	})
+	fake := &fakeDockerClient{}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+
+	stackBase := filepath.Join(filepath.Dir(stateDir), "stacks")
+	stackPath := filepath.Join(stackBase, app.AppID)
+	lock := updateStackLockForApp(app, stackPath)
+	lock.GeneratedFields = []string{"DB_PASSWORD"}
+	writeStatusStackLock(t, stackBase, app.AppID, lock)
+	require.NoError(t, os.WriteFile(filepath.Join(stackPath, ".env"), []byte(renderReconfigureEnv(map[string]string{
+		"DB_PASSWORD":      reconfigureSecretValue,
+		"MEMORY_LIMIT_APP": reconfigureInstallMemory,
+		"CPUS_LIMIT_APP":   reconfigureInstallCPUs,
+		"PIDS_LIMIT_APP":   reconfigureInstallPIDs,
+	})), 0o600))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stackPath, "docker-compose.yml"),
+		[]byte("services:\n  app:\n    image: docker.io/example/app:1.0.0\n"),
+		0o644,
+	))
+
+	res, err := eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   app.AppID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertVerificationFailed(t, err)
+	assert.ErrorContains(t, err, "tcp/8099")
+	assert.Zero(t, fake.calls, "a public-bind refusal aborts before any Docker call")
+}
+
 // TestResourceSettings_ReportsCurrentValuesAndBands proves the read-only
 // view surfaces the .env current values alongside the catalog bands.
 func TestResourceSettings_ReportsCurrentValuesAndBands(t *testing.T) {
@@ -411,4 +770,114 @@ func TestResourceSettings_ReportsCurrentValuesAndBands(t *testing.T) {
 	assert.Equal(t, "1g", svc.MemoryMax)
 	assert.Equal(t, "2.0", svc.CPUsMax)
 	assert.Equal(t, 500, svc.PIDsMax)
+}
+
+// TestResourceSettings_EmptyAppIDRefused proves the read-only view refuses
+// an empty app id with a usage error before touching the catalog or disk.
+func TestResourceSettings_EmptyAppIDRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-emptyid-app"), nil)
+
+	settings, err := fx.eng.ResourceSettings(t.Context(), "")
+	require.Error(t, err)
+	assert.Nil(t, settings)
+	assertUsageValidation(t, err)
+}
+
+// TestResourceSettings_AppNotInstalledRefused proves the read-only view
+// refuses an uninstalled app: resolveManagedStack fails before any catalog
+// lookup or env read.
+func TestResourceSettings_AppNotInstalledRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-view-absent-app")
+	catalogFS := catalogFixtureFSWithFiles(t, reconfigureTemplates(app.AppID), app)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFS))
+
+	settings, err := eng.ResourceSettings(t.Context(), app.AppID)
+	require.Error(t, err)
+	assert.Nil(t, settings)
+	assertUsageValidation(t, err)
+}
+
+// TestResourceSettings_MissingEnvRendersBandsWithEmptyCurrent proves the
+// read-only view tolerates a stack whose .env lacks a service's resource
+// vars: the catalog bands still render and the current values come back
+// empty/zero rather than failing (the view is informational).
+func TestResourceSettings_MissingEnvRendersBandsWithEmptyCurrent(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-view-noenv-app"), func(env map[string]string) {
+		delete(env, "MEMORY_LIMIT_APP")
+		delete(env, "CPUS_LIMIT_APP")
+		delete(env, "PIDS_LIMIT_APP")
+	})
+
+	settings, err := fx.eng.ResourceSettings(t.Context(), fx.appID)
+	require.NoError(t, err)
+	require.NotNil(t, settings)
+	require.Len(t, settings.Services, 1)
+
+	svc := settings.Services[0]
+	assert.Empty(t, svc.CurrentMemory, "an absent .env resource var renders empty current")
+	assert.Empty(t, svc.CurrentCPUs)
+	assert.Zero(t, svc.CurrentPIDs)
+	assert.Equal(t, "256m", svc.MemoryMin, "the catalog band still renders")
+	assert.Equal(t, 500, svc.PIDsMax)
+}
+
+// TestReconfigure_DeployFailureEmitsRestoreProgress proves the sad path
+// emits its restore progress event when a progress callback is wired: a
+// deploy fault routes through restoreReconfigureOnFailure, which emits the
+// config-restore step before delegating to the shared restore.
+func TestReconfigure_DeployFailureEmitsRestoreProgress(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-restoreprog-app"), nil)
+	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		if fmt.Sprintf("%T", inv) == "docker.composeUpInvocation" {
+			return docker.CommandResult{ExitCode: 1}, errors.New("compose up rejected")
+		}
+		return docker.CommandResult{}, nil
+	}
+
+	var steps []string
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, func(step string, _ float64, _ string) {
+		steps = append(steps, step)
+	}, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assert.Contains(t, steps, types.StepReconfigureConfigRestore,
+		"the sad path must emit the config-restore progress step")
+}
+
+// TestReconfigure_DuplicatePlaceholderRefused proves the rewrite's
+// placeholder-resolution guard rejects a catalog that declares the same
+// placeholder twice, fail-closed before any byte is written. The backup
+// runs first (it precedes the rewrite), but no Docker call happens.
+func TestReconfigure_DuplicatePlaceholderRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-dupph-app")
+	regenerableFalse := false
+	app.Placeholders = append(app.Placeholders, catalog.Placeholder{
+		Name: "DB_PASSWORD", Type: "secret", Required: true, Encoding: "base64url", Regenerable: &regenerableFalse,
+	})
+	fx := newReconfigureFixture(t, app, nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertVerificationFailed(t, err)
+	assert.ErrorContains(t, err, "duplicate placeholder")
+	assert.Zero(t, fx.fake.calls, "a catalog-shape fault aborts before any Docker call")
 }
