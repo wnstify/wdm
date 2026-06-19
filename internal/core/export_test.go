@@ -361,6 +361,48 @@ type ReconfigureRewriteResultForTest struct {
 	EnvFile []byte
 }
 
+// ReconfigureRewriteStackResultForTest is a test-only projection of the
+// full in-place rewrite seam [Engine.rewriteReconfigureStack]: the secret
+// literals the returned plan carries for the caller's redactor, and the
+// rewritten .env bytes. It exists so a test can prove the rewrite seeds the
+// redactor and that the catalog-vs-compose guards run against the on-disk
+// compose.
+type ReconfigureRewriteStackResultForTest struct {
+	ReusedSecretValues []string
+	GeneratedValues    []string
+	EnvFile            []byte
+}
+
+// ReconfigureRewriteStackForTest drives the EXACT in-place rewrite the live
+// `wdm resources` reconfigure runs: it resolves the plan with
+// [buildReconfigurePlan] and then calls [Engine.rewriteReconfigureStack],
+// which reads the on-disk .env and compose, edits only the targeted resource
+// lines, seeds the redactor secret literals, and re-runs the install-arc
+// catalog-vs-compose guards against the unchanged on-disk compose. It returns
+// the secret literals the plan carries plus the rewritten .env, or the
+// verification error a tampered on-disk compose triggers.
+func (e *Engine) ReconfigureRewriteStackForTest(
+	ctx context.Context,
+	req types.ReconfigureRequest,
+	app catalog.App,
+	stackPath string,
+	composeProject string,
+) (ReconfigureRewriteStackResultForTest, error) {
+	plan, err := buildReconfigurePlan(req, app, stackPath, composeProject)
+	if err != nil {
+		return ReconfigureRewriteStackResultForTest{}, err
+	}
+	rewrite, err := e.rewriteReconfigureStack(ctx, plan, nil)
+	if err != nil {
+		return ReconfigureRewriteStackResultForTest{}, err
+	}
+	return ReconfigureRewriteStackResultForTest{
+		ReusedSecretValues: rewrite.reusedSecretValues,
+		GeneratedValues:    rewrite.generatedValues,
+		EnvFile:            rewrite.rendered.EnvBytes,
+	}, nil
+}
+
 // ReconfigureResolveRewriteForTest drives the EXACT reconfigure resolve +
 // in-place rewrite chain the live `wdm resources` reconfigure uses, without
 // the runtime lock, backup, Docker, or manifest steps: it runs

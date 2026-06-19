@@ -184,9 +184,10 @@ func (e *Engine) rewriteReconfigureStack(
 	}
 
 	rewrite := &installPlan{
-		app:            plan.app,
-		stackPath:      plan.stackPath,
-		composeProject: plan.composeProject,
+		app:                plan.app,
+		stackPath:          plan.stackPath,
+		composeProject:     plan.composeProject,
+		reusedSecretValues: secretLiterals,
 		rendered: render.RenderedStack{
 			ComposeBytes: composeBytes,
 			EnvBytes:     newEnv,

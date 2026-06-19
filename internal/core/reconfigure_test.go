@@ -364,6 +364,37 @@ func TestReconfigure_BandedRejectionMessages(t *testing.T) {
 	}
 }
 
+// TestReconfigure_RewriteCarriesStackSecretsForRedactor proves the
+// in-place rewrite returns a plan whose reusedSecretValues carries the
+// stack's secret-typed .env values. The caller (applyReconfigure) concats
+// generatedValues + reusedSecretValues into the redactor used for the .env
+// write, deploy, restore, and lock-manifest phases; an empty slice would
+// make that redactor a no-op and let a docker error echo a substituted
+// secret. The on-disk compose matches the catalog pin, so the in-place
+// guard set passes and the rewrite returns the secret literals.
+func TestReconfigure_RewriteCarriesStackSecretsForRedactor(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-secret-redactor")
+	fx := newReconfigureFixture(t, app, nil)
+
+	got, err := fx.eng.ReconfigureRewriteStackForTest(
+		t.Context(),
+		types.ReconfigureRequest{AppID: fx.appID, Service: "app", Memory: strPtr("1g")},
+		app,
+		fx.stackPath,
+		"wdm-"+fx.appID,
+	)
+	require.NoError(t, err, "the untampered in-place rewrite must pass the catalog-vs-compose guards")
+
+	assert.Contains(t, got.ReusedSecretValues, reconfigureSecretValue,
+		"the rewrite plan must carry the stack secret so the caller's redactor is non-empty")
+
+	literals := append(append([]string{}, got.GeneratedValues...), got.ReusedSecretValues...)
+	assert.NotEmpty(t, literals,
+		"slices.Concat(generatedValues, reusedSecretValues) must yield the secret literals")
+}
+
 // TestReconfigure_OutOfBandRejectedBeforeAnyChange proves an over-max
 // memory value is refused fail-closed with a usage error and no backup,
 // rewrite, or Docker call happens.
