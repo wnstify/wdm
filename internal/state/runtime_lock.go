@@ -23,6 +23,11 @@ import (
 // than hard-coding it elsewhere.
 const runtimeLockSchemaVersion = 1
 
+// syncRuntimeLock is the seam for the fsync in [writeRuntimeLock]. It
+// defaults to the real method so production behavior is unchanged;
+// tests override it to exercise the fsync-failure arm.
+var syncRuntimeLock = (*os.File).Sync
+
 // RuntimeLockInfo is the on-disk JSON shape of
 // ~/.local/state/wdm/runtime.lock per PRD §26 and 's
 // "runtime.lock" subsection. Field tags use snake_case so the file
@@ -666,7 +671,7 @@ func writeRuntimeLock(f *os.File, info RuntimeLockInfo) error {
 	if _, err := f.Write(raw); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncRuntimeLock(f); err != nil {
 		return fmt.Errorf("fsync: %w", err)
 	}
 	return nil
