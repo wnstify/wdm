@@ -36,8 +36,8 @@ release-notes-test: ## Test release notes extraction
 	sh scripts/extract-release-notes_test.sh
 
 dev-catalog-seed: ## Seed the in-repo catalog into the local data dir for dev testing (UNVERIFIED; FORCE=1 to overwrite)
-	@if [ -f "$(CATALOG_DIR)/stable/catalog.yaml" ] && [ -z "$(FORCE)" ]; then \
-		echo "Refusing: a catalog already exists at $(CATALOG_DIR)/stable/catalog.yaml."; \
+	@if { [ -e "$(CATALOG_DIR)/stable" ] || [ -e "$(CATALOG_DIR)/templates" ]; } && [ -z "$(FORCE)" ]; then \
+		echo "Refusing: a catalog already exists under $(CATALOG_DIR) (stable/ or templates/)."; \
 		echo "Will not overwrite a real or verified catalog. Re-run with FORCE=1 to replace it."; \
 		exit 1; \
 	fi
