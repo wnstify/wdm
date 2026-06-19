@@ -313,6 +313,60 @@ func TestCommandInjection_AllowlistRejectsShellAndInjectedTokens(t *testing.T) {
 			argv: []string{"network", "create", "wdm_default && reboot"},
 		},
 		{
+			name: "command chained onto network create app label value",
+			argv: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=n8n; reboot",
+				"wdm_default",
+			},
+		},
+		{
+			name: "uppercase rejected in network create app label value",
+			argv: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=N8N",
+				"wdm_default",
+			},
+		},
+		{
+			name: "unexpected key rejected on network create label",
+			argv: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"--label", "com.example.evil=1",
+				"wdm_default",
+			},
+		},
+		{
+			name: "wrong managed label value rejected on network create",
+			argv: []string{
+				"network", "create",
+				"--label", "wdm.managed=false",
+				"--label", "wdm.app=n8n",
+				"wdm_default",
+			},
+		},
+		{
+			name: "lone managed label without app label rejected on network create",
+			argv: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"wdm_default",
+			},
+		},
+		{
+			name: "extra label injected onto network create",
+			argv: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=n8n",
+				"--label", "evil=1",
+				"wdm_default",
+			},
+		},
+		{
 			name: "trailing command chained onto network remove",
 			argv: []string{"network", "rm", "wdm_default && reboot"},
 		},

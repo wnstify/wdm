@@ -488,6 +488,69 @@ func TestEnsureNetwork_ExistingSubnetMatchSkipsCreate(t *testing.T) {
 	}
 }
 
+// TestEnsureNetwork_CreateThreadsAppIDIntoLabels proves a spec carrying an app
+// ID stamps that ID into the create invocation so the builder emits the PRD §10
+// ownership labels on the newly-created network.
+func TestEnsureNetwork_CreateThreadsAppIDIntoLabels(t *testing.T) {
+	t.Parallel()
+
+	runCalls := 0
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+			runCalls++
+			switch runCalls {
+			case 1:
+				return CommandResult{
+					Stderr: "Error response from daemon: network wdm_default not found",
+				}, errors.New("exit status 1")
+			case 2:
+				createInv, ok := inv.(networkCreateInvocation)
+				require.True(t, ok)
+				require.Equal(t, "wdm_default", createInv.name)
+				require.Equal(t, "n8n", createInv.appID)
+				return CommandResult{}, nil
+			default:
+				t.Fatalf("unexpected run call %d", runCalls)
+				return CommandResult{}, nil
+			}
+		},
+	}
+
+	created, err := EnsureNetworkReport(
+		t.Context(),
+		fake,
+		NetworkSpec{Name: "wdm_default", AppID: "n8n"},
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Len(t, fake.calls, 2)
+}
+
+// TestEnsureNetwork_InvalidAppIDRefusesBeforeDaemon proves a malformed app ID
+// (here, an injection attempt) is refused by spec validation before any daemon
+// call — the label value can never reach the create argv.
+func TestEnsureNetwork_InvalidAppIDRefusesBeforeDaemon(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{
+		runFn: func(context.Context, Invocation) (CommandResult, error) {
+			t.Fatal("no daemon call may run when the app id is invalid")
+			return CommandResult{}, nil
+		},
+	}
+
+	_, err := EnsureNetworkReport(
+		t.Context(),
+		fake,
+		NetworkSpec{Name: "wdm_default", AppID: "n8n; reboot"},
+	)
+	require.Error(t, err)
+	var typedErr *types.Error
+	require.ErrorAs(t, err, &typedErr)
+	require.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
+	require.Empty(t, fake.calls)
+}
+
 func TestEnsureNetwork_ExistingSubnetMismatchReturnsUsageValidation(t *testing.T) {
 	t.Parallel()
 
@@ -935,6 +998,38 @@ func TestRun_NetworkInvocationsBuildExactArgv(t *testing.T) {
 			wantArg: []string{"network", "create", "--internal", "--subnet", "10.8.0.0/24", "--gateway", "10.8.0.1", "wg"},
 		},
 		{
+			name: "create with ownership labels",
+			inv: networkCreateInvocation{
+				name:  "wdm_default",
+				appID: "n8n",
+			},
+			wantArg: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=n8n",
+				"wdm_default",
+			},
+		},
+		{
+			name: "create internal with subnet, gateway, and labels",
+			inv: networkCreateInvocation{
+				name:     "wg",
+				internal: true,
+				subnet:   "10.8.0.0/24",
+				gateway:  "10.8.0.1",
+				appID:    "wireguard",
+			},
+			wantArg: []string{
+				"network", "create",
+				"--internal",
+				"--subnet", "10.8.0.0/24",
+				"--gateway", "10.8.0.1",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=wireguard",
+				"wg",
+			},
+		},
+		{
 			name: "remove",
 			inv: removeNetworkInvocation{
 				name: "wdm_default",
@@ -1028,6 +1123,25 @@ func TestValidateCommandSpec_AllowsNetworkShapes(t *testing.T) {
 	}))
 	require.NoError(t, validateCommandSpec(commandSpec{
 		argv: []string{"network", "create", "--internal", "--subnet", "10.8.0.0/24", "--gateway", "10.8.0.1", "wg"},
+	}))
+	require.NoError(t, validateCommandSpec(commandSpec{
+		argv: []string{
+			"network", "create",
+			"--label", "wdm.managed=true",
+			"--label", "wdm.app=n8n",
+			"wdm_default",
+		},
+	}))
+	require.NoError(t, validateCommandSpec(commandSpec{
+		argv: []string{
+			"network", "create",
+			"--internal",
+			"--subnet", "10.8.0.0/24",
+			"--gateway", "10.8.0.1",
+			"--label", "wdm.managed=true",
+			"--label", "wdm.app=wireguard",
+			"wg",
+		},
 	}))
 	require.NoError(t, validateCommandSpec(commandSpec{
 		argv: []string{"network", "rm", "wdm_default"},

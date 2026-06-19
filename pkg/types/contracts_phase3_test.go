@@ -395,14 +395,18 @@ func TestDeleteResult_JSONContract_PopulatedFields(t *testing.T) {
 		AppID:                 "uptime-kuma",
 		DeletedPaths:          []string{"/home/test/docker/uptime-kuma"},
 		RemainingNamedVolumes: []string{"wdm-uptime-kuma_db_data"},
-		RemainingNetworks:     []string{"kuma"},
+		RemovedNetworks:       []string{"kuma"},
+		RetainedNetworks: []types.RetainedNetwork{
+			{Name: "shared", Reason: "network shared has active endpoints"},
+		},
 	})
 
 	assert.JSONEq(t, `{
 		"app_id":"uptime-kuma",
 		"deleted_paths":["/home/test/docker/uptime-kuma"],
 		"remaining_named_volumes":["wdm-uptime-kuma_db_data"],
-		"remaining_networks":["kuma"]
+		"removed_networks":["kuma"],
+		"retained_networks":[{"name":"shared","reason":"network shared has active endpoints"}]
 	}`, got)
 }
 
@@ -525,6 +529,7 @@ func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing
 		{name: "StepDeletePlanning", got: types.StepDeletePlanning, want: "step_delete_planning"},
 		{name: "StepDeleteConfirm", got: types.StepDeleteConfirm, want: "step_delete_confirm"},
 		{name: "StepDeleteComposeDown", got: types.StepDeleteComposeDown, want: "step_delete_compose_down"},
+		{name: "StepDeleteRemoveNetworks", got: types.StepDeleteRemoveNetworks, want: "step_delete_remove_networks"},
 		{name: "StepDeleteFiles", got: types.StepDeleteFiles, want: "step_delete_files"},
 	}
 

@@ -216,11 +216,31 @@ func (m model) deleteResultView() string {
 	fmt.Fprintf(&b, "%s was permanently deleted\n", result.AppID)
 	writeStringList(&b, "\nDeleted:", result.DeletedPaths)
 	writeStringListWithEmpty(&b, "\nNamed volumes (not deleted):", result.RemainingNamedVolumes, "  none reported (Docker inspection data may be unavailable)")
-	writeStringList(&b, "\nNetworks left in place:", result.RemainingNetworks)
+	writeStringList(&b, "\nNetworks removed:", result.RemovedNetworks)
+	writeDeleteRetainedNetworks(&b, result)
 
 	b.WriteString("\n")
 	b.WriteString(helpLine())
 	return b.String()
+}
+
+// writeDeleteRetainedNetworks appends a warning naming the wdm-created networks
+// that could not be removed during deletion and the manual `docker network rm
+// <name>` command to finish the cleanup. Network removal is best-effort, so a
+// retained network never fails the deletion; this just surfaces the follow-up,
+// mirroring writeUninstallRetainedNetworks.
+func writeDeleteRetainedNetworks(b *strings.Builder, result *types.DeleteResult) {
+	if len(result.RetainedNetworks) == 0 {
+		return
+	}
+	b.WriteString("\nWARNING: some wdm-created networks could not be removed. Remove them manually:\n")
+	for _, network := range result.RetainedNetworks {
+		b.WriteString("- ")
+		b.WriteString(network.Name)
+		b.WriteString(": docker network rm ")
+		b.WriteString(network.Name)
+		b.WriteByte('\n')
+	}
 }
 
 func writeStringList(b *strings.Builder, title string, values []string) {

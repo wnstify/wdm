@@ -76,6 +76,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 - `--confirm-name <app-id>` — required. Type the exact app id to confirm deletion.
 - `--stack-path <path>` — override the default stack path.
+- After `docker compose down`, and before the stack files are deleted, `delete` removes the app's `wdm`-created Docker networks best-effort. Named volumes and all data are still **kept** (never `down -v`). A network already gone counts as removed; one that cannot be removed (for example still holding an endpoint) is reported with the exact `docker network rm <name>` command and never aborts the deletion. Reinstall recreates the networks. Unlike `delete`, `remove` leaves the networks in place.
 
 **`wdm apps backups restore <app-id> <snapshot>`**
 
@@ -189,7 +190,7 @@ wdm apps remove nextcloud --yes
 wdm apps delete nextcloud --confirm-name nextcloud
 ```
 
-`remove` stops a stack and leaves its files and volumes in place, so you can reinstall or restart it. `delete` permanently removes the stack's files and directory and requires `--confirm-name <app-id>`.
+`remove` stops a stack and leaves its files, volumes, and networks in place, so you can reinstall or restart it. `delete` permanently removes the stack's files and directory, removes the app's `wdm`-created Docker networks best-effort (data and named volumes are still kept), and requires `--confirm-name <app-id>`.
 
 Uninstall `wdm` and tear down every managed app, keeping all volumes and stack data:
 

@@ -431,6 +431,16 @@ func buildNetworkCreateCommand(inv networkCreateInvocation) (commandSpec, error)
 	if inv.gateway != "" {
 		argv = append(argv, "--gateway", inv.gateway)
 	}
+	// PRD §10 ownership labels, in fixed order so the argv is deterministic and
+	// the last-gate validator can match the pair positionally. Stamped only
+	// when the spec carries an app ID; the validator re-checks the charset.
+	if inv.appID != "" {
+		argv = append(
+			argv,
+			"--label", managedNetworkLabel,
+			"--label", appNetworkLabelPrefix+inv.appID,
+		)
+	}
 	argv = append(argv, networkName)
 	return commandSpec{argv: argv}, nil
 }
@@ -672,10 +682,12 @@ func validateNetworkArgv(argv []string) error {
 
 // validateNetworkCreateArgv enforces the fixed `network create` argv grammar:
 // an optional `--internal` flag, an optional `--subnet <cidr>` pair, an optional
-// `--gateway <ip>` pair, in that order, and the network name as the trailing
-// token. A `--gateway` clause is rejected unless a `--subnet` clause preceded it,
-// matching Docker's own constraint. Each flag value is re-validated here — the
-// allow-list is the last gate before exec, so it never trusts the builder (PRD §12).
+// `--gateway <ip>` pair, then the optional ordered ownership-label pair
+// (`--label wdm.managed=true --label wdm.app=<appID>`, PRD §10), in that order,
+// and the network name as the trailing token. A `--gateway` clause is rejected
+// unless a `--subnet` clause preceded it, matching Docker's own constraint. Each
+// flag value is re-validated here — the allow-list is the last gate before exec,
+// so it never trusts the builder (PRD §12).
 func validateNetworkCreateArgv(argv []string) error {
 	rest := argv[2:]
 	if len(rest) > 0 && rest[0] == "--internal" {
@@ -698,11 +710,47 @@ func validateNetworkCreateArgv(argv []string) error {
 		}
 		rest = rest[2:]
 	}
+	var err error
+	rest, err = consumeNetworkLabelArgs(argv, rest)
+	if err != nil {
+		return err
+	}
 	if len(rest) != 1 {
 		return unsupportedDockerArgv(argv)
 	}
-	_, err := validateNetworkName(rest[0])
+	_, err = validateNetworkName(rest[0])
 	return err
+}
+
+// consumeNetworkLabelArgs validates the optional ownership-label pair stamped by
+// the create builder and returns the remaining tokens. The pair is all-or-
+// nothing and positionally fixed: `--label wdm.managed=true` immediately
+// followed by `--label wdm.app=<appID>`, where <appID> matches the catalog
+// app_id charset. A lone `--label`, a wrong key, a wrong managed value, or an
+// out-of-charset app id is rejected — this is the last gate before exec, so a
+// label value carrying shell metacharacters or extra tokens never reaches the
+// daemon (PRD §10, §12).
+func consumeNetworkLabelArgs(argv, rest []string) ([]string, error) {
+	if len(rest) == 0 || rest[0] != "--label" {
+		return rest, nil
+	}
+	if len(rest) < 4 || rest[2] != "--label" {
+		return nil, unsupportedDockerArgv(argv)
+	}
+	if rest[1] != managedNetworkLabel {
+		return nil, unsupportedDockerArgv(argv)
+	}
+	appID, ok := strings.CutPrefix(rest[3], appNetworkLabelPrefix)
+	if !ok {
+		return nil, unsupportedDockerArgv(argv)
+	}
+	if !networkAppIDPattern.MatchString(appID) {
+		return nil, usageValidationError(
+			"network app label is invalid",
+			fmt.Errorf("network app label value %q does not match allowed app id format", appID),
+		)
+	}
+	return rest[4:], nil
 }
 
 func validateNetworkSubnetArg(subnet string) error {

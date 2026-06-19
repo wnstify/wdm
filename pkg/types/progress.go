@@ -94,6 +94,9 @@ const (
 	StepDeleteConfirm = "step_delete_confirm"
 	// StepDeleteComposeDown reports docker compose down during delete.
 	StepDeleteComposeDown = "step_delete_compose_down"
+	// StepDeleteRemoveNetworks reports best-effort removal of the app's
+	// wdm-created networks after the down and before stack-file deletion.
+	StepDeleteRemoveNetworks = "step_delete_remove_networks"
 	// StepDeleteFiles reports stack-file deletion.
 	StepDeleteFiles = "step_delete_files"
 
