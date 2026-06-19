@@ -23,6 +23,8 @@
 //   - RestartRequest/Result,
 //     StopAllRequest/Result, StoppedApp — batch "stop all apps"
 //     payloads (issue #27)
+//   - UninstallRequest/Result, TornDownApp — self-uninstall payloads
+//     (PRD §39, issue #29)
 //     ValidationResult,
 //     BackupInfo,
 //     RestoreBackupRequest/Result,
@@ -31,6 +33,7 @@
 //     DeleteRequest/Result,
 //     RuntimeLockStatus — engine-gap payloads (PRD §18, §19,
 //   - ConfirmationKindDeleteDestructive — the DeleteApp Confirmation.Kind (PRD §19)
+//   - ConfirmationKindUninstallDestructive — the Uninstall Confirmation.Kind (PRD §39)
 //   - CatalogUpdateQuery/Status,
 //     CatalogUpdateRequest/Result,
 //     CatalogChange,
@@ -54,7 +57,7 @@
 //   - Progress,
 //     StepInstall* / StepUpdate* /
 //     StepRemove* / StepRestart* /
-//     StepStopAll* /
+//     StepStopAll* / StepUninstall* /
 //     StepRestore* / StepDelete* /
 //     StepCatalogUpdate* /
 //     StepSelfUpdate*

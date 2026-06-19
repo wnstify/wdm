@@ -291,6 +291,25 @@ func TestComposeDeploymentWrappers_SendPrivateInvocationsAndReturnRunErrors(t *t
 		require.Same(t, wantErr, err)
 		require.Equal(t, 1, fake.runCalls)
 	})
+
+	t.Run("down remove images", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &composeDeploymentFakeClient{
+			runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+				downInv, ok := inv.(composeDownRemoveImagesInvocation)
+				require.True(t, ok)
+				require.Equal(t, project.ComposeFile, downInv.composeFile)
+				require.Equal(t, project.EnvFile, downInv.envFile)
+				require.Equal(t, project.ProjectName, downInv.projectName)
+				return CommandResult{Stdout: "ignored"}, wantErr
+			},
+		}
+
+		err := ComposeDownRemoveImages(t.Context(), fake, project)
+		require.Same(t, wantErr, err)
+		require.Equal(t, 1, fake.runCalls)
+	})
 }
 
 func TestRun_ComposeDeploymentInvocationsBuildExactArgv(t *testing.T) {
@@ -378,6 +397,26 @@ func TestRun_ComposeDeploymentInvocationsBuildExactArgv(t *testing.T) {
 				"down",
 			},
 		},
+		{
+			name: "down remove images",
+			inv: composeDownRemoveImagesInvocation{
+				composeFile: project.ComposeFile,
+				envFile:     project.EnvFile,
+				projectName: project.ProjectName,
+			},
+			wantArg: []string{
+				"compose",
+				"-f",
+				project.ComposeFile,
+				"--env-file",
+				project.EnvFile,
+				"--project-name",
+				project.ProjectName,
+				"down",
+				"--rmi",
+				"all",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -388,6 +427,8 @@ func TestRun_ComposeDeploymentInvocationsBuildExactArgv(t *testing.T) {
 			execFn := func(_ context.Context, cmd commandSpec) (CommandResult, error) {
 				invoked = true
 				require.Equal(t, tt.wantArg, cmd.argv)
+				// The forbidden -v flag must never appear in any down argv.
+				require.NotContains(t, cmd.argv, "-v")
 				return CommandResult{}, nil
 			}
 
@@ -452,6 +493,19 @@ printf '\n'
 		"argv=[compose][-f]["+project.ComposeFile+"][--env-file]["+project.EnvFile+"][--project-name]["+project.ProjectName+"][down]",
 	)
 	require.NotContains(t, downRes.Stdout, "[-v]")
+
+	downRmiRes, err := client.Run(t.Context(), composeDownRemoveImagesInvocation{
+		composeFile: project.ComposeFile,
+		envFile:     project.EnvFile,
+		projectName: project.ProjectName,
+	})
+	require.NoError(t, err)
+	require.Contains(
+		t,
+		downRmiRes.Stdout,
+		"argv=[compose][-f]["+project.ComposeFile+"][--env-file]["+project.EnvFile+"][--project-name]["+project.ProjectName+"][down][--rmi][all]",
+	)
+	require.NotContains(t, downRmiRes.Stdout, "[-v]")
 }
 
 func TestValidateCommandSpec_AllowsComposeDeploymentShapes(t *testing.T) {
@@ -513,6 +567,21 @@ func TestValidateCommandSpec_AllowsComposeDeploymentShapes(t *testing.T) {
 			"down",
 		},
 	}))
+
+	require.NoError(t, validateCommandSpec(commandSpec{
+		argv: []string{
+			"compose",
+			"-f",
+			project.ComposeFile,
+			"--env-file",
+			project.EnvFile,
+			"--project-name",
+			project.ProjectName,
+			"down",
+			"--rmi",
+			"all",
+		},
+	}))
 }
 
 func TestValidateCommandSpec_RejectsUnsafeComposeDeploymentShapes(t *testing.T) {
@@ -544,6 +613,37 @@ func TestValidateCommandSpec_RejectsUnsafeComposeDeploymentShapes(t *testing.T) 
 				"wdm-app",
 				"down",
 				"-v",
+			},
+		},
+		{
+			name: "down --rmi all with -v forbidden",
+			argv: []string{
+				"compose",
+				"-f",
+				composeFile,
+				"--env-file",
+				envFile,
+				"--project-name",
+				"wdm-app",
+				"down",
+				"--rmi",
+				"all",
+				"-v",
+			},
+		},
+		{
+			name: "down --rmi local not allowlisted",
+			argv: []string{
+				"compose",
+				"-f",
+				composeFile,
+				"--env-file",
+				envFile,
+				"--project-name",
+				"wdm-app",
+				"down",
+				"--rmi",
+				"local",
 			},
 		},
 		{

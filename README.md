@@ -89,6 +89,8 @@ wdm catalog check             # check for catalog updates
 wdm catalog update            # update the local catalog
 wdm self-update check         # check for a newer wdm release
 wdm settings                  # view or change settings
+
+wdm uninstall                 # tear down every managed app and remove wdm (data kept)
 ```
 
 Run `wdm <command> --help` for the full flag set of any command.

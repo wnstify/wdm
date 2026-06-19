@@ -131,6 +131,20 @@ Inspect and clear the global runtime lock that guards state-changing operations.
 
 - `wdm lock clear` — `--yes`.
 
+### Uninstall
+
+Remove `wdm` itself and tear down every managed app. This is a top-level command, not under `wdm apps`.
+
+| Command | Description |
+|---|---|
+| `wdm uninstall` | Tear down every managed app and remove `wdm`'s own footprint. |
+
+- Runs `docker compose down --rmi all` against every managed stack, removing containers and the stack's images. After every app is down it also removes the `wdm`-created Docker networks (the ones `wdm` pre-creates at install and the compose declares `external`, so `down` never removes them), leaving Docker clean. It then removes `wdm`'s own footprint: the config, data, and state directories and the `wdm` binary (and its `.previous` sibling).
+- Named volumes and every `~/docker/<app>/` stack directory are **kept**. This is never `docker compose down -v`; no user data is deleted. Scope is wdm-managed apps and wdm's footprint only — never a system-wide Docker prune.
+- Network cleanup is best-effort: a network already gone counts as removed, and a network that cannot be removed is left in place and reported with the exact `docker network rm <name>` command to run manually. It never aborts the uninstall.
+- Fail-closed: if any stack fails to tear down it aborts before removing anything, leaves `wdm` installed, lists the stacks that failed, and exits nonzero. On full success the `wdm` binary is already gone and the command exits `0`.
+- `--yes` — accept the destructive uninstall confirmation without prompting. Without a terminal to prompt on and without `--yes`, the uninstall is declined.
+
 ## Examples
 
 Install a stack with a public domain and a catalog placeholder:
@@ -176,6 +190,12 @@ wdm apps delete nextcloud --confirm-name nextcloud
 ```
 
 `remove` stops a stack and leaves its files and volumes in place, so you can reinstall or restart it. `delete` permanently removes the stack's files and directory and requires `--confirm-name <app-id>`.
+
+Uninstall `wdm` and tear down every managed app, keeping all volumes and stack data:
+
+```sh
+wdm uninstall --yes
+```
 
 ## Exit codes
 

@@ -24,6 +24,9 @@ type fakeEngine struct {
 	stopAllResult          *types.StopAllResult
 	stopAllErr             error
 	stopAllCalls           int
+	uninstallResult        *types.UninstallResult
+	uninstallErr           error
+	uninstallCalls         int
 	validationResult       *types.ValidationResult
 	validationErr          error
 	validateCalls          []string
@@ -166,6 +169,16 @@ func (f *fakeEngine) StopAll(
 ) (*types.StopAllResult, error) {
 	f.stopAllCalls++
 	return f.stopAllResult, f.stopAllErr
+}
+
+func (f *fakeEngine) Uninstall(
+	_ context.Context,
+	_ types.UninstallRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.UninstallResult, error) {
+	f.uninstallCalls++
+	return f.uninstallResult, f.uninstallErr
 }
 
 func (f *fakeEngine) ValidateConfig(_ context.Context, appID string) (*types.ValidationResult, error) {
