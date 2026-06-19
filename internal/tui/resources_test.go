@@ -236,6 +236,144 @@ func TestModel_ResourcesNoAdjustableServiceSubmitRefused(t *testing.T) {
 	assert.Contains(t, m.err.Error(), "no adjustable service")
 }
 
+// TestModel_ResourcesCPUsChangeMapsToPointer covers the resourceFieldCPUs
+// arm of reconfigureRequest: a changed CPUs field maps to a non-nil CPUs
+// pointer while untouched memory/pids stay nil ("leave unchanged").
+func TestModel_ResourcesCPUsChangeMapsToPointer(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		resourceService: "web",
+		status:          &types.AppStatus{AppID: "alpha"},
+		resourceFields: []resourceField{
+			{target: resourceFieldMemory, original: "512m", value: "512m"},
+			{target: resourceFieldCPUs, original: "1.0", value: "2.0"},
+			{target: resourceFieldPIDs, original: "256", value: "256"},
+		},
+	}
+
+	req, changed, err := m.reconfigureRequest()
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Nil(t, req.Memory)
+	assert.Nil(t, req.PIDs)
+	require.NotNil(t, req.CPUs)
+	assert.Equal(t, "2.0", *req.CPUs)
+}
+
+// TestModel_ResourcesViewLoadingState covers the busy && settings==nil arm
+// of resourcesView: while the read-only settings load is in flight the
+// screen shows a loading line for the active app, not the field editor.
+func TestModel_ResourcesViewLoadingState(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		screen: screenResources,
+		busy:   true,
+		status: &types.AppStatus{AppID: "alpha"},
+	}
+
+	view := m.resourcesView()
+	assert.Contains(t, view, "Loading resource limits for alpha...")
+	assert.NotContains(t, view, "Apply changes")
+}
+
+// TestModel_ResourcesViewReconfiguringState covers the busy (settings
+// loaded) arm of resourcesView: while the reconfigure runs the screen
+// shows the reconfiguring line plus the streamed progress message.
+func TestModel_ResourcesViewReconfiguringState(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		screen:           screenResources,
+		busy:             true,
+		status:           &types.AppStatus{AppID: "alpha"},
+		resourceSettings: resourceSettingsFixture(),
+		progress:         progressMsg{message: "recreating container"},
+	}
+
+	view := m.resourcesView()
+	assert.Contains(t, view, "Reconfiguring alpha...")
+	assert.Contains(t, view, "recreating container")
+}
+
+// TestModel_ResourcesViewResultStateRendersBackupPath covers the
+// reconfigureResult arm of resourcesView and the BackupPath arm of
+// writeReconfigureResult: the post-reconfigure summary renders the applied
+// limits, the config backup path, and the runtime state.
+func TestModel_ResourcesViewResultStateRendersBackupPath(t *testing.T) {
+	t.Parallel()
+
+	m := model{
+		screen: screenResources,
+		status: &types.AppStatus{AppID: "alpha"},
+		reconfigureResult: &types.ReconfigureResult{
+			AppID:      "alpha",
+			Service:    "web",
+			Memory:     "1g",
+			CPUs:       "2.0",
+			PIDs:       300,
+			BackupPath: "/home/test/docker/alpha/.wdm-backups/123-reconfigure",
+			Status:     &types.AppStatus{AppID: "alpha", State: "running"},
+		},
+	}
+
+	view := m.resourcesView()
+	assert.Contains(t, view, "Reconfigure complete.")
+	assert.Contains(t, view, "Service: web")
+	assert.Contains(t, view, "Memory: 1g")
+	assert.Contains(t, view, "CPUs: 2.0")
+	assert.Contains(t, view, "PIDs: 300")
+	assert.Contains(t, view, "Config backup: /home/test/docker/alpha/.wdm-backups/123-reconfigure")
+	assert.Contains(t, view, "State: running")
+}
+
+// TestResourceBandHint_AllUnsetReturnsEmpty covers the empty-band arm of
+// resourceBandHint: when the catalog declares no min/recommended/max the
+// hint is empty, not a dangling "()".
+func TestResourceBandHint_AllUnsetReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, resourceBandHint("", "", ""))
+}
+
+// TestResourcePIDsHint_AllUnsetReturnsEmpty covers the empty-band arm of
+// resourcePIDsHint: a profile with no default and no max yields an empty
+// hint.
+func TestResourcePIDsHint_AllUnsetReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, resourcePIDsHint(0, 0))
+}
+
+// TestResourceServiceSettings_NilReturnsNil covers the settings==nil arm of
+// resourceServiceSettings.
+func TestResourceServiceSettings_NilReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, resourceServiceSettings(nil))
+}
+
+// TestModel_ResourcesLoadNilSettingsSurfacesError covers the
+// settings==nil && err==nil arm of loadResourceSettingsCmd: a fake engine
+// that returns (nil, nil) is treated as "settings unavailable", surfacing
+// a load error rather than rendering an empty editor.
+func TestModel_ResourcesLoadNilSettingsSurfacesError(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		statuses:         map[string]*types.AppStatus{"alpha": {AppID: "alpha", State: "running"}},
+		listStatusApps:   []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha"}, State: "running"}},
+		resourceSettings: nil,
+	}
+	m := loadResourcesScreen(t, fake)
+
+	require.Error(t, m.resourceLoadErr)
+	view := m.View()
+	assert.Contains(t, view, "Could not load resource settings")
+	assert.Contains(t, view, "resource settings unavailable")
+}
+
 func TestModel_ResourcesBackspaceOnEmptyFieldIsNoOp(t *testing.T) {
 	t.Parallel()
 

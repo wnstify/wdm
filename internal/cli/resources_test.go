@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -308,6 +309,60 @@ func TestResources_ErrorPath_StdoutEmpty(t *testing.T) {
 			assert.Empty(t, stdout, "no output may be written to stdout on the error path")
 		})
 	}
+}
+
+// --- Engine-factory failure: a newEngine that errors propagates before
+// any ResourceSettings/Reconfigure call and writes nothing to stdout.
+
+func TestResources_EngineFactoryError_Propagates(t *testing.T) {
+	t.Parallel()
+
+	factoryErr := errors.New("engine: lock held by another wdm process")
+	root := NewRootCmd("test", func() (engine.Engine, error) {
+		return nil, factoryErr
+	})
+
+	var outBuf, errBuf bytes.Buffer
+	root.SetOut(&outBuf)
+	root.SetErr(&errBuf)
+	root.SetIn(&bytes.Buffer{})
+	root.SetArgs([]string{"resources", "vaultwarden"})
+	root.SetContext(context.Background())
+
+	err := root.Execute()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, factoryErr, "the leaf must return the engine-factory error unchanged")
+	assert.Empty(t, outBuf.String(), "no output may be written when the engine cannot be constructed")
+}
+
+// --- Writer faults: the two finish/view renderers wrap a failing writer
+// with their own context rather than dropping it.
+
+func TestWriteResourceSettings_WriteErrorWrapped(t *testing.T) {
+	t.Parallel()
+
+	w := &errorWriter{err: errors.New("disk full")}
+	err := writeResourceSettings(w, &types.ResourceSettings{
+		AppID:    "vaultwarden",
+		Services: []types.ResourceServiceSettings{{Service: "server", Adjustable: true}},
+	})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "resources: writing output")
+	assert.ErrorContains(t, err, "disk full")
+}
+
+func TestWriteReconfigureFinish_WriteErrorWrapped(t *testing.T) {
+	t.Parallel()
+
+	w := &errorWriter{err: errors.New("disk full")}
+	err := writeReconfigureFinish(w, &types.ReconfigureResult{
+		AppID:   "vaultwarden",
+		Service: "server",
+		Memory:  "1g",
+	})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "resources: writing finish screen")
+	assert.ErrorContains(t, err, "disk full")
 }
 
 // --- ExactArgs(1) refusal: zero or two positional args fail before the

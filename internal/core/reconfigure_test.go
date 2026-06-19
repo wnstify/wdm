@@ -748,6 +748,147 @@ func TestReconfigure_TamperedPublicBindRefused(t *testing.T) {
 	assert.Zero(t, fake.calls, "a public-bind refusal aborts before any Docker call")
 }
 
+// TestReconfigure_EmptyAppIDRejected proves planReconfigure refuses an
+// empty app id with a usage error after acquiring the runtime lock and
+// before any stack resolution.
+func TestReconfigure_EmptyAppIDRejected(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-emptyappid-app"), nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   "",
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "app id is required")
+	assert.Zero(t, fx.fake.calls)
+}
+
+// TestReconfigure_EmptyServiceRejected proves planReconfigure refuses an
+// empty service with a usage error before any stack resolution.
+func TestReconfigure_EmptyServiceRejected(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-emptysvc-app"), nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "service is required")
+	assert.Zero(t, fx.fake.calls)
+}
+
+// TestReconfigure_MissingComposeProjectRejected proves planReconfigure
+// refuses fail-closed when the stack lock records no compose project: a
+// corrupt manifest is a usage error, not a guess, and no backup or Docker
+// call happens.
+func TestReconfigure_MissingComposeProjectRejected(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-noproject-app")
+	fx := newReconfigureFixture(t, app, nil)
+
+	stackBase := filepath.Dir(fx.stackPath)
+	lock := updateStackLockForApp(app, fx.stackPath)
+	lock.GeneratedFields = []string{"DB_PASSWORD"}
+	lock.ComposeProject = ""
+	writeStatusStackLock(t, stackBase, app.AppID, lock)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "missing its compose project")
+	assert.Zero(t, fx.fake.calls)
+	assert.NoDirExists(t, fx.backupRoot, "a corrupt-manifest refusal aborts before the backup")
+}
+
+// TestReconfigure_MissingMemoryEnvVarRefused proves readServiceResourceValues
+// refuses fail-closed when MEMORY_LIMIT is absent from the stack .env.
+func TestReconfigure_MissingMemoryEnvVarRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-nomem-app"), func(env map[string]string) {
+		delete(env, "MEMORY_LIMIT_APP")
+	})
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "memory limit")
+	assert.Zero(t, fx.fake.calls)
+	assert.NoDirExists(t, fx.backupRoot)
+}
+
+// TestReconfigure_MissingCPUsEnvVarRefused proves readServiceResourceValues
+// refuses fail-closed when CPUS_LIMIT is absent from the stack .env.
+func TestReconfigure_MissingCPUsEnvVarRefused(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-nocpu-app"), func(env map[string]string) {
+		delete(env, "CPUS_LIMIT_APP")
+	})
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "cpu limit")
+	assert.Zero(t, fx.fake.calls)
+	assert.NoDirExists(t, fx.backupRoot)
+}
+
+// TestReconfigure_DuplicateResourceProfileRefused proves buildReconfigurePlan
+// refuses a catalog app that declares two resource profiles for the same
+// service: the duplicate-profile guard in indexResourceProfiles fires
+// fail-closed before any change.
+func TestReconfigure_DuplicateResourceProfileRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-dupprofile-app")
+	app.Resources = append(app.Resources, catalog.ResourceProfile{
+		Service:       "app",
+		Memory:        catalog.MemoryBand{Min: "256m", Recommended: "512m", Max: "1g"},
+		CPUs:          catalog.CPUBand{Min: "0.25", Recommended: "1.0", Max: "2.0"},
+		PIDs:          catalog.PIDsBand{Default: 200, Max: 500},
+		AllowOverride: true,
+	})
+	fx := newReconfigureFixture(t, app, nil)
+
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertVerificationFailed(t, err)
+	assert.ErrorContains(t, err, "duplicate resource")
+	assert.Zero(t, fx.fake.calls)
+}
+
 // TestResourceSettings_ReportsCurrentValuesAndBands proves the read-only
 // view surfaces the .env current values alongside the catalog bands.
 func TestResourceSettings_ReportsCurrentValuesAndBands(t *testing.T) {
