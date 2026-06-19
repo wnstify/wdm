@@ -10,10 +10,18 @@ changelog=$1
 version=$2
 output=$3
 
-# Strip both single-line (<!-- x -->) and multi-line HTML comment blocks so
-# internal notes never leak into public release notes. Comment handling runs
-# before the section toggle so a comment line never opens, closes, or prints a
-# section.
+# Strip HTML comments so internal notes never leak into public release notes.
+# Multi-line comment blocks are dropped via the in_comment state. On the print
+# path, inline comment spans are stripped from each line, including comments
+# that share a line with visible text (e.g. "text <!-- note -->" or
+# "<!-- note --> text"); a line that becomes whitespace-only after stripping is
+# dropped, matching the old behavior of dropping pure comment lines. Lines with
+# no comment print unchanged, including genuine blank lines.
+#
+# Accepted limitation: a version header ("## ...") embedded inside an HTML
+# comment is treated as inert, so the active section is not split there. This
+# matches treating commented-out content as ignored, and real changelogs do not
+# embed headers in comments.
 awk -v version="$version" '
 	in_comment {
 		if (index($0, "-->")) {
@@ -32,8 +40,15 @@ awk -v version="$version" '
 	in_section && /^## / {
 		in_section = 0
 	}
-	in_section && $0 !~ /^<!--.*-->$/ {
-		print
+	in_section {
+		line = $0
+		if (line ~ /<!--/) {
+			gsub(/<!--.*-->/, "", line)
+			if (line ~ /^[[:space:]]*$/) {
+				next
+			}
+		}
+		print line
 	}
 ' "$changelog" >"$output"
 

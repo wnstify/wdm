@@ -148,6 +148,30 @@ multi-line secret line two
 EOF
 }
 
+write_inline_comment_changelog() {
+	cat >"$1" <<'EOF'
+# Changelog
+
+## v4.0.0 - 2026-06-19
+
+<!-- pure secret -->
+<!-- inline secret --> visible-after
+visible-before <!-- tail secret -->
+<!--
+multi-line secret one
+multi-line secret two
+-->
+### Fixed
+
+- Inline edge body line.
+
+## v3.9.9 - 2026-06-19
+
+### Fixed
+- Older body line.
+EOF
+}
+
 prefix_changelog="$tmp_root/prefix-CHANGELOG.md"
 write_prefix_changelog "$prefix_changelog"
 
@@ -196,6 +220,26 @@ if extract_to "$comment_changelog" "v3.0.0" "$out" "$err" &&
 	printf '%s\n' "ok - multi-line and single-line comments stripped"
 else
 	report_fail "multi-line and single-line comments stripped" "$out" "$err"
+fi
+
+inline_changelog="$tmp_root/inline-CHANGELOG.md"
+write_inline_comment_changelog "$inline_changelog"
+
+out="$tmp_root/inline.md"
+err="$tmp_root/inline.err"
+if extract_to "$inline_changelog" "v4.0.0" "$out" "$err" &&
+	contains "$out" "Inline edge body line" &&
+	contains "$out" "visible-after" &&
+	contains "$out" "visible-before" &&
+	! contains "$out" "pure secret" &&
+	! contains "$out" "inline secret" &&
+	! contains "$out" "tail secret" &&
+	! contains "$out" "multi-line secret one" &&
+	! contains "$out" "multi-line secret two" &&
+	! contains "$out" "Older body line"; then
+	printf '%s\n' "ok - inline and pure comments stripped, visible text and blanks kept"
+else
+	report_fail "inline and pure comments stripped, visible text and blanks kept" "$out" "$err"
 fi
 
 expect_pass "extracts requested release section" "v1.0.2" "Advanced the stable catalog version"
