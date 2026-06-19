@@ -25,12 +25,13 @@ import (
 // and the exact argv the client built, and injects per-project failures.
 type uninstallDockerClient struct {
 	t                  *testing.T
-	downErr            map[string]error  // project -> teardown failure to inject
-	downCalls          []string          // Compose projects ComposeDownRemoveImages targeted
-	lastDownArgv       []string          // argv of the most recent teardown invocation
-	networkRemoveErr   map[string]error  // network name -> raw run error to inject
-	networkRemoveStder map[string]string // network name -> stderr to inject alongside the error
-	networkRemoveCalls []string          // network names network rm targeted, in order
+	downErr            map[string]error     // project -> teardown failure to inject
+	downCalls          []string             // Compose projects ComposeDownRemoveImages targeted
+	lastDownArgv       []string             // argv of the most recent teardown invocation
+	networkRemoveErr   map[string]error     // network name -> raw run error to inject
+	networkRemoveStder map[string]string    // network name -> stderr to inject alongside the error
+	networkRemoveCalls []string             // network names network rm targeted, in order
+	onDown             func(project string) // optional hook fired after each teardown is recorded
 }
 
 func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
@@ -80,6 +81,9 @@ func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (d
 			"compose", "-f", invocationField(inv, "composeFile:"),
 			"--env-file", invocationField(inv, "envFile:"),
 			"--project-name", project, "down", "--rmi", "all",
+		}
+		if c.onDown != nil {
+			c.onDown(project)
 		}
 		if err := c.downErr[project]; err != nil {
 			return docker.CommandResult{}, err
@@ -389,6 +393,49 @@ func TestUninstall_ContextCancellationPropagates(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Empty(t, client.downCalls)
 	assert.FileExists(t, binaryPath, "a canceled uninstall removes nothing")
+}
+
+// Canceling mid-teardown must report EVERY not-torn-down stack in Failed, not
+// just the app at the cancellation index, and must keep the fail-closed
+// footprint skip intact (PR #32 Greptile P2).
+func TestUninstall_MidTeardownCancellationReportsAllRemainingStacks(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	// Three stacks; alphabetical enumeration tears down "aaa" first, then the
+	// loop's pre-iteration ctx check aborts before "mmm" and "zzz".
+	client.addStack(base, "aaa")
+	client.addStack(base, "mmm")
+	client.addStack(base, "zzz")
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	// Cancel right after the first stack is torn down so the next iteration's
+	// ctx.Err() check fires with two stacks still unprocessed.
+	client.onDown = func(string) { cancel() }
+
+	result, err := eng.Uninstall(ctx, types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// The first stack completed before the cancel landed.
+	assert.Equal(t, []string{"aaa"}, tornDownAppIDs(result.TornDown))
+	// Every stack the abort left unprocessed — both remaining ones, not just
+	// the index where cancellation was observed — must appear in Failed.
+	assert.Equal(t, []string{"mmm", "zzz"}, tornDownAppIDs(result.Failed))
+	for _, f := range result.Failed {
+		assert.Equal(t, context.Canceled.Error(), f.Error)
+	}
+
+	// Fail-closed: a non-empty Failed slice skips footprint removal entirely.
+	assert.Empty(t, result.RemovedPaths)
+	assert.FileExists(t, binaryPath, "a canceled uninstall removes nothing")
+	assert.DirExists(t, stateDir)
 }
 
 // removeFootprintDir refuses a footprint path whose symlink resolves outside

@@ -230,8 +230,9 @@ func uninstallConfirmation(apps []types.AppInfo, footprint []string) types.Confi
 // app under the runtime.lock already held by [Engine.Uninstall]. Every stack
 // is attempted; per-stack failures are collected into the failed slice so the
 // caller can apply the fail-closed abort. Context cancellation is the only
-// whole-operation abort — it stops the loop, and the caller treats the
-// canceled run as a failure (footprint untouched).
+// whole-operation abort: it stops the loop and records the current plus every
+// remaining unprocessed app in failed, so the caller treats the canceled run
+// as a failure (footprint untouched) and reports the full not-torn-down set.
 func (e *Engine) teardownAllStacks(
 	ctx context.Context,
 	client docker.Client,
@@ -245,10 +246,16 @@ func (e *Engine) teardownAllStacks(
 	total := len(apps)
 	for i, app := range apps {
 		if err := ctx.Err(); err != nil {
-			failed = append(failed, types.TornDownApp{
-				AppID: app.AppID,
-				Error: err.Error(),
-			})
+			// Cancellation aborts the batch: record the current app plus every
+			// remaining unprocessed app so the result reports the full set of
+			// stacks that were not torn down. A non-empty failed slice keeps the
+			// caller's fail-closed footprint skip intact.
+			for _, remaining := range apps[i:] {
+				failed = append(failed, types.TornDownApp{
+					AppID: remaining.AppID,
+					Error: err.Error(),
+				})
+			}
 			return tornDown, failed, externalNetworks
 		}
 		if onProgress != nil {
