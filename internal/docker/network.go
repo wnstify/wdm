@@ -31,7 +31,25 @@ type NetworkSpec struct {
 	// `docker network create`. It is only meaningful alongside a Subnet and
 	// must fall within it. Empty lets Docker pick the subnet's first address.
 	Gateway string
+
+	// AppID, when set, stamps the wdm ownership labels (PRD §10) onto a
+	// newly-created network: `--label wdm.managed=true --label wdm.app=<AppID>`.
+	// It must be the app's canonical catalog ID. Empty leaves the create
+	// command label-free. Labels are applied only to networks wdm creates here;
+	// a network reached through the EnsureNetwork "already exists" path is NOT
+	// re-labeled (an accepted limitation — re-stamping existing networks is the
+	// deferred label-sweep's job, out of scope for the create path).
+	AppID string
 }
+
+// managedNetworkLabel and appNetworkLabelPrefix are the PRD §10 ownership
+// labels stamped onto wdm-created networks. They are emitted in this fixed
+// order (`wdm.managed=true` then `wdm.app=<appID>`) so the create argv is
+// deterministic and the last-gate validator can match the pair positionally.
+const (
+	managedNetworkLabel   = "wdm.managed=true"
+	appNetworkLabelPrefix = "wdm.app="
+)
 
 // EnsureNetwork ensures one network exists before compose deployment.
 // If it already exists, the internal flag must match exactly and, when the spec
@@ -99,6 +117,7 @@ func EnsureNetworkReport(ctx context.Context, client Client, network NetworkSpec
 			internal: normalized.Internal,
 			subnet:   normalized.Subnet,
 			gateway:  normalized.Gateway,
+			appID:    normalized.AppID,
 		},
 	)
 	if createErr != nil {
@@ -213,6 +232,11 @@ type networkCreateInvocation struct {
 	internal bool
 	subnet   string
 	gateway  string
+
+	// appID, when non-empty, stamps the PRD §10 ownership labels onto the
+	// created network. It is the app's canonical catalog ID, validated by the
+	// same charset the catalog schema enforces.
+	appID string
 }
 
 func (networkCreateInvocation) isDockerInvocation() {}
@@ -236,12 +260,43 @@ func validateNetworkSpec(network NetworkSpec) (NetworkSpec, error) {
 		return NetworkSpec{}, err
 	}
 
+	appID, err := validateNetworkAppID(network.AppID)
+	if err != nil {
+		return NetworkSpec{}, err
+	}
+
 	return NetworkSpec{
 		Name:     name,
 		Internal: network.Internal,
 		Subnet:   subnet,
 		Gateway:  gateway,
+		AppID:    appID,
 	}, nil
+}
+
+// networkAppIDPattern mirrors the catalog app_id schema (PRD §9, §17):
+// lowercase ASCII letter first, then lowercase letters, digits, or hyphen,
+// length 1-63. It is the charset stamped into the `wdm.app=<appID>` label, so
+// only a well-formed app ID can ever reach the create argv or the daemon.
+var networkAppIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+// validateNetworkAppID accepts an empty app ID (the create command is then
+// label-free) and otherwise requires the canonical catalog app_id charset. The
+// labels are stamped from this value, so validating it here keeps a malformed
+// or injection-bearing ID out of the argv (PRD §10, §12).
+func validateNetworkAppID(rawAppID string) (string, error) {
+	if rawAppID == "" {
+		return "", nil
+	}
+	if !networkAppIDPattern.MatchString(rawAppID) {
+		return "", types.WrapError(
+			types.ErrCodeUsageValidation,
+			"network app id is invalid",
+			"use the catalog app_id: lowercase ascii starting with a letter, then lowercase letters/digits/hyphen, length 1-63",
+			fmt.Errorf("network app id %q does not match allowed format", rawAppID),
+		)
+	}
+	return rawAppID, nil
 }
 
 // validateNetworkAddressing validates the optional static-addressing fields: a

@@ -15,6 +15,10 @@
 //	  (down is always run without -v).
 //	-: [NetworkSpec] and [EnsureNetwork] wrap network
 //	  management with create-if-missing and internal-flag handling.
+//	  A spec carrying an app id stamps the PRD §10 ownership labels
+//	  (wdm.managed=true, wdm.app=<app>) on newly-created networks;
+//	  [RemoveNetworkIfPresent] is the idempotent, not-found-tolerant
+//	  removal used by destructive delete and self-uninstall.
 //	-: [InspectProjectContainers], [InspectImageDigest], and
 //	  [ListProjectNamedVolumes] wrap inspection for labels, ports, image
 //	  digests, and named volume listing.

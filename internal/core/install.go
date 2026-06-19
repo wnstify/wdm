@@ -1134,6 +1134,10 @@ func ensureInstallNetworks(
 		spec := docker.NetworkSpec{
 			Name:     network.Name,
 			Internal: network.Internal,
+			// Stamp the PRD §10 ownership labels on networks wdm creates. Only
+			// newly-created networks are labeled; one reached through the
+			// EnsureNetwork "already exists" path is NOT re-labeled.
+			AppID: plan.app.AppID,
 		}
 		// A catalog IPAM block pins the subnet (and optional gateway) for
 		// fixed addressing (PRD §9); nil IPAM leaves Docker's default bridge
