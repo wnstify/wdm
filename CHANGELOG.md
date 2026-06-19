@@ -6,6 +6,19 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
 ## Unreleased
 
 ### Added
+- Added per-app resource management: a top-level `wdm resources <app>` command
+  and a "Resources" action in the app actions menu (between Restart and Remove).
+  With no limit flags the command (and the screen) shows each adjustable
+  service's memory, CPU, and PID limits currently in effect alongside the
+  catalog's allowed bands. With `--memory`, `--cpus`, or `--pids` (and
+  `--service`, `--yes`, `--stack-path`, `--json`) it changes the selected
+  service's limits: `wdm` validates the request against the catalog bands, backs
+  up the config, rewrites only the resource variables in the stack's `.env`
+  (every secret and unrelated value is preserved), re-renders the Compose file,
+  validates it fail-closed, and recreates the container (a brief downtime).
+  Limits left unset are kept as-is; an explicit empty or zero value is rejected.
+  The new limits live in the `.env`, so they survive catalog updates, and no new
+  stack or override file is created.
 - Labeled every `wdm`-created Docker network at install with the Webnestify
   ownership labels `wdm.managed=true` and `wdm.app=<app-id>` (one `docker network
   create` per network, labels in a fixed order). Only newly-created networks are
