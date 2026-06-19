@@ -10,8 +10,49 @@ coverage:
         base: auto
     patch:
       default:
-        target: 70%
+        target: 90%
         threshold: 5%
+
+# cmd/wdm is the os.Exit bootstrap shim; it is excluded from the coverage gate
+# (parity with the make coverage-check filter), so exclude it here too.
+ignore:
+  - "cmd/wdm/**"
+
+# Per-layer regression guard. Each component uses target: auto, so codecov
+# compares it against the base commit and only turns the component red on a
+# genuine coverage drop (beyond the threshold). No hardcoded line-coverage
+# number to calibrate or keep in sync with the codecov line metric.
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        threshold: 1%
+  individual_components:
+    - component_id: pkg_engine
+      paths:
+        - "pkg/engine/**"
+    - component_id: pkg_types
+      paths:
+        - "pkg/types/**"
+    - component_id: internal_core
+      paths:
+        - "internal/core/**"
+    - component_id: internal_docker
+      paths:
+        - "internal/docker/**"
+    - component_id: internal_release
+      paths:
+        - "internal/release/**"
+    - component_id: internal_catalog
+      paths:
+        - "internal/catalog/**"
+    - component_id: internal_state
+      paths:
+        - "internal/state/**"
+    - component_id: internal_security
+      paths:
+        - "internal/security/**"
 
 comment: false
 
