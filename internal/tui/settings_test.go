@@ -33,6 +33,45 @@ func TestModel_SettingsScreenLoadsCurrentSettings(t *testing.T) {
 	assert.Equal(t, 1, fake.settingsCalls)
 }
 
+func TestModel_SettingsAcceptsBAndQAsTypedInput(t *testing.T) {
+	t.Parallel()
+
+	m := loadSettingsScreen(t, &fakeEngine{settings: settingsFixture()})
+	require.Equal(t, screenSettings, m.screen)
+
+	before := m.settingsFields[m.settingsCursor].value
+	m = updateModel(t, m, runeKey('b'))
+	m = updateModel(t, m, runeKey('q'))
+
+	assert.Equal(t, before+"bq", m.settingsFields[m.settingsCursor].value)
+	assert.Equal(t, screenSettings, m.screen)
+	assert.False(t, m.exiting)
+}
+
+func TestModel_SettingsEscStillGoesBack(t *testing.T) {
+	t.Parallel()
+
+	m := loadSettingsScreen(t, &fakeEngine{settings: settingsFixture()})
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+
+	assert.NotEqual(t, screenSettings, m.screen)
+	assert.False(t, m.exiting)
+}
+
+func TestModel_SettingsCtrlCStillQuits(t *testing.T) {
+	t.Parallel()
+
+	m := loadSettingsScreen(t, &fakeEngine{settings: settingsFixture()})
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, tea.Quit(), cmd())
+}
+
 func TestModel_SettingsScreenPersistsMergedSettingsWithoutReread(t *testing.T) {
 	t.Parallel()
 

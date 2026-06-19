@@ -70,6 +70,55 @@ func TestModel_InstallFormRendersCatalogPlaceholderMetadata(t *testing.T) {
 	assert.Contains(t, view, "Quit: q")
 }
 
+func installFormFake() *fakeEngine {
+	return &fakeEngine{
+		catalogApps: []types.CatalogApp{
+			{AppID: "alpha", Name: "Alpha", Summary: "First app"},
+		},
+		catalogDetails: map[string]*types.CatalogApp{
+			"alpha": catalogDetailFixture(),
+		},
+	}
+}
+
+func TestModel_InstallFormAcceptsBAndQAsTypedInput(t *testing.T) {
+	t.Parallel()
+
+	m := loadInstallForm(t, installFormFake())
+	require.Equal(t, screenInstallForm, m.screen)
+
+	m = updateModel(t, m, runeKey('b'))
+	m = updateModel(t, m, runeKey('q'))
+
+	assert.Equal(t, "bq", m.installFields[m.installFieldCursor].value)
+	assert.Equal(t, screenInstallForm, m.screen)
+	assert.False(t, m.exiting)
+}
+
+func TestModel_InstallFormEscStillGoesBack(t *testing.T) {
+	t.Parallel()
+
+	m := loadInstallForm(t, installFormFake())
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+
+	assert.NotEqual(t, screenInstallForm, m.screen)
+	assert.False(t, m.exiting)
+}
+
+func TestModel_InstallFormCtrlCStillQuits(t *testing.T) {
+	t.Parallel()
+
+	m := loadInstallForm(t, installFormFake())
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, tea.Quit(), cmd())
+}
+
 func TestModel_InstallFlowCallsEngineInstallWithFormValues(t *testing.T) {
 	t.Parallel()
 

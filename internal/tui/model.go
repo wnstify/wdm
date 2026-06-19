@@ -472,9 +472,20 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		// Text-entry screens must receive printable runes, including 'q'.
+		// Quit also binds ctrl+c (a non-rune key), so gate only the rune case
+		// and let it fall through to updateScreenSpecificKey for typing.
+		if m.isTextEntryScreen() && msg.Type == tea.KeyRunes {
+			break
+		}
 		m.exiting = true
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
+		// Same as Quit: 'b' is a printable rune that must reach the field on
+		// text-entry screens, while esc (a non-rune key) still cancels/goes back.
+		if m.isTextEntryScreen() && msg.Type == tea.KeyRunes {
+			break
+		}
 		m.back()
 	case m.tooSmall():
 		return m, nil
@@ -493,6 +504,17 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// isTextEntryScreen reports whether the current screen accepts typed text, so
+// the global 'b'/'q' shortcuts must not shadow runes destined for a field.
+func (m model) isTextEntryScreen() bool {
+	switch m.screen {
+	case screenInstallForm, screenSettings, screenDeleteName:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m model) updateScreenSpecificKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
