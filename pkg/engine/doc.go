@@ -14,9 +14,9 @@
 // internal/core directly. The returned Engine satisfies the interface
 // via the compile-time type assertion in new.go.
 // Public surface:
-//   - [Engine] — read (List, ListStatus, Status, Logs), write (Install, Update,
-//     Remove, Restart, StopAll, Uninstall), settings (Settings, UpdateSettings),
-//     lifecycle (Close)
+//   - [Engine] — read (List, ListStatus, Status, Logs, ResourceSettings),
+//     write (Install, Update, Remove, Restart, Reconfigure, StopAll,
+//     Uninstall), settings (Settings, UpdateSettings), lifecycle (Close)
 //   - [Confirmer] — authorizes destructive actions (PRD §37); alias of
 //     [types.Confirmer]
 //   - [ProgressFn] — long-running operation progress callback (PRD §37);

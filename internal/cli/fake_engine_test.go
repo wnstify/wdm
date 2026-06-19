@@ -43,6 +43,8 @@ type fakeEngine struct {
 	availableAppResult  *types.CatalogApp
 	deleteResult        *types.DeleteResult
 	runtimeLockResult   *types.RuntimeLockStatus
+	resourceSettings    *types.ResourceSettings
+	reconfigureResult   *types.ReconfigureResult
 
 	catalogUpdateStatus *types.CatalogUpdateStatus
 	catalogUpdateResult *types.CatalogUpdateResult
@@ -66,6 +68,8 @@ type fakeEngine struct {
 	removeReq      types.RemoveRequest
 	logsReq        types.LogsRequest
 	statusAppID    string
+	reconfigureReq types.ReconfigureRequest
+	resourcesAppID string
 	progressWasNil bool
 	confirmer      types.Confirmer
 	logLineWasNil  bool
@@ -267,6 +271,29 @@ func (f *fakeEngine) DeleteApp(
 		return nil, f.err
 	}
 	return f.deleteResult, nil
+}
+
+func (f *fakeEngine) ResourceSettings(_ context.Context, appID string) (*types.ResourceSettings, error) {
+	f.resourcesAppID = appID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resourceSettings, nil
+}
+
+func (f *fakeEngine) Reconfigure(
+	_ context.Context,
+	req types.ReconfigureRequest,
+	onProgress engine.ProgressFn,
+	confirmer types.Confirmer,
+) (*types.ReconfigureResult, error) {
+	f.reconfigureReq = req
+	f.progressWasNil = onProgress == nil
+	f.confirmer = confirmer
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.reconfigureResult, nil
 }
 
 func (f *fakeEngine) RuntimeLockStatus(_ context.Context) (*types.RuntimeLockStatus, error) {

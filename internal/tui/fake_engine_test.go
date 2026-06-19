@@ -171,6 +171,23 @@ func (f *fakeEngine) StopAll(
 	return f.stopAllResult, f.stopAllErr
 }
 
+// ResourceSettings and Reconfigure satisfy the engine.Engine interface
+// for the per-app resource-management surface (issue #28). The TUI does
+// not yet drive them, so the double returns zero values.
+
+func (f *fakeEngine) ResourceSettings(_ context.Context, _ string) (*types.ResourceSettings, error) {
+	return nil, nil
+}
+
+func (f *fakeEngine) Reconfigure(
+	_ context.Context,
+	_ types.ReconfigureRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.ReconfigureResult, error) {
+	return nil, nil
+}
+
 func (f *fakeEngine) Uninstall(
 	_ context.Context,
 	_ types.UninstallRequest,
