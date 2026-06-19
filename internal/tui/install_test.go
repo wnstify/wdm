@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -162,6 +163,46 @@ func TestSelectedCatalogLabelsUseSafeFallbacks(t *testing.T) {
 
 	app.Name = "Vaultwarden"
 	assert.Equal(t, "Vaultwarden", selectedCatalogName(app))
+}
+
+func TestModel_InstallFormKeyNavigationAndEditing(t *testing.T) {
+	t.Parallel()
+
+	// The form key handler is exercised directly: the top-level Update
+	// intercepts Back ("b"/"esc") before screen-specific keys, so driving the
+	// arms through Update would never reach them for those runes.
+	m := model{
+		keys: defaultKeyMap(),
+		installFields: []installField{
+			{label: "DOMAIN", value: ""},
+			{label: "MEDIA_PATH", value: ""},
+		},
+		installFieldCursor: 1,
+	}
+
+	// Up moves the cursor toward the first field.
+	next, cmd := m.updateInstallFormKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, 0, m.installFieldCursor, "Up must decrement the install cursor")
+
+	// Rune and Space input both append to the focused field.
+	next, cmd = m.updateInstallFormKey(runeKey('a'))
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	next, cmd = m.updateInstallFormKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	next, cmd = m.updateInstallFormKey(runeKey('b'))
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, "a b", m.installFields[0].value)
+
+	// Backspace deletes the last rune of the focused field.
+	next, cmd = m.updateInstallFormKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, "a ", m.installFields[0].value)
 }
 
 func loadInstallForm(t *testing.T, eng *fakeEngine) model {

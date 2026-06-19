@@ -202,6 +202,72 @@ func TestModel_ConfirmationPromptAnswersThroughReplyChannel(t *testing.T) {
 	assert.NotContains(t, m.View(), confirmation.Title, "answering should dismiss the modal")
 }
 
+func TestModel_ConfirmationDeclineAbortsWithoutAccepting(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(&fakeEngine{})
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: minTerminalWidth, Height: minTerminalHeight})
+	reply := make(chan confirmationReply, 1)
+	confirmation := types.Confirmation{
+		Kind:    "delete_destructive",
+		Title:   "Delete uptime-kuma",
+		Message: "This deletes the stack files and backups.",
+	}
+
+	m = updateModel(t, m, confirmationRequestedMsg{
+		confirmation: confirmation,
+		reply:        reply,
+	})
+	require.NotNil(t, m.modal, "modal must be active before declining")
+
+	m = updateModel(t, m, runeKey('n'))
+
+	select {
+	case got := <-reply:
+		assert.False(t, got.accepted, "decline must report the destructive action as not accepted")
+		require.NoError(t, got.err)
+	case <-time.After(time.Second):
+		t.Fatal("decline reply was not sent")
+	}
+	assert.Nil(t, m.modal, "declining must dismiss the modal")
+	assert.False(t, m.exiting, "decline must not exit the program")
+	assert.NotContains(t, m.View(), confirmation.Title, "declining should dismiss the modal")
+}
+
+func TestModel_ConfirmationQuitDeclinesAndQuits(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(&fakeEngine{})
+	m = updateModel(t, m, tea.WindowSizeMsg{Width: minTerminalWidth, Height: minTerminalHeight})
+	reply := make(chan confirmationReply, 1)
+	confirmation := types.Confirmation{
+		Kind:    "delete_destructive",
+		Title:   "Delete uptime-kuma",
+		Message: "This deletes the stack files and backups.",
+	}
+
+	m = updateModel(t, m, confirmationRequestedMsg{
+		confirmation: confirmation,
+		reply:        reply,
+	})
+
+	next, cmd := m.Update(runeKey('q'))
+	m = assertModel(t, next)
+	require.NotNil(t, cmd, "quit at the confirmation gate must return a command")
+	assert.Equal(t, tea.QuitMsg{}, cmd(), "quit command must emit tea.QuitMsg")
+
+	select {
+	case got := <-reply:
+		assert.False(t, got.accepted, "quitting must report the destructive action as not accepted")
+		require.NoError(t, got.err)
+	case <-time.After(time.Second):
+		t.Fatal("quit reply was not sent")
+	}
+	assert.Nil(t, m.modal, "quitting must dismiss the modal")
+	assert.True(t, m.exiting, "quit must set the exiting flag")
+	assert.Contains(t, m.View(), "Goodbye", "quit must leave a visible exit message")
+}
+
 type recordingSender struct {
 	progress     chan progressMsg
 	logLine      chan logLineMsg
