@@ -6,6 +6,18 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
 ## Unreleased
 
 ### Added
+- Labeled every `wdm`-created Docker network at install with the Webnestify
+  ownership labels `wdm.managed=true` and `wdm.app=<app-id>` (one `docker network
+  create` per network, labels in a fixed order). Only newly-created networks are
+  labeled; a network reached through the "already exists" reconciliation path is
+  not re-labeled.
+- `wdm apps delete` now removes the app's `wdm`-created Docker networks
+  best-effort, after `docker compose down` and before the stack files are
+  deleted. A network already gone counts as removed; one that cannot be removed
+  is reported with the exact `docker network rm <name>` command and never aborts
+  the deletion. Named volumes and all on-disk data are still never deleted, and a
+  reinstall recreates the networks. Safe `wdm apps remove` is unchanged and still
+  leaves the networks in place.
 - Added an "Uninstall wdm" action to the dashboard and a top-level `wdm uninstall`
   command that tears down every managed app with `docker compose down --rmi all`
   (removing containers and images) and then removes `wdm`'s own

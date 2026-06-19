@@ -83,7 +83,8 @@ wdm apps update <app>         # update a stack
 wdm apps restart <app>        # restart a stack
 wdm apps stop-all             # stop every running managed stack (data preserved)
 wdm apps backups list <app>   # list pre-change config backups
-wdm apps remove <app>         # stop a stack (volumes preserved)
+wdm apps remove <app>         # stop a stack (volumes and networks preserved)
+wdm apps delete <app>         # permanently delete a stack's files (data kept, networks removed)
 
 wdm catalog check             # check for catalog updates
 wdm catalog update            # update the local catalog
