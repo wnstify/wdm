@@ -34,16 +34,18 @@ import (
 // including any foreign files a user dropped in, because os.RemoveAll takes
 // the whole directory. backupSnapshotCount records how many.wdm-backups/
 // snapshots go with it (destructive delete removes
-// .wdm-backups/ along with the stack dir). remainingNamedVolumes and
-// remainingNetworks describe Docker state that survives the deletion — v1
-// never deletes named volumes (§19:453-455) and leaves catalog-declared
-// networks in place. The planning-time remainingNamedVolumes is
+// .wdm-backups/ along with the stack dir). remainingNamedVolumes describes
+// the Docker named volumes that survive the deletion — v1 never deletes them
+// (§19:453-455). The planning-time remainingNamedVolumes is
 // authoritative: `docker compose down` is free of -v (the wrapper guarantees
 // it) and down without -v cannot change a project's named-volume set, so
 // [Engine.executeDelete] returns this list directly with no post-down
 // re-list — diverging from the safe Remove's post-commit re-list (Remove
 // keeps the stack on disk and owes a lasting record; delete removes
-// everything and owes no second look).
+// everything and owes no second look). The app's wdm-created networks are NOT
+// part of the plan: unlike the safe Remove, destructive delete REMOVES them
+// best-effort, discovered at execution time from the still-present rendered
+// compose file after `down` and before file deletion.
 type deletePlan struct {
 	appID                 string
 	stackPath             string
@@ -51,7 +53,6 @@ type deletePlan struct {
 	deletePaths           []string
 	backupSnapshotCount   int
 	remainingNamedVolumes []string
-	remainingNetworks     []string
 }
 
 // DeleteApp permanently deletes a managed stack — the destructive deletion
@@ -235,11 +236,6 @@ func (e *Engine) planDelete(
 		return nil, err
 	}
 
-	networks, err := e.planRemainingNetworks(ctx, req.AppID)
-	if err != nil {
-		return nil, err
-	}
-
 	plan := &deletePlan{
 		appID:                 req.AppID,
 		stackPath:             stackPath,
@@ -247,7 +243,6 @@ func (e *Engine) planDelete(
 		deletePaths:           deletePaths,
 		backupSnapshotCount:   backupCount,
 		remainingNamedVolumes: volumes,
-		remainingNetworks:     networks,
 	}
 	reportDeletePlan(plan, onProgress)
 	return plan, nil
@@ -355,12 +350,11 @@ func reportDeletePlan(plan *deletePlan, onProgress types.ProgressFn) {
 
 func deletePlanSummaryMessage(plan *deletePlan) string {
 	return fmt.Sprintf(
-		"destructive deletion planned for %s: %d path(s) and %d backup snapshot(s) will be deleted; %d named volume(s) and %d network(s) will remain",
+		"destructive deletion planned for %s: %d path(s) and %d backup snapshot(s) will be deleted; %d named volume(s) will remain and the app's docker networks will be removed",
 		plan.appID,
 		len(plan.deletePaths),
 		plan.backupSnapshotCount,
 		len(plan.remainingNamedVolumes),
-		len(plan.remainingNetworks),
 	)
 }
 
@@ -421,6 +415,15 @@ func (e *Engine) executeDelete(
 	if err := runDeleteComposeDown(ctx, client, plan, onProgress); err != nil {
 		return nil, err
 	}
+
+	// Discover and remove the app's wdm-created networks AFTER `down` (all
+	// containers are gone, so no endpoint is attached) and BEFORE the stack
+	// files are deleted (the rendered compose must still exist for discovery).
+	// Best-effort, mirroring self-uninstall: a network already absent counts as
+	// removed, a network that genuinely cannot be removed is recorded retained,
+	// and the deletion still proceeds — network removal NEVER aborts the delete.
+	removedNetworks, retainedNetworks := e.removeDeleteNetworks(ctx, client, plan, onProgress)
+
 	if err := e.deleteStackFiles(ctx, client, plan, onProgress); err != nil {
 		return nil, err
 	}
@@ -438,8 +441,56 @@ func (e *Engine) executeDelete(
 		AppID:                 plan.appID,
 		DeletedPaths:          plan.deletePaths,
 		RemainingNamedVolumes: plan.remainingNamedVolumes,
-		RemainingNetworks:     plan.remainingNetworks,
+		RemovedNetworks:       removedNetworks,
+		RetainedNetworks:      retainedNetworks,
 	}, nil
+}
+
+// removeDeleteNetworks discovers the app's wdm-created networks from the
+// still-present rendered compose file and removes them best-effort, between
+// `docker compose down` and the stack-file deletion. The wdm-created networks
+// are declared external in the rendered compose (install pre-creates them), so
+// `down` never owns or removes them; without this they would linger after a
+// delete. Discovery reuses [readExternalNetworkNames] (the same compose
+// projection self-uninstall uses) and removal reuses
+// [docker.RemoveNetworkIfPresent]: a network already absent counts as removed
+// (idempotent), and one that genuinely cannot be removed (for example still
+// holding an endpoint from an unrelated stack) is recorded retained with its
+// redacted reason. This sub-phase is best-effort: it NEVER returns an error and
+// NEVER blocks the file deletion that follows.
+func (e *Engine) removeDeleteNetworks(
+	ctx context.Context,
+	client docker.Client,
+	plan *deletePlan,
+	onProgress types.ProgressFn,
+) (removed []string, retained []types.RetainedNetwork) {
+	composePath, err := security.SafeJoin(plan.stackPath, installComposeFilename)
+	if err != nil {
+		return nil, nil
+	}
+
+	names := readExternalNetworkNames(composePath)
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if onProgress != nil {
+		onProgress(types.StepDeleteComposeDown, 70, fmt.Sprintf(
+			"removing %d wdm-created network(s)",
+			len(names),
+		))
+	}
+
+	for _, name := range names {
+		if removeErr := docker.RemoveNetworkIfPresent(ctx, client, name); removeErr != nil {
+			retained = append(retained, types.RetainedNetwork{
+				Name:   name,
+				Reason: removeErr.Error(),
+			})
+			continue
+		}
+		removed = append(removed, name)
+	}
+	return removed, retained
 }
 
 // confirmDelete asks the Confirmer to authorize the permanent deletion
@@ -489,10 +540,11 @@ func confirmDelete(
 // files and directories that will be deleted (§19:449) — with the
 // .wdm-backups/ snapshot count called out — the permanence
 // warning that this is NOT the safe remove and cannot be undone (§19:450),
-// and the named Docker volumes that survive the deletion (§19:454-455 — v1
-// never deletes them). The payload carries no secret values — paths, Compose
-// project, and volume/network names only, never.env content — so it is
-// sink-safe by construction.
+// the named Docker volumes that survive the deletion (§19:454-455 — v1 never
+// deletes them), and a note that the app's wdm-created networks are removed
+// (PRD §10, §19; reinstall recreates them). The payload carries no secret
+// values — paths, Compose project, and volume/network names only, never.env
+// content — so it is sink-safe by construction.
 func deleteConfirmation(plan *deletePlan) types.Confirmation {
 	lines := []string{
 		"app: " + plan.appID,
@@ -509,13 +561,11 @@ func deleteConfirmation(plan *deletePlan) types.Confirmation {
 		plan.backupSnapshotCount,
 		state.BackupDirName,
 	))
-	lines = append(lines, "named volumes are NOT deleted (v1 never deletes them)")
+	lines = append(lines, "named volumes and app data are NOT deleted (v1 never deletes them)")
 	for _, volume := range plan.remainingNamedVolumes {
 		lines = append(lines, "keeps named volume "+volume)
 	}
-	for _, network := range plan.remainingNetworks {
-		lines = append(lines, "keeps docker network "+network)
-	}
+	lines = append(lines, "the app's wdm-created docker networks are removed (reinstall recreates them)")
 	return types.Confirmation{
 		Kind:    types.ConfirmationKindDeleteDestructive,
 		Title:   "delete " + plan.appID,

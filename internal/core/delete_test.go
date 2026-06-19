@@ -97,6 +97,27 @@ func seedDeleteStackFiles(t *testing.T, stackPath string) {
 	}
 }
 
+// seedDeleteComposeWithExternalNetworks overwrites the seeded compose file with
+// a top-level networks block declaring each name external:true — the shape an
+// install renders for a wdm-pre-created network. Delete-time network discovery
+// reads exactly these external entries, so this is how a test arranges for the
+// removal path to find networks.
+func seedDeleteComposeWithExternalNetworks(t *testing.T, stackPath string, external ...string) {
+	t.Helper()
+
+	var b strings.Builder
+	b.WriteString("services:\n  app:\n    image: docker.io/example/app:1.0.0\n")
+	b.WriteString("networks:\n")
+	for _, name := range external {
+		fmt.Fprintf(&b, "  %s:\n    external: true\n", name)
+	}
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stackPath, "docker-compose.yml"),
+		[]byte(b.String()),
+		0o644,
+	))
+}
+
 // scriptDeleteHappyPath wires the fake to answer the destructive-delete
 // Docker sequence by invocation type: the planning named-volume listing
 // returns the surviving volumes and `docker compose down` succeeds. Delete
@@ -168,9 +189,10 @@ func TestDeleteApp_HappyPathConfirmsDownDeletesAndReports(t *testing.T) {
 	assert.Contains(t, payload.Message, "deletes .wdm-backups"+string(filepath.Separator))
 	assert.Contains(t, payload.Message, "deletes 2 backup snapshot(s) under .wdm-backups/",
 		"the §19 list must name .wdm-backups/ with its snapshot count")
-	assert.Contains(t, payload.Message, "named volumes are NOT deleted")
+	assert.Contains(t, payload.Message, "named volumes and app data are NOT deleted")
 	assert.Contains(t, payload.Message, "keeps named volume wdm-delete-happy-app_data")
-	assert.Contains(t, payload.Message, "keeps docker network wdm_back")
+	assert.Contains(t, payload.Message, "the app's wdm-created docker networks are removed",
+		"the confirmation must state networks are removed (reinstall recreates them)")
 	// The.env content (a secret) must NEVER reach the confirm payload.
 	assert.NotContains(t, payload.Message, "super-secret",
 		"the confirmation payload must list filenames only, never .env content")
@@ -199,7 +221,106 @@ func TestDeleteApp_HappyPathConfirmsDownDeletesAndReports(t *testing.T) {
 	assert.Contains(t, res.DeletedPaths, ".wdm-backups"+string(filepath.Separator),
 		"the backups directory is listed as a deleted path with a trailing separator")
 	assert.Equal(t, []string{"wdm-delete-happy-app_data"}, res.RemainingNamedVolumes)
-	assert.Equal(t, []string{"wdm_back"}, res.RemainingNetworks)
+	// The seeded compose declares no external networks, so delete-time network
+	// discovery finds nothing to remove. The dedicated network-removal tests
+	// exercise the populated removed/retained paths.
+	assert.Empty(t, res.RemovedNetworks)
+	assert.Empty(t, res.RetainedNetworks)
+}
+
+// TestDeleteApp_RemovesExternalNetworksAfterDown proves delete removes the
+// app's wdm-created (external) networks read from the still-present rendered
+// compose AFTER `down` and BEFORE the files are deleted, via network rm, and
+// reports them deduped and sorted. A network already absent (a missing-network
+// stderr) is tolerated and counted removed (idempotent). The named-volume
+// listing is never touched by this path.
+func TestDeleteApp_RemovesExternalNetworksAfterDown(t *testing.T) {
+	t.Parallel()
+
+	app := appFixture("delete-net-remove-app", 18081)
+	fx := newDeleteFixture(t, app, nil)
+	seedDeleteComposeWithExternalNetworks(t, fx.stackPath, "wdm_back", "wdm_front")
+
+	var removeCalls []string
+	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		switch fmt.Sprintf("%T", inv) {
+		case "docker.projectVolumeListInvocation":
+			return volumeListResult("wdm-delete-net-remove-app_data"), nil
+		case "docker.removeNetworkInvocation":
+			name := invocationField(inv, "name:")
+			removeCalls = append(removeCalls, name)
+			if name == "wdm_front" {
+				// Already absent: the not-found stderr is tolerated as removed.
+				return docker.CommandResult{Stderr: "Error: No such network: wdm_front"},
+					errors.New("exit status 1")
+			}
+			return docker.CommandResult{}, nil
+		default:
+			return docker.CommandResult{}, nil
+		}
+	}
+
+	res, err := fx.eng.DeleteApp(t.Context(), types.DeleteRequest{
+		AppID:            fx.appID,
+		ConfirmationName: fx.appID,
+	}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, []string{"wdm_back", "wdm_front"}, removeCalls,
+		"both external networks must be targeted by network rm, in sorted order")
+	assert.Equal(t, []string{"wdm_back", "wdm_front"}, res.RemovedNetworks,
+		"a not-found network is counted removed (idempotent)")
+	assert.Empty(t, res.RetainedNetworks)
+
+	// The stack directory is still deleted entirely.
+	_, statErr := os.Stat(fx.stackPath)
+	assert.True(t, os.IsNotExist(statErr), "the stack directory must be removed")
+}
+
+// TestDeleteApp_RetainedNetworkNeverAbortsDeletion proves a network that
+// genuinely cannot be removed (a non-missing error, e.g. still holding an
+// endpoint) is recorded in RetainedNetworks with its reason and NEVER aborts
+// the deletion: the stack files are deleted regardless, and no named volume is
+// ever targeted for removal.
+func TestDeleteApp_RetainedNetworkNeverAbortsDeletion(t *testing.T) {
+	t.Parallel()
+
+	app := appFixture("delete-net-retain-app", 18082)
+	fx := newDeleteFixture(t, app, nil)
+	seedDeleteComposeWithExternalNetworks(t, fx.stackPath, "wdm_busy")
+
+	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		switch fmt.Sprintf("%T", inv) {
+		case "docker.projectVolumeListInvocation":
+			return volumeListResult("wdm-delete-net-retain-app_data"), nil
+		case "docker.removeNamedVolumeInvocation":
+			require.Fail(t, "delete must never remove a named volume")
+			return docker.CommandResult{}, nil
+		case "docker.removeNetworkInvocation":
+			return docker.CommandResult{Stderr: "Error: network wdm_busy has active endpoints"},
+				errors.New("network wdm_busy has active endpoints")
+		default:
+			return docker.CommandResult{}, nil
+		}
+	}
+
+	res, err := fx.eng.DeleteApp(t.Context(), types.DeleteRequest{
+		AppID:            fx.appID,
+		ConfirmationName: fx.appID,
+	}, nil, &fakeConfirmer{})
+	require.NoError(t, err, "a retained network never aborts the deletion")
+	require.NotNil(t, res)
+
+	assert.Empty(t, res.RemovedNetworks)
+	require.Len(t, res.RetainedNetworks, 1)
+	assert.Equal(t, "wdm_busy", res.RetainedNetworks[0].Name)
+	assert.Contains(t, res.RetainedNetworks[0].Reason, "active endpoints")
+
+	// File deletion still proceeded — the retained network did not block it.
+	_, statErr := os.Stat(fx.stackPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"the stack files must be deleted even when a network is retained")
 }
 
 // TestDeleteApp_HoldsAndReleasesRuntimeLock is the lock-posture proof: the

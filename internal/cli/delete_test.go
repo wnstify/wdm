@@ -114,7 +114,7 @@ func TestAppsDelete_OmittedOptionalFlagsAreEmpty(t *testing.T) {
 
 // --- Single-envelope --json with raw-stdout byte equality and the
 // snake_case keys (deleted_paths, remaining_named_volumes,
-// remaining_networks).
+// removed_networks, retained_networks).
 
 func TestAppsDelete_JSON_EmitsSingleResultEnvelope(t *testing.T) {
 	t.Parallel()
@@ -124,7 +124,10 @@ func TestAppsDelete_JSON_EmitsSingleResultEnvelope(t *testing.T) {
 			AppID:                 "vaultwarden",
 			DeletedPaths:          []string{"docker-compose.yml", ".env", "/home/test/docker/vaultwarden"},
 			RemainingNamedVolumes: []string{"wdm-vaultwarden_data"},
-			RemainingNetworks:     []string{"pangolin"},
+			RemovedNetworks:       []string{"pangolin"},
+			RetainedNetworks: []types.RetainedNetwork{
+				{Name: "shared", Reason: "network shared has active endpoints"},
+			},
 		},
 	}
 
@@ -140,7 +143,10 @@ func TestAppsDelete_JSON_EmitsSingleResultEnvelope(t *testing.T) {
 	assert.Equal(t, []any{"docker-compose.yml", ".env", "/home/test/docker/vaultwarden"}, data["deleted_paths"],
 		"deleted_paths must ride under its snake_case key as a JSON array")
 	assert.Equal(t, []any{"wdm-vaultwarden_data"}, data["remaining_named_volumes"])
-	assert.Equal(t, []any{"pangolin"}, data["remaining_networks"])
+	assert.Equal(t, []any{"pangolin"}, data["removed_networks"])
+	retained, ok := data["retained_networks"].([]any)
+	require.True(t, ok, "result must carry the retained_networks array")
+	require.Len(t, retained, 1)
 }
 
 // --- Progress suppression and confirmer wiring. Under --json the engine
@@ -274,8 +280,9 @@ func TestAppsDelete_ErrorPath_StdoutEmpty(t *testing.T) {
 }
 
 // --- Plain finish-block content: the permanent-deletion headline, the
-// deleted-paths list, the remaining named volumes as a bulleted list, and
-// the remaining networks (only when non-empty).
+// deleted-paths list, the remaining named volumes as a bulleted list, the
+// networks removed, and the manual `docker network rm` hint for any retained
+// network (only when non-empty).
 
 func TestAppsDelete_PlainFinish_RendersDeletedPathsAndSurvivors(t *testing.T) {
 	t.Parallel()
@@ -285,7 +292,10 @@ func TestAppsDelete_PlainFinish_RendersDeletedPathsAndSurvivors(t *testing.T) {
 			AppID:                 "vaultwarden",
 			DeletedPaths:          []string{"docker-compose.yml", ".env", "/home/test/docker/vaultwarden"},
 			RemainingNamedVolumes: []string{"wdm-vaultwarden_data"},
-			RemainingNetworks:     []string{"pangolin"},
+			RemovedNetworks:       []string{"pangolin"},
+			RetainedNetworks: []types.RetainedNetwork{
+				{Name: "shared", Reason: "network shared has active endpoints"},
+			},
 		},
 	}
 
@@ -297,14 +307,16 @@ func TestAppsDelete_PlainFinish_RendersDeletedPathsAndSurvivors(t *testing.T) {
 	assert.Contains(t, stdout, "- docker-compose.yml", "each deleted path must be listed")
 	assert.Contains(t, stdout, "- /home/test/docker/vaultwarden", "the stack directory must be listed")
 	assert.Contains(t, stdout, "- wdm-vaultwarden_data", "surviving named volumes must be listed")
-	assert.Contains(t, stdout, "Networks left in place:", "remaining networks must be shown when present")
-	assert.Contains(t, stdout, "- pangolin", "each remaining network must be listed")
+	assert.Contains(t, stdout, "Networks removed:", "removed networks must be shown when present")
+	assert.Contains(t, stdout, "- pangolin", "each removed network must be listed")
+	assert.Contains(t, stdout, "could not be removed", "a retained network must warn")
+	assert.Contains(t, stdout, "docker network rm shared", "a retained network must show the manual command")
 }
 
 // TestAppsDelete_PlainFinish_HonestEmptyVolumeState pins the empty-list
 // honesty (mirroring writeRemoveFinish): an empty RemainingNamedVolumes does
-// NOT claim zero volumes survived — the listing is opportunistic — and an
-// empty RemainingNetworks omits the networks block entirely.
+// NOT claim zero volumes survived — the listing is opportunistic — and empty
+// removed/retained network lists omit those blocks entirely.
 func TestAppsDelete_PlainFinish_HonestEmptyVolumeState(t *testing.T) {
 	t.Parallel()
 
@@ -320,8 +332,10 @@ func TestAppsDelete_PlainFinish_HonestEmptyVolumeState(t *testing.T) {
 
 	assert.Contains(t, stdout, "none reported (Docker inspection data may be unavailable)",
 		"an empty named-volume list must state the volumes could not be enumerated, not assert zero")
-	assert.NotContains(t, stdout, "Networks left in place:",
-		"the networks block must be omitted when no networks remain")
+	assert.NotContains(t, stdout, "Networks removed:",
+		"the removed-networks block must be omitted when no networks were removed")
+	assert.NotContains(t, stdout, "could not be removed",
+		"the retained-networks warning must be omitted when none were retained")
 }
 
 // --- ExactArgs(1) refusals: zero or two positional args fail before the

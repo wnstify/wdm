@@ -77,7 +77,10 @@ func TestModel_DestructiveDeleteFlowPassesTypedNameAndRendersEngineConfirmation(
 		AppID:                 "uptime-kuma",
 		DeletedPaths:          []string{"/srv/wdm/uptime-kuma"},
 		RemainingNamedVolumes: []string{"wdm_uptime-kuma_data"},
-		RemainingNetworks:     []string{"wdm"},
+		RemovedNetworks:       []string{"wdm"},
+		RetainedNetworks: []types.RetainedNetwork{
+			{Name: "shared", Reason: "network shared has active endpoints"},
+		},
 	}
 	m := loadRemoveActionsScreenWithSender(t, fake, sender.Send)
 	m = updateModel(t, m, downKey())
@@ -122,6 +125,9 @@ func TestModel_DestructiveDeleteFlowPassesTypedNameAndRendersEngineConfirmation(
 	assert.Contains(t, view, "permanently deleted")
 	assert.Contains(t, view, "/srv/wdm/uptime-kuma")
 	assert.Contains(t, view, "wdm_uptime-kuma_data")
+	assert.Contains(t, view, "Networks removed:")
+	assert.Contains(t, view, "could not be removed")
+	assert.Contains(t, view, "docker network rm shared")
 	assert.Empty(t, fake.removeRequests)
 }
 

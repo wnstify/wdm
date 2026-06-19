@@ -178,10 +178,11 @@ resolved stack and refuses on a mismatch.`,
 
 // writeDeleteFinish renders the PRD §19 destructive-deletion finish screen for
 // a completed deletion to w (stdout): that the app was permanently deleted,
-// then the deleted paths and what survives in Docker — the remaining named
-// volumes as a bulleted list and the remaining networks (only
-// when non-empty). The layout is line-oriented and free of table-art so cut(1)
-// and awk(1) stay usable, mirroring writeRemoveFinish.
+// then the deleted paths, the remaining named volumes as a bulleted list, the
+// wdm-created networks removed, and a manual `docker network rm` hint for any
+// that could not be removed (only when non-empty). The layout is line-oriented
+// and free of table-art so cut(1) and awk(1) stay usable, mirroring
+// writeRemoveFinish.
 // Empty-list honesty (mirroring writeRemoveFinish): the remaining named-volume
 // listing is opportunistic — a daemon-down or transient inspect failure yields
 // an EMPTY list, not a fault, so an empty RemainingNamedVolumes does not prove
@@ -209,15 +210,32 @@ func writeDeleteFinish(w io.Writer, result *types.DeleteResult) error {
 		b.WriteString("  none reported (Docker inspection data may be unavailable)\n")
 	}
 
-	if len(result.RemainingNetworks) > 0 {
-		b.WriteString("\nNetworks left in place:\n")
-		for _, network := range result.RemainingNetworks {
+	if len(result.RemovedNetworks) > 0 {
+		b.WriteString("\nNetworks removed:\n")
+		for _, network := range result.RemovedNetworks {
 			fmt.Fprintf(&b, "  - %s\n", network)
 		}
 	}
+
+	writeDeleteRetainedNetworks(&b, result)
 
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return fmt.Errorf("apps delete: writing finish screen: %w", err)
 	}
 	return nil
+}
+
+// writeDeleteRetainedNetworks appends a warning section naming the wdm-created
+// networks that could not be removed during deletion and the exact
+// `docker network rm <name>` command to finish the cleanup manually. Network
+// removal is best-effort and never aborts the deletion, so a retained network
+// is reported as a follow-up action, mirroring writeUninstallRetainedNetworks.
+func writeDeleteRetainedNetworks(b *strings.Builder, result *types.DeleteResult) {
+	if len(result.RetainedNetworks) == 0 {
+		return
+	}
+	b.WriteString("\nWARNING: some wdm-created networks could not be removed. Remove them manually:\n")
+	for _, network := range result.RetainedNetworks {
+		fmt.Fprintf(b, "    docker network rm %s\n", network.Name)
+	}
 }
