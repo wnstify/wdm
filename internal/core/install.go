@@ -5066,9 +5066,9 @@ func validatePIDsOverride(profile catalog.ResourceProfile, pids int) error {
 		return nil
 	}
 	return usageValidationError(
-		"pids override is out of range",
-		fmt.Sprintf("choose a pids value no greater than %d for %s", profile.PIDs.Max, profile.Service),
-		fmt.Errorf("service %q pids override %d exceeds max %d", profile.Service, pids, profile.PIDs.Max),
+		fmt.Sprintf("pids limit must be between 1 and %d", profile.PIDs.Max),
+		fmt.Sprintf("choose a pids value between 1 and %d for %s", profile.PIDs.Max, profile.Service),
+		fmt.Errorf("service %q pids override %d is outside [1,%d]", profile.Service, pids, profile.PIDs.Max),
 	)
 }
 
@@ -5163,7 +5163,7 @@ func validateMemoryOverride(profile catalog.ResourceProfile, value string) error
 	}
 	if got < minValue || got > maxValue {
 		return usageValidationError(
-			"memory override is out of range",
+			fmt.Sprintf("memory limit must be between %s and %s", profile.Memory.Min, profile.Memory.Max),
 			fmt.Sprintf("choose memory between %s and %s for %s", profile.Memory.Min, profile.Memory.Max, profile.Service),
 			fmt.Errorf("service %q memory override %q outside [%s,%s]", profile.Service, value, profile.Memory.Min, profile.Memory.Max),
 		)
@@ -5190,7 +5190,7 @@ func validateCPUOverride(profile catalog.ResourceProfile, value string) error {
 	}
 	if got < minValue || got > maxValue {
 		return usageValidationError(
-			"cpu override is out of range",
+			fmt.Sprintf("cpus limit must be between %s and %s", profile.CPUs.Min, profile.CPUs.Max),
 			fmt.Sprintf("choose cpus between %s and %s for %s", profile.CPUs.Min, profile.CPUs.Max, profile.Service),
 			fmt.Errorf("service %q cpu override %q outside [%s,%s]", profile.Service, value, profile.CPUs.Min, profile.CPUs.Max),
 		)

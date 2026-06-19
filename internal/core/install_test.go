@@ -722,7 +722,7 @@ func TestInstallPlan_ResourcePlanningAndEnvProjection(t *testing.T) {
 				name:     "memory out of range",
 				app:      baseApp,
 				override: types.ResourceOverride{Service: "app", Memory: "4g"},
-				want:     "memory override is out of range",
+				want:     "memory limit must be between 1g and 3g",
 			},
 			{
 				name:     "invalid cpu",
@@ -734,13 +734,13 @@ func TestInstallPlan_ResourcePlanningAndEnvProjection(t *testing.T) {
 				name:     "cpu out of range",
 				app:      baseApp,
 				override: types.ResourceOverride{Service: "app", CPUs: "4.0"},
-				want:     "cpu override is out of range",
+				want:     "cpus limit must be between 1.0 and 3.0",
 			},
 			{
 				name:     "pids out of range",
 				app:      baseApp,
 				override: types.ResourceOverride{Service: "app", PIDs: 201},
-				want:     "pids override is out of range",
+				want:     "pids limit must be between 1 and 200",
 			},
 		}
 		for _, tt := range tests {
