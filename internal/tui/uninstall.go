@@ -68,7 +68,7 @@ func (m model) uninstallView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -80,7 +80,7 @@ func (m model) uninstallResultView() string {
 	result := m.uninstallResult
 	if result == nil {
 		b.WriteString("No uninstall result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -110,7 +110,7 @@ func (m model) uninstallResultView() string {
 		writeUninstallKeptData(&b, result)
 
 		b.WriteString("\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -133,7 +133,7 @@ func (m model) uninstallResultView() string {
 	writeUninstallKeptData(&b, result)
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

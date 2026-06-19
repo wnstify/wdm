@@ -66,8 +66,8 @@ func TestModel_InstallFormRendersCatalogPlaceholderMetadata(t *testing.T) {
 	assert.Contains(t, view, "generated")
 	assert.Contains(t, view, "8080 -> 80/tcp")
 	assert.Contains(t, view, "worker example/worker:1.2.3")
-	assert.Contains(t, view, "Back: b")
-	assert.Contains(t, view, "Quit: q")
+	assert.Contains(t, view, "Esc: back")
+	assert.Contains(t, view, "Ctrl+C: quit")
 }
 
 func installFormFake() *fakeEngine {

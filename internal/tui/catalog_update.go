@@ -136,7 +136,7 @@ func (m model) catalogUpdateView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -195,7 +195,7 @@ func (m model) catalogUpdateResultView() string {
 	result := m.catalogUpdateResult
 	if result == nil {
 		b.WriteString("No catalog update result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -225,7 +225,7 @@ func (m model) catalogUpdateResultView() string {
 	b.WriteByte('\n')
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

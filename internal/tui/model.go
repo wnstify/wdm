@@ -979,7 +979,7 @@ func (m model) dashboardView() string {
 	m.writeLaunchCheckStatus(&b)
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1016,7 +1016,7 @@ func (m model) placeholderView() string {
 	b.WriteString(titleStyle().Render(dashboardActions[m.cursor]))
 	b.WriteString("\n\n")
 	b.WriteString("This screen lands later in Wave H.\n\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1056,7 +1056,7 @@ func (m model) checkAppsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1069,7 +1069,7 @@ func (m model) appActionsView() string {
 		b.WriteString("Working on ")
 		b.WriteString(m.activeAppID())
 		b.WriteString("...\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -1113,7 +1113,7 @@ func (m model) appActionsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1189,6 +1189,9 @@ func titleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true)
 }
 
-func helpLine() string {
+func (m model) helpLine() string {
+	if m.isTextEntryScreen() {
+		return "Enter: select    Esc: back    Ctrl+C: quit\n"
+	}
 	return "Enter: select    Back: b    Quit: q\n"
 }

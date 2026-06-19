@@ -28,8 +28,8 @@ func TestModel_SettingsScreenLoadsCurrentSettings(t *testing.T) {
 	assert.Contains(t, view, "locked")
 	assert.Contains(t, view, "update_check_preference")
 	assert.Contains(t, view, "manual")
-	assert.Contains(t, view, "Back: b")
-	assert.Contains(t, view, "Quit: q")
+	assert.Contains(t, view, "Esc: back")
+	assert.Contains(t, view, "Ctrl+C: quit")
 	assert.Equal(t, 1, fake.settingsCalls)
 }
 

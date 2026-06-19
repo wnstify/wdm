@@ -103,7 +103,7 @@ func (m model) backupsAppsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -147,7 +147,7 @@ func (m model) backupsListView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -159,7 +159,7 @@ func (m model) restoreResultView() string {
 	result := m.restoreResult
 	if result == nil {
 		b.WriteString("No config restore result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -185,7 +185,7 @@ func (m model) restoreResultView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

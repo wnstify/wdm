@@ -116,7 +116,7 @@ func (m model) removeActionsView() string {
 			b.WriteByte('\n')
 		}
 		b.WriteString("\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -134,7 +134,7 @@ func (m model) removeActionsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -152,7 +152,7 @@ func (m model) deleteNameView() string {
 			b.WriteByte('\n')
 		}
 		b.WriteString("\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 	if m.err != nil {
@@ -164,7 +164,7 @@ func (m model) deleteNameView() string {
 	b.WriteString("Name: ")
 	b.WriteString(m.deleteNameInput)
 	b.WriteString("\n\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -176,7 +176,7 @@ func (m model) removeResultView() string {
 	result := m.removeResult
 	if result == nil {
 		b.WriteString("No remove result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -197,7 +197,7 @@ func (m model) removeResultView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -209,7 +209,7 @@ func (m model) deleteResultView() string {
 	result := m.deleteResult
 	if result == nil {
 		b.WriteString("No delete result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -220,7 +220,7 @@ func (m model) deleteResultView() string {
 	writeDeleteRetainedNetworks(&b, result)
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

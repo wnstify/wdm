@@ -99,6 +99,26 @@ func TestModel_NonTextScreenBAndQKeepShortcuts(t *testing.T) {
 	assert.Equal(t, tea.Quit(), cmd())
 }
 
+func TestModel_HelpLineIsContextAware(t *testing.T) {
+	t.Parallel()
+
+	m := newModel(&fakeEngine{})
+
+	m.screen = screenDeleteName
+	require.True(t, m.isTextEntryScreen())
+	textHelp := m.helpLine()
+	assert.Contains(t, textHelp, "Esc")
+	assert.Contains(t, textHelp, "Ctrl+C")
+	assert.NotContains(t, textHelp, "Back: b")
+	assert.NotContains(t, textHelp, "Quit: q")
+
+	m.screen = screenDashboard
+	require.False(t, m.isTextEntryScreen())
+	navHelp := m.helpLine()
+	assert.Contains(t, navHelp, "Back: b")
+	assert.Contains(t, navHelp, "Quit: q")
+}
+
 func TestApp_CloseClosesEngineOnce(t *testing.T) {
 	t.Parallel()
 
