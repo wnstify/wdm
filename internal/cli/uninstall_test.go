@@ -106,6 +106,60 @@ func TestUninstall_CleanSuccess_ExitsZero(t *testing.T) {
 	assert.Contains(t, stdout, "named volumes and per-app stack data")
 }
 
+// The plain finish screen names the removed wdm-created networks, and any
+// retained network warns with the exact manual `docker network rm` command.
+func TestUninstall_PlainFinish_RendersNetworks(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		uninstallResult: &types.UninstallResult{
+			TornDown:        []types.TornDownApp{{AppID: "vaultwarden"}},
+			RemovedNetworks: []string{"wdm_proxy"},
+			RetainedNetworks: []types.RetainedNetwork{
+				{Name: "wdm_kuma", Reason: "network wdm_kuma has active endpoints"},
+			},
+			RemovedPaths: []string{"/home/u/.local/bin/wdm"},
+		},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "uninstall", "--yes")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Networks removed:")
+	assert.Contains(t, stdout, "wdm_proxy")
+	assert.Contains(t, stdout, "could not be removed")
+	assert.Contains(t, stdout, "docker network rm wdm_kuma",
+		"a retained network must print the exact manual removal command")
+}
+
+// The JSON envelope carries the removed_networks and retained_networks fields.
+func TestUninstall_JSON_CarriesNetworkFields(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		uninstallResult: &types.UninstallResult{
+			RemovedNetworks: []string{"wdm_proxy"},
+			RetainedNetworks: []types.RetainedNetwork{
+				{Name: "wdm_kuma", Reason: "active endpoints"},
+			},
+		},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "uninstall", "--json")
+	require.NoError(t, err)
+
+	lines := nonEmptyLines(stdout)
+	require.Len(t, lines, 1)
+	data := decodeEnvelopeData(t, lines[0])
+
+	removed, ok := data["removed_networks"].([]any)
+	require.True(t, ok, "result must carry the removed_networks array")
+	assert.Len(t, removed, 1)
+
+	retained, ok := data["retained_networks"].([]any)
+	require.True(t, ok, "result must carry the retained_networks array")
+	assert.Len(t, retained, 1)
+}
+
 // A fail-closed abort (the engine returns no error but reports failed
 // stacks) must render the result, name the failed stacks, state wdm was NOT
 // removed, then exit nonzero with a typed generic error.

@@ -24,16 +24,21 @@ import (
 // only that teardown invocation, tracks which Compose projects it targeted
 // and the exact argv the client built, and injects per-project failures.
 type uninstallDockerClient struct {
-	t            *testing.T
-	downErr      map[string]error // project -> teardown failure to inject
-	downCalls    []string         // Compose projects ComposeDownRemoveImages targeted
-	lastDownArgv []string         // argv of the most recent teardown invocation
+	t                  *testing.T
+	downErr            map[string]error  // project -> teardown failure to inject
+	downCalls          []string          // Compose projects ComposeDownRemoveImages targeted
+	lastDownArgv       []string          // argv of the most recent teardown invocation
+	networkRemoveErr   map[string]error  // network name -> raw run error to inject
+	networkRemoveStder map[string]string // network name -> stderr to inject alongside the error
+	networkRemoveCalls []string          // network names network rm targeted, in order
 }
 
 func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
 	return &uninstallDockerClient{
-		t:       t,
-		downErr: map[string]error{},
+		t:                  t,
+		downErr:            map[string]error{},
+		networkRemoveErr:   map[string]error{},
+		networkRemoveStder: map[string]string{},
 	}
 }
 
@@ -44,21 +49,54 @@ func (c *uninstallDockerClient) addStack(stackBase, appID string) {
 	stopAllManagedStack(c.t, stackBase, appID)
 }
 
-func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (docker.CommandResult, error) {
-	require.Equal(c.t, "docker.composeDownRemoveImagesInvocation", fmt.Sprintf("%T", inv),
-		"uninstall must only run docker compose down --rmi all")
+// writeUninstallCompose writes a rendered docker-compose.yml into a managed
+// stack directory declaring the given top-level networks: each name in external
+// is declared external:true (a wdm-pre-created network), and each in internal is
+// declared a normal compose-owned network. Only the external set should reach
+// the network cleanup.
+func writeUninstallCompose(t *testing.T, stackBase, appID string, external, internal []string) {
+	t.Helper()
 
-	project := invocationField(inv, "projectName:")
-	c.downCalls = append(c.downCalls, project)
-	c.lastDownArgv = []string{
-		"compose", "-f", invocationField(inv, "composeFile:"),
-		"--env-file", invocationField(inv, "envFile:"),
-		"--project-name", project, "down", "--rmi", "all",
+	var b strings.Builder
+	b.WriteString("services:\n  app:\n    image: docker.io/example/app:1.0.0\n")
+	b.WriteString("networks:\n")
+	for _, name := range external {
+		fmt.Fprintf(&b, "  %s:\n    external: true\n", name)
 	}
-	if err := c.downErr[project]; err != nil {
-		return docker.CommandResult{}, err
+	for _, name := range internal {
+		fmt.Fprintf(&b, "  %s:\n    driver: bridge\n", name)
 	}
-	return docker.CommandResult{}, nil
+
+	composePath := filepath.Join(stackBase, appID, "docker-compose.yml")
+	require.NoError(t, os.WriteFile(composePath, []byte(b.String()), 0o600))
+}
+
+func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (docker.CommandResult, error) {
+	switch fmt.Sprintf("%T", inv) {
+	case "docker.composeDownRemoveImagesInvocation":
+		project := invocationField(inv, "projectName:")
+		c.downCalls = append(c.downCalls, project)
+		c.lastDownArgv = []string{
+			"compose", "-f", invocationField(inv, "composeFile:"),
+			"--env-file", invocationField(inv, "envFile:"),
+			"--project-name", project, "down", "--rmi", "all",
+		}
+		if err := c.downErr[project]; err != nil {
+			return docker.CommandResult{}, err
+		}
+		return docker.CommandResult{}, nil
+	case "docker.removeNetworkInvocation":
+		name := invocationField(inv, "name:")
+		c.networkRemoveCalls = append(c.networkRemoveCalls, name)
+		if err := c.networkRemoveErr[name]; err != nil {
+			return docker.CommandResult{Stderr: c.networkRemoveStder[name]}, err
+		}
+		return docker.CommandResult{}, nil
+	default:
+		require.Failf(c.t, "unexpected invocation",
+			"uninstall must only run docker compose down --rmi all or network rm; got %T", inv)
+		return docker.CommandResult{}, nil
+	}
 }
 
 func (c *uninstallDockerClient) StreamLogs(context.Context, docker.Invocation, docker.RawLogSink) error {
@@ -397,4 +435,145 @@ func TestUninstall_FootprintRemovalRefusesSymlinkEscape(t *testing.T) {
 	// The escaping target survives: the removal refused before touching it.
 	assert.DirExists(t, outside)
 	assert.True(t, strings.Contains(err.Error(), "outside the home directory"))
+}
+
+// After teardown, the wdm-created (external) networks read from each stack's
+// rendered compose are removed via network rm, deduped across stacks, and the
+// compose-owned (non-external) networks are NEVER targeted.
+func TestUninstall_RemovesExternalNetworksAfterTeardown(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	client.addStack(base, "freshrss")
+	// Both stacks share the "wdm_proxy" external network: it must be removed
+	// once. Each also has its own external network. "internal_app" is a
+	// compose-owned network and must NOT be targeted.
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_proxy", "wdm_kuma"}, []string{"internal_app"})
+	writeUninstallCompose(t, base, "freshrss", []string{"wdm_proxy", "wdm_rss"}, []string{"internal_app"})
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Exactly the external networks, deduped, were requested.
+	requested := append([]string(nil), client.networkRemoveCalls...)
+	sort.Strings(requested)
+	assert.Equal(t, []string{"wdm_kuma", "wdm_proxy", "wdm_rss"}, requested)
+	assert.NotContains(t, client.networkRemoveCalls, "internal_app")
+
+	removed := append([]string(nil), result.RemovedNetworks...)
+	sort.Strings(removed)
+	assert.Equal(t, []string{"wdm_kuma", "wdm_proxy", "wdm_rss"}, removed)
+	assert.Empty(t, result.RetainedNetworks)
+}
+
+// A not-found result on network rm is tolerated as success (idempotent): the
+// network is still reported removed and the uninstall completes cleanly.
+func TestUninstall_ToleratesAlreadyAbsentNetwork(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_proxy"}, nil)
+	client.networkRemoveErr["wdm_proxy"] = errors.New("exit status 1")
+	client.networkRemoveStder["wdm_proxy"] = "Error: No such network: wdm_proxy"
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, []string{"wdm_proxy"}, result.RemovedNetworks)
+	assert.Empty(t, result.RetainedNetworks)
+	// Footprint removal still proceeded.
+	assert.NotEmpty(t, result.RemovedPaths)
+	assert.NoFileExists(t, binaryPath)
+}
+
+// A network that genuinely cannot be removed is recorded in RetainedNetworks
+// and footprint removal STILL proceeds — network cleanup never triggers the
+// fail-closed abort.
+func TestUninstall_RetainsUnremovableNetworkButRemovesFootprint(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_proxy", "wdm_kuma"}, nil)
+	client.networkRemoveErr["wdm_proxy"] = errors.New("network wdm_proxy has active endpoints")
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Len(t, result.RetainedNetworks, 1)
+	assert.Equal(t, "wdm_proxy", result.RetainedNetworks[0].Name)
+	assert.Contains(t, result.RetainedNetworks[0].Reason, "active endpoints")
+	assert.Equal(t, []string{"wdm_kuma"}, result.RemovedNetworks)
+
+	// Best-effort: footprint removal still proceeded; wdm is gone.
+	assert.NotEmpty(t, result.RemovedPaths)
+	assert.NoFileExists(t, binaryPath)
+	assert.NoDirExists(t, stateDir)
+}
+
+// A stack whose compose file is missing contributes no networks (best-effort)
+// and never aborts the uninstall.
+func TestUninstall_MissingComposeContributesNoNetworks(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma") // no compose file written
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Empty(t, client.networkRemoveCalls)
+	assert.Empty(t, result.RemovedNetworks)
+	assert.Empty(t, result.RetainedNetworks)
+	assert.NotEmpty(t, result.RemovedPaths)
+}
+
+// A teardown failure aborts before any network cleanup: no network rm runs.
+func TestUninstall_TeardownFailureSkipsNetworkCleanup(t *testing.T) {
+	t.Parallel()
+
+	eng, stateDir, _ := newUninstallTestEngine(t)
+	base := stopAllStackBase(stateDir)
+	require.NoError(t, os.MkdirAll(base, 0o755))
+
+	client := newUninstallDockerClient(t)
+	client.addStack(base, "uptime-kuma")
+	writeUninstallCompose(t, base, "uptime-kuma", []string{"wdm_proxy"}, nil)
+	client.downErr["wdm-uptime-kuma"] = errors.New("daemon unreachable")
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Len(t, result.Failed, 1)
+	assert.Empty(t, client.networkRemoveCalls, "an aborted teardown must skip network cleanup")
+	assert.Empty(t, result.RemovedNetworks)
+	assert.Empty(t, result.RemovedPaths)
 }

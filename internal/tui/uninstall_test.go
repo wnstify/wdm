@@ -63,6 +63,31 @@ func TestModel_Uninstall_FullSuccessQuits(t *testing.T) {
 	assert.Contains(t, view, "named volumes and per-app stack data")
 }
 
+// The result screen shows the removed-network count and lists any retained
+// network with its manual `docker network rm` hint.
+func TestModel_Uninstall_ResultRendersNetworks(t *testing.T) {
+	t.Parallel()
+
+	eng := &fakeEngine{
+		uninstallResult: &types.UninstallResult{
+			TornDown:        []types.TornDownApp{{AppID: "uptime-kuma"}},
+			RemovedNetworks: []string{"wdm_proxy", "wdm_kuma"},
+			RetainedNetworks: []types.RetainedNetwork{
+				{Name: "wdm_db", Reason: "active endpoints"},
+			},
+			KeptDataPaths: []string{"/home/u/docker/uptime-kuma"},
+			RemovedPaths:  []string{"/home/u/.local/bin/wdm"},
+		},
+	}
+
+	m, _ := dispatchUninstall(t, eng)
+	view := m.View()
+
+	assert.Contains(t, view, "Networks removed: 2")
+	assert.Contains(t, view, "could not be removed")
+	assert.Contains(t, view, "docker network rm wdm_db")
+}
+
 func TestModel_Uninstall_AbortDoesNotQuit(t *testing.T) {
 	t.Parallel()
 

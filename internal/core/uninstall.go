@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/security"
@@ -23,7 +26,11 @@ import (
 // same enumeration List/StopAll use) Uninstall runs `docker compose down
 // --rmi all` (NEVER -v): containers, the project's default network, and the
 // stack's images are removed, but all named volumes and every ~/docker/<app>/
-// stack directory are KEPT. Self-uninstall never deletes user data.
+// stack directory are KEPT. After every stack is down, the wdm-created Docker
+// networks (declared external in the rendered compose, so compose never removes
+// them) are dropped best-effort so "docker is clean"; a network that cannot be
+// removed is reported, never blocking footprint removal. Self-uninstall never
+// deletes user data.
 // Lock posture (PRD §26): Uninstall is a state-changing engine entry, so the
 // global runtime.lock is acquired ONCE at entry — attributed "uninstall" —
 // and held for the whole batch.
@@ -86,7 +93,7 @@ func (e *Engine) Uninstall(
 		return nil, err
 	}
 
-	tornDown, failed := e.teardownAllStacks(ctx, client, apps, onProgress)
+	tornDown, failed, networks := e.teardownAllStacks(ctx, client, apps, onProgress)
 
 	keptDataPaths := uninstallKeptDataPaths(apps)
 
@@ -100,15 +107,22 @@ func (e *Engine) Uninstall(
 		}, nil
 	}
 
+	// All stacks are down (no endpoints attached), so the wdm-created networks
+	// can be dropped. This is best-effort: it never aborts and never blocks
+	// footprint removal (PRD §39).
+	removedNetworks, retainedNetworks := e.removeManagedNetworks(ctx, client, networks, onProgress)
+
 	removed, err := e.removeFootprint(ctx, handle, onProgress)
 	if err != nil {
 		return nil, err
 	}
 
 	return &types.UninstallResult{
-		TornDown:      tornDown,
-		KeptDataPaths: keptDataPaths,
-		RemovedPaths:  removed,
+		TornDown:         tornDown,
+		KeptDataPaths:    keptDataPaths,
+		RemovedPaths:     removed,
+		RemovedNetworks:  removedNetworks,
+		RetainedNetworks: retainedNetworks,
 	}, nil
 }
 
@@ -191,7 +205,8 @@ func uninstallConfirmation(apps []types.AppInfo, footprint []string) types.Confi
 			"WARNING: this PERMANENTLY uninstalls wdm and tears down %d managed app(s) — it cannot be undone",
 			len(apps),
 		),
-		"each app is torn down with docker compose down --rmi all (containers + project network + images); no -v, no data loss",
+		"each app is torn down with docker compose down --rmi all (containers + images); no -v, no data loss",
+		"wdm-created networks are removed after teardown; all named volumes and stack data are KEPT",
 	}
 	for _, app := range apps {
 		lines = append(lines, "tears down app "+app.AppID)
@@ -222,9 +237,10 @@ func (e *Engine) teardownAllStacks(
 	client docker.Client,
 	apps []types.AppInfo,
 	onProgress types.ProgressFn,
-) (tornDown, failed []types.TornDownApp) {
+) (tornDown, failed []types.TornDownApp, externalNetworks []string) {
 	tornDown = []types.TornDownApp{}
 	failed = []types.TornDownApp{}
+	seenNetworks := map[string]struct{}{}
 
 	total := len(apps)
 	for i, app := range apps {
@@ -233,7 +249,7 @@ func (e *Engine) teardownAllStacks(
 				AppID: app.AppID,
 				Error: err.Error(),
 			})
-			return tornDown, failed
+			return tornDown, failed, externalNetworks
 		}
 		if onProgress != nil {
 			onProgress(types.StepUninstallTeardown, uninstallTeardownPct(i, total), fmt.Sprintf(
@@ -244,15 +260,24 @@ func (e *Engine) teardownAllStacks(
 			))
 		}
 
-		outcome := e.teardownOneStack(ctx, client, app.AppID)
+		outcome, networks := e.teardownOneStack(ctx, client, app.AppID)
 		if outcome.Error == "" {
 			tornDown = append(tornDown, outcome)
+			// Dedup the wdm-created networks across stacks: a shared external
+			// network must be removed exactly once.
+			for _, name := range networks {
+				if _, seen := seenNetworks[name]; seen {
+					continue
+				}
+				seenNetworks[name] = struct{}{}
+				externalNetworks = append(externalNetworks, name)
+			}
 		} else {
 			failed = append(failed, outcome)
 		}
 	}
 
-	return tornDown, failed
+	return tornDown, failed, externalNetworks
 }
 
 // teardownOneStack tears down a single managed stack: it takes the exclusive
@@ -260,48 +285,57 @@ func (e *Engine) teardownAllStacks(
 // project, then runs `docker compose down --rmi all` (NEVER -v). Every
 // failure short of a panic is folded into the returned [types.TornDownApp] so
 // the batch continues, mirroring stopOneStack.
+// The second return value lists the wdm-created (external) networks read from
+// this stack's preserved rendered compose; it is non-empty only when the stack
+// tore down cleanly. The names feed the best-effort network cleanup the caller
+// runs after every stack is down.
 func (e *Engine) teardownOneStack(
 	ctx context.Context,
 	client docker.Client,
 	appID string,
-) types.TornDownApp {
+) (types.TornDownApp, []string) {
 	outcome := types.TornDownApp{AppID: appID}
 
 	stackPath, err := security.SafeJoin(e.stackBase, appID)
 	if err != nil {
 		outcome.Error = fmt.Sprintf("app id is unsafe: %v", err)
-		return outcome
+		return outcome, nil
 	}
 
 	handle, err := acquireInstallStackLock(ctx, stackPath)
 	if err != nil {
 		outcome.Error = err.Error()
-		return outcome
+		return outcome, nil
 	}
 	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
 
 	lock, err := reconfirmManagedStack(handle, appID)
 	if err != nil {
 		outcome.Error = err.Error()
-		return outcome
+		return outcome, nil
 	}
 	if lock.ComposeProject == "" {
 		outcome.Error = "stack manifest is missing its compose project"
-		return outcome
+		return outcome, nil
 	}
 	outcome.ComposeProject = lock.ComposeProject
 
 	project, err := uninstallComposeProject(stackPath, lock)
 	if err != nil {
 		outcome.Error = err.Error()
-		return outcome
+		return outcome, nil
 	}
 
 	if err := docker.ComposeDownRemoveImages(ctx, client, project); err != nil {
 		outcome.Error = err.Error()
-		return outcome
+		return outcome, nil
 	}
-	return outcome
+
+	// Read the wdm-created networks from the rendered compose only after the
+	// stack tore down cleanly. A read/parse failure is not fatal — the cleanup
+	// is best-effort — so the networks are simply dropped from the set.
+	networks := readExternalNetworkNames(project.ComposeFile)
+	return outcome, networks
 }
 
 // uninstallComposeProject builds the validated [docker.ComposeProject] for
@@ -625,4 +659,84 @@ func uninstallTeardownPct(index, total int) float64 {
 	}
 	const start, span = 30.0, 55.0
 	return start + span*float64(index)/float64(total)
+}
+
+// removeManagedNetworks drops the wdm-created Docker networks after every stack
+// tore down cleanly and BEFORE any footprint removal (PRD §39). wdm pre-creates
+// these networks at install and the rendered compose declares them external, so
+// `docker compose down` never owns or removes them; without this sub-phase they
+// linger after a self-uninstall. It runs only once all containers are down, so
+// no endpoint is attached. The whole sub-phase is best-effort: a network already
+// absent counts as removed (idempotent), and a network that genuinely cannot be
+// removed is recorded in retained and the loop continues. It NEVER triggers the
+// fail-closed abort and NEVER blocks footprint removal — that abort stays
+// reserved for stack `down` failure.
+func (e *Engine) removeManagedNetworks(
+	ctx context.Context,
+	client docker.Client,
+	names []string,
+	onProgress types.ProgressFn,
+) (removed []string, retained []types.RetainedNetwork) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if onProgress != nil {
+		onProgress(types.StepUninstallTeardown, 88, fmt.Sprintf(
+			"removing %d wdm-created network(s)",
+			len(names),
+		))
+	}
+
+	for _, name := range names {
+		if err := docker.RemoveNetworkIfPresent(ctx, client, name); err != nil {
+			retained = append(retained, types.RetainedNetwork{
+				Name:   name,
+				Reason: err.Error(),
+			})
+			continue
+		}
+		removed = append(removed, name)
+	}
+	return removed, retained
+}
+
+// uninstallComposeNetworks is the minimal slice of a rendered docker-compose.yml
+// needed to read the top-level networks block. Only networks[].external is
+// decoded; yaml.v3 ignores every other key. A network declared external:true is
+// exactly a wdm-pre-created network (install declares them external under their
+// real substituted name); a non-external entry is compose-owned and was already
+// removed by `down`, so it is never targeted here.
+type uninstallComposeNetworks struct {
+	Networks map[string]uninstallComposeNetwork `yaml:"networks"`
+}
+
+type uninstallComposeNetwork struct {
+	External bool `yaml:"external"`
+}
+
+// readExternalNetworkNames parses the rendered compose at composePath and
+// returns the names of its top-level networks declared external:true — the
+// wdm-pre-created networks (PRD §39). The names are sorted for deterministic
+// iteration. The read is best-effort: a missing or unparseable compose file
+// yields no names rather than an error, because the network cleanup that
+// consumes them never aborts the uninstall.
+func readExternalNetworkNames(composePath string) []string {
+	raw, err := os.ReadFile(composePath) //nolint:gosec // G304: composePath is project.ComposeFile, built via security.SafeJoin under the engine-controlled stack base
+	if err != nil {
+		return nil
+	}
+
+	var projection uninstallComposeNetworks
+	if err := yaml.Unmarshal(raw, &projection); err != nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(projection.Networks))
+	for name, network := range projection.Networks {
+		if network.External {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }

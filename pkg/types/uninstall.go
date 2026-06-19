@@ -38,6 +38,21 @@ type TornDownApp struct {
 	Error string `json:"error,omitempty"`
 }
 
+// RetainedNetwork is one wdm-managed network the best-effort network cleanup
+// could not remove after teardown (PRD §39). Name is the network's real
+// (substituted) name and Reason is the redacted docker-layer detail. A
+// retained network never aborts the uninstall: footprint removal still
+// proceeds, and the frontends surface the exact `docker network rm <name>`
+// command so the operator can finish the cleanup manually.
+type RetainedNetwork struct {
+	// Name is the wdm-managed network that was left behind.
+	Name string `json:"name"`
+
+	// Reason holds the redacted docker-layer detail explaining why the
+	// network could not be removed. It carries no secret values.
+	Reason string `json:"reason"`
+}
+
 // UninstallResult summarizes a self-uninstall run (PRD §39). Self-uninstall
 // is fail-closed: every managed stack is torn down with `docker compose down
 // --rmi all` (NEVER -v), and the wdm footprint is removed ONLY when EVERY
@@ -47,9 +62,16 @@ type TornDownApp struct {
 // the footprint that was removed; KeptDataPaths always reports the data that
 // was preserved (named volumes and ~/docker/<app>/ stack directories), since
 // self-uninstall never deletes user data.
+//
+// After every stack tears down cleanly and before any footprint removal,
+// self-uninstall removes the wdm-created Docker networks best-effort:
+// RemovedNetworks lists the networks dropped, and RetainedNetworks lists the
+// ones that could not be removed (each with a reason). Network cleanup is
+// best-effort and NEVER triggers the fail-closed abort — footprint removal
+// proceeds regardless.
 type UninstallResult struct {
-	// TornDown lists the managed stacks whose containers, project network,
-	// and images were removed cleanly.
+	// TornDown lists the managed stacks whose containers and images were
+	// removed cleanly.
 	TornDown []TornDownApp `json:"torn_down,omitempty"`
 
 	// Failed lists the managed stacks whose teardown failed, each carrying
@@ -69,4 +91,17 @@ type UninstallResult struct {
 	// the running binary, and its .previous sibling. It is empty when the
 	// operation aborted on a teardown failure.
 	RemovedPaths []string `json:"removed_paths,omitempty"`
+
+	// RemovedNetworks lists the wdm-created Docker networks removed
+	// best-effort after every stack tore down cleanly. wdm pre-creates these
+	// networks at install and they are declared external in the rendered
+	// compose, so `docker compose down` never owns or removes them. Names are
+	// deduplicated across stacks; a network already absent counts as removed.
+	RemovedNetworks []string `json:"removed_networks,omitempty"`
+
+	// RetainedNetworks lists the wdm-created networks that could not be
+	// removed (each with a redacted reason). A retained network never aborts
+	// the uninstall; the frontends surface the manual `docker network rm`
+	// command so the operator can finish the cleanup.
+	RetainedNetworks []RetainedNetwork `json:"retained_networks,omitempty"`
 }

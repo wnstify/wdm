@@ -132,6 +132,38 @@ func RemoveNetwork(ctx context.Context, client Client, networkName string) error
 	return err
 }
 
+// RemoveNetworkIfPresent removes a single network by name like [RemoveNetwork]
+// but treats an already-absent network as success (idempotent). It exists for
+// the self-uninstall best-effort network cleanup (PRD §39), where a network the
+// teardown already dropped — or one a previous run removed — must not surface as
+// an error. A genuine removal failure (for example a network still holding
+// endpoints) propagates unchanged so the caller can record it and continue. The
+// not-found tolerance is local to this seam; [RemoveNetwork]'s other callers
+// keep failing closed on every error.
+func RemoveNetworkIfPresent(ctx context.Context, client Client, networkName string) error {
+	if client == nil {
+		return types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	name, err := validateNetworkName(networkName)
+	if err != nil {
+		return err
+	}
+
+	res, err := client.Run(ctx, removeNetworkInvocation{name: name})
+	if err == nil {
+		return nil
+	}
+	if isMissingNetworkError(res, err, name) {
+		return nil
+	}
+	return err
+}
+
 // verifyExistingNetworkSubnet refuses an existing network whose configured
 // subnet does not match the requested spec, the same fail-closed shape as the
 // internal-flag mismatch. When the spec pins no subnet there is nothing to

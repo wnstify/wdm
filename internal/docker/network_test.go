@@ -785,6 +785,100 @@ func TestRemoveNetwork_PropagatesCommandError(t *testing.T) {
 	require.Len(t, fake.calls, 1)
 }
 
+func TestRemoveNetworkIfPresent_RejectsNilClient(t *testing.T) {
+	t.Parallel()
+
+	err := RemoveNetworkIfPresent(t.Context(), nil, "wdm_default")
+	requireUsageValidationError(t, err)
+}
+
+func TestRemoveNetworkIfPresent_RejectsInvalidNameBeforeRunningClient(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{}
+	err := RemoveNetworkIfPresent(t.Context(), fake, "Wdm/Default")
+	requireUsageValidationError(t, err)
+	require.Empty(t, fake.calls)
+}
+
+func TestRemoveNetworkIfPresent_RemovesNamedNetwork(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+			removeInv, ok := inv.(removeNetworkInvocation)
+			require.True(t, ok)
+			require.Equal(t, "wdm_default", removeInv.name)
+			return CommandResult{}, nil
+		},
+	}
+
+	err := RemoveNetworkIfPresent(t.Context(), fake, "wdm_default")
+	require.NoError(t, err)
+	require.Len(t, fake.calls, 1)
+}
+
+// A not-found result is tolerated as success (idempotent) on both the classic
+// and modern daemon phrasings, on stderr and on the error string.
+func TestRemoveNetworkIfPresent_ToleratesMissingNetwork(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result CommandResult
+		err    error
+	}{
+		{
+			name:   "classic stderr phrasing",
+			result: CommandResult{Stderr: "Error: No such network: wdm_default"},
+			err:    errors.New("exit status 1"),
+		},
+		{
+			name:   "modern stderr phrasing",
+			result: CommandResult{Stderr: "Error response from daemon: network wdm_default not found"},
+			err:    errors.New("exit status 1"),
+		},
+		{
+			name:   "phrasing on error string only",
+			result: CommandResult{},
+			err:    errors.New("no such network: wdm_default"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := &ensureNetworkFakeClient{
+				runFn: func(_ context.Context, _ Invocation) (CommandResult, error) {
+					return tt.result, tt.err
+				},
+			}
+
+			err := RemoveNetworkIfPresent(t.Context(), fake, "wdm_default")
+			require.NoError(t, err)
+			require.Len(t, fake.calls, 1)
+		})
+	}
+}
+
+// A removal failure that is NOT a missing-network condition propagates so the
+// caller can record it.
+func TestRemoveNetworkIfPresent_PropagatesOtherFailures(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("network wdm_default has active endpoints")
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, _ Invocation) (CommandResult, error) {
+			return CommandResult{Stderr: "Error response from daemon: error while removing network: network wdm_default id ... has active endpoints"}, boom
+		},
+	}
+
+	err := RemoveNetworkIfPresent(t.Context(), fake, "wdm_default")
+	require.Same(t, boom, err)
+	require.Len(t, fake.calls, 1)
+}
+
 func TestRun_NetworkInvocationsBuildExactArgv(t *testing.T) {
 	t.Parallel()
 

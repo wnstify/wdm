@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,7 +62,8 @@ func (m model) uninstallView() string {
 		b.WriteString(m.err.Error())
 		b.WriteByte('\n')
 	default:
-		b.WriteString("Removes wdm and tears down every managed app: containers, networks, and images.\n")
+		b.WriteString("Removes wdm and tears down every managed app: containers and images.\n")
+		b.WriteString("The wdm-created Docker networks are removed too, so Docker is left clean.\n")
 		b.WriteString("Named volumes and per-app stack data are kept; this is not a teardown of your data.\n")
 	}
 
@@ -123,11 +125,34 @@ func (m model) uninstallResultView() string {
 		}
 	}
 
+	if len(result.RemovedNetworks) > 0 {
+		fmt.Fprintf(&b, "\nNetworks removed: %d\n", len(result.RemovedNetworks))
+	}
+
+	writeUninstallRetainedNetworks(&b, result)
 	writeUninstallKeptData(&b, result)
 
 	b.WriteString("\n")
 	b.WriteString(helpLine())
 	return b.String()
+}
+
+// writeUninstallRetainedNetworks appends a warning naming the wdm-created
+// networks that could not be removed and the manual `docker network rm <name>`
+// command to finish the cleanup. Network cleanup is best-effort, so a retained
+// network never fails the uninstall; this just surfaces the manual follow-up.
+func writeUninstallRetainedNetworks(b *strings.Builder, result *types.UninstallResult) {
+	if len(result.RetainedNetworks) == 0 {
+		return
+	}
+	b.WriteString("\nWARNING: some wdm-created networks could not be removed. Remove them manually:\n")
+	for _, network := range result.RetainedNetworks {
+		b.WriteString("- ")
+		b.WriteString(network.Name)
+		b.WriteString(": docker network rm ")
+		b.WriteString(network.Name)
+		b.WriteByte('\n')
+	}
 }
 
 // writeUninstallKeptData appends the kept-data section to b. Named volumes

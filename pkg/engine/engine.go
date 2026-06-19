@@ -104,10 +104,11 @@ type Engine interface {
 	// Uninstall tears down every managed stack and then removes wdm's own
 	// on-disk footprint, including the running binary (PRD §39, issue
 	// #29). For each managed stack it runs docker compose down --rmi all
-	// (NEVER -v): containers, the project network, and the stack's images
-	// are removed, but ALL named volumes and every ~/docker/<app>/ stack
-	// directory are KEPT — self-uninstall never deletes user data. It is
-	// wdm-managed scope only, never a system-wide prune. As a destructive
+	// (NEVER -v): containers and the stack's images are removed. After every
+	// app is down the wdm-created Docker networks are removed best-effort, but
+	// ALL named volumes and every ~/docker/<app>/ stack directory are KEPT —
+	// self-uninstall never deletes user data. It is wdm-managed scope only,
+	// never a system-wide prune. As a destructive
 	// state-changing op it holds the global runtime.lock once, takes the
 	// per-stack flock around each teardown, and consults confirmer once
 	// before the batch with a [types.ConfirmationKindUninstallDestructive]

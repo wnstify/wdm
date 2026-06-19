@@ -15,11 +15,11 @@ import (
 // issue #29). It calls [engine.Engine.Uninstall] through the injected
 // factory to tear down every managed stack and then remove wdm's own
 // on-disk footprint, including the running binary. For each managed stack
-// the engine runs docker compose down --rmi all (NEVER -v): containers,
-// the project network, and the stack's images are removed, but ALL named
-// volumes and every ~/docker/<app>/ stack directory are KEPT — self-
-// uninstall never deletes user data. It is wdm-managed scope only, never a
-// system-wide prune.
+// the engine runs docker compose down --rmi all (NEVER -v): containers and
+// the stack's images are removed. After every app is down the wdm-created
+// Docker networks are removed best-effort, but ALL named volumes and every
+// ~/docker/<app>/ stack directory are KEPT — self-uninstall never deletes
+// user data. It is wdm-managed scope only, never a system-wide prune.
 //
 // Uninstall is fail-closed: if any stack teardown fails it ABORTS before
 // removing any footprint, leaving wdm installed and listing the failed
@@ -73,9 +73,10 @@ func newUninstallCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 		Short: "Uninstall wdm and tear down every managed app",
 		Long: `Uninstall removes wdm itself and tears down every managed app. For
 each managed stack it runs docker compose down --rmi all, which removes
-the containers, the project network, and the stack's images. ALL named
-volumes and every ~/docker/<app>/ stack directory are KEPT; this is NOT
-docker compose down -v and no user data is deleted.
+the containers and the stack's images. After every app is down, the
+wdm-created Docker networks are removed too, so Docker is left clean. ALL
+named volumes and every ~/docker/<app>/ stack directory are KEPT; this is
+NOT docker compose down -v and no user data is deleted.
 
 Uninstall affects only wdm-managed apps and wdm's own footprint (the
 config, data, and state directories and the wdm binary). It is never a
@@ -185,12 +186,19 @@ func writeUninstallFinish(w io.Writer, result *types.UninstallResult) error {
 	}
 
 	b.WriteString("wdm was uninstalled.\n")
-	b.WriteString("Every managed app was torn down (containers, networks, and images removed); named volumes and stack data were kept.\n")
+	b.WriteString("Every managed app was torn down (containers, images, and wdm-created networks removed); named volumes and stack data were kept.\n")
 
 	if len(result.TornDown) > 0 {
 		b.WriteString("\nTorn down:\n")
 		for _, app := range result.TornDown {
 			fmt.Fprintf(&b, "  - %s\n", app.AppID)
+		}
+	}
+
+	if len(result.RemovedNetworks) > 0 {
+		b.WriteString("\nNetworks removed:\n")
+		for _, name := range result.RemovedNetworks {
+			fmt.Fprintf(&b, "  - %s\n", name)
 		}
 	}
 
@@ -201,12 +209,29 @@ func writeUninstallFinish(w io.Writer, result *types.UninstallResult) error {
 		}
 	}
 
+	writeUninstallRetainedNetworks(&b, result)
 	writeUninstallKeptData(&b, result)
 
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return fmt.Errorf("uninstall: writing finish screen: %w", err)
 	}
 	return nil
+}
+
+// writeUninstallRetainedNetworks appends a warning section naming the
+// wdm-created networks that could not be removed and the exact
+// `docker network rm <name>` command to finish the cleanup manually. Network
+// cleanup is best-effort, so a retained network never fails the uninstall; this
+// section just surfaces the manual follow-up.
+func writeUninstallRetainedNetworks(b *strings.Builder, result *types.UninstallResult) {
+	if len(result.RetainedNetworks) == 0 {
+		return
+	}
+	b.WriteString("\nWARNING: some wdm-created networks could not be removed. Remove them manually:\n")
+	for _, network := range result.RetainedNetworks {
+		fmt.Fprintf(b, "  - %s (%s)\n", network.Name, network.Reason)
+		fmt.Fprintf(b, "    docker network rm %s\n", network.Name)
+	}
 }
 
 // writeUninstallKeptData appends the kept-data section to b. Named volumes
