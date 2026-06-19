@@ -79,6 +79,101 @@ func TestReconfigure_StableCatalogInPlaceEditEveryApp(t *testing.T) {
 	}
 }
 
+// TestReconfigure_StableCatalogGuardsPassCleanEveryApp proves the six
+// catalog-vs-compose guards rewriteReconfigureStack re-runs against the
+// on-disk compose pass CLEAN for every app in the real stable catalog when the
+// compose is the untampered committed golden. Unlike
+// [TestReconfigure_StableCatalogInPlaceEditEveryApp], which drives only the
+// .env in-place edit via [core.ReconfigureResolveRewriteForTest], this stages
+// BOTH the golden .env AND the golden docker-compose.yml and drives the full
+// [Engine.ReconfigureRewriteStackForTest] seam
+// (buildReconfigurePlan → rewriteReconfigureStack) so the guards — image-pin,
+// public-bind, container-privilege, socket-policy, host-module-mount, and
+// network-IPAM — actually read the on-disk compose bytes.
+//
+// Each app picks one real adjustable service the same way the sibling test
+// does and asserts require.NoError. A guard tripping here on an untampered
+// golden is a false positive in the reconfigure verification path, not a test
+// to loosen: stop and report which app and which guard.
+func TestReconfigure_StableCatalogGuardsPassCleanEveryApp(t *testing.T) {
+	t.Parallel()
+
+	abs, err := filepath.Abs(realCatalogPath)
+	require.NoError(t, err, "resolve stable catalog path")
+	cat, err := catalog.LoadCatalog(context.Background(), abs)
+	require.NoError(t, err, "load stable catalog")
+	require.NotNil(t, cat)
+	require.Len(t, cat.Apps, 19, "stable catalog must carry the nineteen curated apps")
+
+	for _, app := range cat.Apps {
+		t.Run(app.AppID, func(t *testing.T) {
+			t.Parallel()
+
+			goldenEnv, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "golden", app.AppID, ".env"))
+			require.NoErrorf(t, err, "read golden .env for %s", app.AppID)
+			goldenCompose, err := os.ReadFile(
+				filepath.Join("..", "..", "fixtures", "golden", app.AppID, "docker-compose.yml"))
+			require.NoErrorf(t, err, "read golden docker-compose.yml for %s", app.AppID)
+
+			adjustable := 0
+			for _, profile := range app.Resources {
+				if !profile.AllowOverride {
+					continue
+				}
+				adjustable++
+
+				t.Run(profile.Service, func(t *testing.T) {
+					t.Parallel()
+					assertReconfigureGuardsPassClean(t, app, profile, goldenEnv, goldenCompose)
+				})
+			}
+
+			if adjustable == 0 {
+				assert.Zero(t, adjustable,
+					"app %q declares no adjustable service; the guard documents this rather than skipping",
+					app.AppID)
+			}
+		})
+	}
+}
+
+// assertReconfigureGuardsPassClean stages one app's golden .env and golden
+// docker-compose.yml in a temp stack, drives the full reconfigure rewrite seam
+// for an in-band memory change to one service, and asserts the six on-disk
+// catalog-vs-compose guards pass with no error.
+func assertReconfigureGuardsPassClean(
+	t *testing.T,
+	app catalog.App,
+	profile catalog.ResourceProfile,
+	goldenEnv []byte,
+	goldenCompose []byte,
+) {
+	t.Helper()
+
+	// rewriteReconfigureStack reads BOTH the .env and the compose from the
+	// stack dir, so stage both golden artifacts the way an installed stack
+	// carries them.
+	stackPath := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stackPath, ".env"), goldenEnv, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(stackPath, "docker-compose.yml"), goldenCompose, 0o600))
+
+	// The band Min is in-band and differs from the golden Recommended value, so
+	// the rewrite performs a real edit before the guards run.
+	newMemory := profile.Memory.Min
+	req := types.ReconfigureRequest{
+		AppID:   app.AppID,
+		Service: profile.Service,
+		Memory:  &newMemory,
+	}
+
+	var e core.Engine
+	_, err := e.ReconfigureRewriteStackForTest(
+		context.Background(), req, app, stackPath, "wdm-"+app.AppID)
+	require.NoErrorf(t, err,
+		"the six catalog-vs-compose guards must pass clean for untampered golden %s service %s",
+		app.AppID, profile.Service)
+}
+
 // assertReconfigureInPlaceEdit stages one app's golden .env in a temp stack,
 // drives the real reconfigure resolve + in-place rewrite for an in-band
 // memory change to one service, and asserts the targeted line changed while

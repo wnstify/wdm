@@ -395,6 +395,75 @@ func TestReconfigure_RewriteCarriesStackSecretsForRedactor(t *testing.T) {
 		"slices.Concat(generatedValues, reusedSecretValues) must yield the secret literals")
 }
 
+// TestReconfigure_TamperedPublicBindRefused proves the in-place rewrite
+// re-runs the catalog-vs-compose guards against the ON-DISK compose: a
+// hand-tampered compose that binds a port on 0.0.0.0 (a public bind the
+// catalog never declared) is refused fail-closed before the recreate. The
+// reconfigure is the only mutating path that previously skipped these
+// guards, so a tampered compose could otherwise be force-recreated
+// unchecked.
+func TestReconfigure_TamperedPublicBindRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-tamper-bind")
+	fx := newReconfigureFixture(t, app, nil)
+
+	tampered := "services:\n" +
+		"  app:\n" +
+		"    image: docker.io/example/app:1.0.0\n" +
+		"    ports:\n" +
+		"      - \"0.0.0.0:18080:18080\"\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fx.stackPath, "docker-compose.yml"),
+		[]byte(tampered),
+		0o644,
+	))
+
+	_, err := fx.eng.ReconfigureRewriteStackForTest(
+		t.Context(),
+		types.ReconfigureRequest{AppID: fx.appID, Service: "app", Memory: strPtr("1g")},
+		app,
+		fx.stackPath,
+		"wdm-"+fx.appID,
+	)
+	require.Error(t, err, "a public-bind tamper in the on-disk compose must be refused")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"no recreate runs when the guard refuses the tampered compose")
+}
+
+// TestReconfigure_TamperedPrivilegeRefused proves the in-place rewrite
+// refuses a compose that grants a container privilege (privileged: true)
+// the catalog never declared. Like the public-bind tamper, this exercises
+// the catalog-vs-compose guard set against the on-disk compose before the
+// force-recreate.
+func TestReconfigure_TamperedPrivilegeRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-tamper-priv")
+	fx := newReconfigureFixture(t, app, nil)
+
+	tampered := "services:\n" +
+		"  app:\n" +
+		"    image: docker.io/example/app:1.0.0\n" +
+		"    privileged: true\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fx.stackPath, "docker-compose.yml"),
+		[]byte(tampered),
+		0o644,
+	))
+
+	_, err := fx.eng.ReconfigureRewriteStackForTest(
+		t.Context(),
+		types.ReconfigureRequest{AppID: fx.appID, Service: "app", Memory: strPtr("1g")},
+		app,
+		fx.stackPath,
+		"wdm-"+fx.appID,
+	)
+	require.Error(t, err, "an undeclared privileged: true in the on-disk compose must be refused")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"no recreate runs when the guard refuses the tampered compose")
+}
+
 // TestReconfigure_OutOfBandRejectedBeforeAnyChange proves an over-max
 // memory value is refused fail-closed with a usage error and no backup,
 // rewrite, or Docker call happens.

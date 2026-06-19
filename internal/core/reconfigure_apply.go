@@ -194,10 +194,33 @@ func (e *Engine) rewriteReconfigureStack(
 		},
 	}
 
-	// The compose is unchanged from install, so the install-arc
-	// catalog-vs-template guards have nothing new to verify. Keep only the
-	// cheap non-secret leak guard: it confirms the unchanged compose carries
-	// no secret literal, a defense-in-depth check that costs nothing.
+	// The reconfigure recreates the ON-DISK compose without re-rendering it,
+	// so re-run the install-arc catalog-vs-compose guards against the
+	// unchanged on-disk bytes (each verifier also runs its own catalog
+	// declaration check) to catch post-install tampering before the
+	// force-recreate. The order mirrors the install path. These read the
+	// compose and catalog only — they do not re-render the .env, so the
+	// derived-placeholder bug the in-place edit avoids cannot reappear.
+	if err := verifyImagePinsMatchTemplate(redactor, plan.app, composeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyPublicBindsMatchCatalog(redactor, plan.app, composeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyContainerPrivilegeMatchCatalog(redactor, plan.app, composeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifySocketPolicyMatchCatalog(redactor, plan.app, composeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyHostModuleMountMatchCatalog(redactor, plan.app, composeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyNetworkIPAMMatchCatalog(redactor, plan.app, composeBytes); err != nil {
+		return nil, err
+	}
+	// The non-secret leak guard confirms the unchanged compose carries no
+	// secret literal, a defense-in-depth check that costs nothing.
 	if err := verifyRenderedNonSecretArtifacts(redactor, secretLiterals, rewrite.rendered, nil); err != nil {
 		return nil, err
 	}
