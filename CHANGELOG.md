@@ -11,6 +11,17 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   It preserves all data (containers, networks, and named volumes stay defined),
   continues on error so one unreachable stack does not block the rest, and exits
   nonzero when any stack fails.
+- Added a `stopped` runtime state for apps whose managed containers all exist
+  but are not running (for example after `docker compose stop`). It reports
+  `needs_attention: false` so a cleanly stopped app is no longer shown as
+  needing attention; `needs_attention` is reserved for genuine trouble.
+
+### Changed
+- The dashboard "Check my apps" list and `wdm apps list` now report each app's
+  live runtime state (running / stopped / needs attention / removed) from real
+  Docker container state instead of always showing "running". `wdm apps list
+  --json` entries gain a `state` field and a populated `needs_attention` flag,
+  and the plain output gains a trailing tab-separated state column.
 
 ## v1.0.3 - 2026-06-18
 

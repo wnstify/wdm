@@ -126,8 +126,8 @@ func TestFormatBackupTimeRendersUTCOrUnknown(t *testing.T) {
 
 func backupsFlowFake() *fakeEngine {
 	return &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "alpha", TemplateName: "Alpha"},
+		listStatusApps: []types.AppRuntimeStatus{
+			{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"},
 		},
 		backups: []types.BackupInfo{
 			{

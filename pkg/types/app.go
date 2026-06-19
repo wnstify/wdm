@@ -30,10 +30,38 @@ type AppInfo struct {
 	LastSuccessfulOperation *Operation `json:"last_successful_operation"`
 
 	// NeedsAttention is true when the stack matches any condition in
-	// PRD §18 (missing container, restart loop, unhealthy, …). Always
-	// false in — Engine.Status is the canonical signal and is
-	// implemented in.
+	// PRD §18 (missing container, restart loop, unhealthy, …). The cheap
+	// Engine.List path leaves it false because it never touches Docker;
+	// Engine.ListStatus and Engine.Status are the live signals that
+	// populate it from container inspection.
 	NeedsAttention bool `json:"needs_attention"`
+}
+
+// AppRuntimeStatus is one entry returned by Engine.ListStatus: the
+// long-lived AppInfo facts read from .wdm.lock plus a live runtime
+// summary derived from Docker container inspection (PRD §18). Unlike
+// AppInfo (whose NeedsAttention stays zero because the cheap List path
+// never touches Docker), the State, NeedsAttention, and AttentionReasons
+// here reflect the current container state at the moment ListStatus ran.
+// The summary is lightweight by design: it derives State from container
+// inspection and the manifest alone, skipping the per-stack compose-config
+// validation shell the full Engine.Status runs, and it never acquires the
+// runtime lock (PRD §26 read-only posture).
+type AppRuntimeStatus struct {
+	// AppInfo carries the long-lived stack facts read from .wdm.lock.
+	AppInfo
+
+	// State is the live coarse status label derived from container
+	// inspection: "running", "stopped", "needs_attention", or "removed". It
+	// uses the same vocabulary Engine.Status emits. "stopped" marks an app
+	// whose expected managed containers all exist but none are running — a
+	// cleanly stopped stack, distinct from the "needs_attention" trouble
+	// state.
+	State string `json:"state"`
+
+	// AttentionReasons lists machine-readable PRD §18 reason IDs when the
+	// stack needs attention; empty when State is "running".
+	AttentionReasons []string `json:"attention_reasons,omitempty"`
 }
 
 // Operation records a completed lifecycle event for a managed stack.
@@ -56,9 +84,11 @@ type AppStatus struct {
 	// AppID identifies the stack the status belongs to.
 	AppID string `json:"app_id"`
 
-	// State is a coarse status label. PRD §18 surfaces "running" and
-	// "needs attention" to users; it is a free-form string, not a closed
-	// enum (Engine.Status sets the values it emits).
+	// State is a coarse status label. PRD §18 surfaces "running",
+	// "stopped", and "needs attention" to users; it is a free-form string,
+	// not a closed enum (Engine.Status sets the values it emits). "stopped"
+	// marks an app whose expected managed containers all exist but none are
+	// running.
 	State string `json:"state"`
 
 	// Message is an optional one-line explanation shown alongside State.

@@ -85,7 +85,7 @@ type model struct {
 	err                error
 	progress           progressMsg
 	modal              *confirmationRequestedMsg
-	apps               []types.AppInfo
+	apps               []types.AppRuntimeStatus
 	status             *types.AppStatus
 	validation         *types.ValidationResult
 	actionMessage      string
@@ -689,7 +689,7 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 }
 
 type appsLoadedMsg struct {
-	apps []types.AppInfo
+	apps []types.AppRuntimeStatus
 	err  error
 }
 
@@ -710,7 +710,7 @@ type validationFinishedMsg struct {
 
 func (m model) loadAppsCmd() tea.Cmd {
 	return func() tea.Msg {
-		apps, err := m.eng.List(m.ctx)
+		apps, err := m.eng.ListStatus(m.ctx)
 		return appsLoadedMsg{apps: apps, err: err}
 	}
 }
@@ -1089,11 +1089,23 @@ func (m model) writeStatusSummary(b *strings.Builder) {
 	}
 }
 
-func appListState(app types.AppInfo) string {
-	if app.NeedsAttention {
+// appListState renders the live runtime state of one managed app for the
+// "Check my apps" list, fed by Engine.ListStatus (PRD §18). It maps the
+// engine's State vocabulary to the user-facing label, rendering "stopped" as
+// a calm off state rather than a problem; an empty State (an app the engine
+// could not summarize) and any unrecognized value fall back to the
+// needs-attention reading rather than implying the app is healthy.
+func appListState(app types.AppRuntimeStatus) string {
+	switch app.State {
+	case "running":
+		return "running"
+	case "stopped":
+		return "stopped"
+	case "removed":
+		return "removed"
+	default:
 		return "needs attention"
 	}
-	return "running"
 }
 
 func (m model) confirmationView() string {

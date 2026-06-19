@@ -12,6 +12,9 @@ type fakeEngine struct {
 	listApps               []types.AppInfo
 	listErr                error
 	listCalls              int
+	listStatusApps         []types.AppRuntimeStatus
+	listStatusErr          error
+	listStatusCalls        int
 	statuses               map[string]*types.AppStatus
 	statusErr              error
 	statusCalls            []string
@@ -93,6 +96,11 @@ var _ engine.Engine = (*fakeEngine)(nil)
 func (f *fakeEngine) List(context.Context) ([]types.AppInfo, error) {
 	f.listCalls++
 	return f.listApps, f.listErr
+}
+
+func (f *fakeEngine) ListStatus(context.Context) ([]types.AppRuntimeStatus, error) {
+	f.listStatusCalls++
+	return f.listStatusApps, f.listStatusErr
 }
 
 func (f *fakeEngine) Status(_ context.Context, appID string) (*types.AppStatus, error) {

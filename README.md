@@ -75,7 +75,7 @@ The TUI is the guided entry point: browse the catalog, install and update stacks
 Every action is scriptable. The CLI prints human-readable text by default, and machine-readable JSON with `--json`.
 
 ```sh
-wdm apps list                 # list managed stacks
+wdm apps list                 # list managed stacks with live runtime state
 wdm apps install <app>        # install a curated app
 wdm apps status <app>         # report a stack's health
 wdm apps logs <app>           # view stack logs

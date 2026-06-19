@@ -14,9 +14,16 @@ func TestModel_CheckMyAppsLoadsManagedApps(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "n8n", TemplateName: "n8n", NeedsAttention: false},
-			{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+		listStatusApps: []types.AppRuntimeStatus{
+			{
+				AppInfo: types.AppInfo{AppID: "n8n", TemplateName: "n8n"},
+				State:   "running",
+			},
+			{
+				AppInfo:          types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+				State:            "needs_attention",
+				AttentionReasons: []string{"container_exited"},
+			},
 		},
 	}
 	m := newReadyModel(fake)
@@ -39,15 +46,51 @@ func TestModel_CheckMyAppsLoadsManagedApps(t *testing.T) {
 	assert.Contains(t, view, "[selected]")
 	assert.Contains(t, view, "Back: b")
 	assert.Contains(t, view, "Quit: q")
-	assert.Equal(t, 1, fake.listCalls)
+	assert.Equal(t, 1, fake.listStatusCalls)
+}
+
+func TestModel_CheckMyAppsListReflectsLiveState(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		listStatusApps: []types.AppRuntimeStatus{
+			{
+				AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"},
+				State:   "running",
+			},
+			{
+				AppInfo:          types.AppInfo{AppID: "bravo", TemplateName: "Bravo", NeedsAttention: true},
+				State:            "needs_attention",
+				AttentionReasons: []string{"container_missing"},
+			},
+			{
+				AppInfo: types.AppInfo{AppID: "charlie", TemplateName: "Charlie"},
+				State:   "removed",
+			},
+		},
+	}
+	m := loadCheckAppsScreen(t, fake)
+
+	view := m.View()
+	assert.Contains(t, view, "alpha")
+	assert.Contains(t, view, "running")
+	assert.Contains(t, view, "bravo")
+	assert.Contains(t, view, "needs attention")
+	assert.Contains(t, view, "charlie")
+	assert.Contains(t, view, "removed")
+	assert.Equal(t, 1, fake.listStatusCalls)
+	assert.Equal(t, 0, fake.listCalls)
 }
 
 func TestModel_CheckMyAppsSelectionLoadsStatusAndNextActions(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+		listStatusApps: []types.AppRuntimeStatus{
+			{
+				AppInfo: types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+				State:   "needs_attention",
+			},
 		},
 		statuses: map[string]*types.AppStatus{
 			"uptime-kuma": {
@@ -92,8 +135,11 @@ func TestModel_CheckMyAppsRestartAndValidateUseEngine(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+		listStatusApps: []types.AppRuntimeStatus{
+			{
+				AppInfo: types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+				State:   "needs_attention",
+			},
 		},
 		statuses: map[string]*types.AppStatus{
 			"uptime-kuma": {
@@ -181,7 +227,7 @@ func TestModel_AppActionsViewRendersBusyErrorValidationAndFallbacks(t *testing.T
 
 		m := model{
 			busy: true,
-			apps: []types.AppInfo{{AppID: "vaultwarden"}},
+			apps: []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "vaultwarden"}}},
 		}
 
 		view := m.appActionsView()
@@ -196,7 +242,7 @@ func TestModel_AppActionsViewRendersBusyErrorValidationAndFallbacks(t *testing.T
 
 		m := model{
 			err:  errors.New("restart failed"),
-			apps: []types.AppInfo{{AppID: "vaultwarden"}},
+			apps: []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "vaultwarden"}}},
 		}
 
 		view := m.appActionsView()

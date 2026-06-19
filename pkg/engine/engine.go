@@ -26,6 +26,24 @@ type Engine interface {
 	// (defensive-copy semantics per golang-safety).
 	List(ctx context.Context) ([]types.AppInfo, error)
 
+	// ListStatus returns one [types.AppRuntimeStatus] per managed stack —
+	// the same set List reports — each carrying a LIVE runtime summary
+	// (running / needs_attention / removed) derived from Docker container
+	// inspection (PRD §18). It is the list-level companion to Status: the
+	// dashboard "Check my apps" list and `wdm apps list --json` use it so
+	// every entry reflects real container state rather than a hardcoded
+	// "running".
+	// It is deliberately lighter than per-app Status: it derives State
+	// from container inspection and the manifest alone, skipping the
+	// per-stack compose-config validation shell, and it never acquires the
+	// runtime lock (the read-only Status posture, PRD §26). Per-stack
+	// inspections run concurrently; output is sorted by app id so the order
+	// is deterministic regardless of completion order. A corrupt lock
+	// surfaces as a warning on its entry, not as a fatal error.
+	// Implementations MUST return a fresh slice on each call (defensive-copy
+	// semantics per golang-safety, matching List).
+	ListStatus(ctx context.Context) ([]types.AppRuntimeStatus, error)
+
 	// Status reports the operational state of a single managed stack
 	// identified by appID (PRD §18).
 	Status(ctx context.Context, appID string) (*types.AppStatus, error)

@@ -31,6 +31,7 @@ type fakeEngine struct {
 	removeResult        *types.RemoveResult
 	statusResult        *types.AppStatus
 	listResult          []types.AppInfo
+	listStatusResult    []types.AppRuntimeStatus
 	settings            *types.Settings
 	restartResult       *types.RestartResult
 	stopAllResult       *types.StopAllResult
@@ -79,6 +80,13 @@ func (f *fakeEngine) List(_ context.Context) ([]types.AppInfo, error) {
 		return nil, f.err
 	}
 	return f.listResult, nil
+}
+
+func (f *fakeEngine) ListStatus(_ context.Context) ([]types.AppRuntimeStatus, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.listStatusResult, nil
 }
 
 func (f *fakeEngine) Status(_ context.Context, appID string) (*types.AppStatus, error) {

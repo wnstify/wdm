@@ -268,6 +268,10 @@ func (c *crossoverCountingEngine) ApplySelfUpdate(
 
 func (c *crossoverCountingEngine) List(context.Context) ([]types.AppInfo, error) { return nil, nil }
 
+func (c *crossoverCountingEngine) ListStatus(context.Context) ([]types.AppRuntimeStatus, error) {
+	return nil, nil
+}
+
 func (c *crossoverCountingEngine) Status(context.Context, string) (*types.AppStatus, error) {
 	return nil, nil
 }

@@ -22,7 +22,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 | Command | Description |
 |---|---|
-| `wdm apps list` | List managed Docker Compose stacks. |
+| `wdm apps list` | List managed Docker Compose stacks with their live runtime state. |
 | `wdm apps install <app-id>` | Install and start a curated stack. |
 | `wdm apps status <app-id>` | Show the runtime status of a managed stack. |
 | `wdm apps logs <app-id>` | Stream redacted logs from a stack. |
@@ -136,6 +136,17 @@ Install a stack with a public domain and a catalog placeholder:
 
 ```sh
 wdm apps install nextcloud --domain cloud.example.com --set timezone=Europe/Berlin --yes
+```
+
+List every managed stack with its live runtime state. Plain output is one
+tab-separated `app_id<TAB>stack_path<TAB>state` line per stack; the `--json`
+envelope carries the same entries under the `apps` key, each with a live
+`state` (`running`, `stopped`, `needs_attention`, or `removed`) and `needs_attention`
+flag derived from real container state:
+
+```sh
+wdm apps list
+wdm apps list --json
 ```
 
 Get a stack's status as JSON for a script:

@@ -399,6 +399,62 @@ func TestProgressStepConstants_AreStableUniqueAndStringUsable(t *testing.T) {
 	fn(types.StepInstallRender, 42.5, "rendering")
 }
 
+// TestAppRuntimeStatus_JSONContract_PopulatedFields pins the
+// `wdm apps list --json` entry shape: the embedded AppInfo facts flatten
+// into the same object as the live state and attention reasons, so a
+// consumer reads app_id, needs_attention, and state side by side.
+func TestAppRuntimeStatus_JSONContract_PopulatedFields(t *testing.T) {
+	t.Parallel()
+
+	got := mustMarshalJSON(t, types.AppRuntimeStatus{
+		AppInfo: types.AppInfo{
+			AppID:          "uptime-kuma",
+			TemplateName:   "Uptime Kuma",
+			StackPath:      "/home/test/docker/uptime-kuma",
+			CatalogChannel: "stable",
+			CatalogVersion: "2026.06.01",
+			NeedsAttention: true,
+		},
+		State:            "needs_attention",
+		AttentionReasons: []string{"container_exited"},
+	})
+
+	assert.JSONEq(t, `{
+		"app_id":"uptime-kuma",
+		"template_name":"Uptime Kuma",
+		"stack_path":"/home/test/docker/uptime-kuma",
+		"catalog_channel":"stable",
+		"catalog_version":"2026.06.01",
+		"last_successful_operation":null,
+		"needs_attention":true,
+		"state":"needs_attention",
+		"attention_reasons":["container_exited"]
+	}`, got)
+}
+
+// TestAppRuntimeStatus_JSONContract_RunningOmitsAttentionReasons pins that a
+// running app reports needs_attention false and omits the empty reasons
+// list, so the JSON envelope stays clean for the healthy case.
+func TestAppRuntimeStatus_JSONContract_RunningOmitsAttentionReasons(t *testing.T) {
+	t.Parallel()
+
+	got := mustMarshalJSON(t, types.AppRuntimeStatus{
+		AppInfo: types.AppInfo{AppID: "vaultwarden", StackPath: "/home/test/docker/vaultwarden"},
+		State:   "running",
+	})
+
+	assert.JSONEq(t, `{
+		"app_id":"vaultwarden",
+		"template_name":"",
+		"stack_path":"/home/test/docker/vaultwarden",
+		"catalog_channel":"",
+		"catalog_version":"",
+		"last_successful_operation":null,
+		"needs_attention":false,
+		"state":"running"
+	}`, got)
+}
+
 func mustMarshalJSON(t *testing.T, v any) string {
 	t.Helper()
 	data, err := json.Marshal(v)

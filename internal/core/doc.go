@@ -12,6 +12,12 @@
 //     internal/state.ScanStacks) into []types.AppInfo. Corrupt.wdm.lock
 //     files surface as WARN-level slog entries on the engine's logger
 //     (PRD §26).
+//   - [Engine.ListStatus] returns the same stack set as List, each carrying
+//     a LIVE runtime summary derived from Docker container inspection
+//     (PRD §18). It is the lightweight list companion to Status: it skips
+//     the per-stack compose-config validation shell and never acquires the
+//     runtime lock, runs the per-stack inspects concurrently with a bounded
+//     pool, and sorts the result by app id for deterministic output.
 //   - [Engine.Settings] returns a defensive copy of the loaded settings.
 //   - [Engine.Close] is idempotent; it holds no resources directly, so it
 //     just marks the engine closed and subsequent calls fail with

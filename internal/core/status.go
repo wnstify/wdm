@@ -35,6 +35,18 @@ const staleRuntimeLockAge = 24 * time.Hour
 const (
 	statusStateRunning        = "running"
 	statusStateNeedsAttention = "needs_attention"
+	// statusStateStopped marks an app whose expected managed containers all
+	// EXIST but none are running — a cleanly stopped stack (e.g. after
+	// `docker compose stop`), distinct from "removed" (no container left) and
+	// from "needs_attention" (genuine trouble). It is a calm, off state:
+	// NeedsAttention is false and the alarmist down-state reasons
+	// (container_exited, port_mismatch) are suppressed because a stopped app
+	// is simply expected to be off and to bind no ports. This state is
+	// derived only by the read-only Status and ListStatus surfaces; the
+	// post-operation verification passes (install/update/restart/restore)
+	// never report it, because a down container right after those operations
+	// is genuine trouble, not a deliberate stop.
+	statusStateStopped = "stopped"
 	// statusStateCompleted marks a service that ran to a successful
 	// exit and stays down by design — a one-shot init container that
 	// exits 0 rather than staying up. It is reported instead of
@@ -157,7 +169,88 @@ func (e *Engine) Status(ctx context.Context, appID string) (*types.AppStatus, er
 		"all managed services are running",
 		"status checks found issues that need attention",
 	)
+	applyStoppedState(status, expectedStatusServices(lock), completedServiceSet(lock.CompletedServices), managed)
 	return status, nil
+}
+
+// runningManagedCount reports how many of the managed containers are
+// currently running. It is the shared running-detection primitive behind
+// both the "stopped" classification (read-only status surfaces) and the
+// StopAll plan filter (running-only targeting). A restarting container is
+// counted as running: it is actively trying to come up, so it is neither a
+// cleanly stopped container nor a valid skip target for stop-all.
+func runningManagedCount(managed map[string]docker.ContainerInfo) int {
+	running := 0
+	for _, container := range managed {
+		if container.State.Running || container.State.Restarting {
+			running++
+		}
+	}
+	return running
+}
+
+// isFullyStopped reports whether every expected managed container EXISTS
+// but none is running or restarting — a cleanly stopped stack. It is false
+// when no container exists at all (that is "removed"/missing territory),
+// when at least one container is running, or when any container is in a
+// restart loop (a failure signal that keeps the app needs-attention, not
+// stopped). An empty expected set is treated as not stopped so a manifest
+// without image pins never masquerades as a deliberate stop. Container
+// presence is judged against the expected service set: every expected
+// service must have a matched managed container.
+//
+// A stack that includes any completed-by-design service (a one-shot init
+// container the signed catalog lists in completed_services) is NOT treated as
+// stopped: those services are expected to be down even while the app runs, so
+// their down state is governed by the completed-service fusion, not by the
+// stopped classification. Reserving stopped for ordinary long-running stacks
+// keeps the completed-service signal (a one-shot that exited abnormally)
+// intact.
+func isFullyStopped(
+	expectedServices []string,
+	completed map[string]struct{},
+	managed map[string]docker.ContainerInfo,
+) bool {
+	if len(expectedServices) == 0 || len(managed) == 0 {
+		return false
+	}
+	if len(completed) > 0 {
+		return false
+	}
+	if runningManagedCount(managed) > 0 {
+		return false
+	}
+	for _, service := range expectedServices {
+		if _, ok := managed[service]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// applyStoppedState reclassifies a finalized status as the calm "stopped"
+// state when the app is fully stopped (every expected managed container
+// present, none running). It clears NeedsAttention and suppresses the
+// alarmist down-state reasons (container_exited, port_mismatch) that a
+// stopped app trips by design: it is expected to be off and to bind no
+// ports. Any other reason (e.g. last_operation_failed) is dropped too — a
+// fully stopped stack is reported as simply off. It is the shared read-only
+// reclassifier used by both Engine.Status and Engine.ListStatus so the
+// detail and list surfaces agree; the post-operation verification passes do
+// not call it.
+func applyStoppedState(
+	status *types.AppStatus,
+	expectedServices []string,
+	completed map[string]struct{},
+	managed map[string]docker.ContainerInfo,
+) {
+	if !isFullyStopped(expectedServices, completed, managed) {
+		return
+	}
+	status.State = statusStateStopped
+	status.NeedsAttention = false
+	status.AttentionReasons = nil
+	status.Message = "all managed containers are stopped"
 }
 
 // resolveManagedStack maps appID to its managed stack directory and
