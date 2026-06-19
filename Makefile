@@ -4,7 +4,9 @@ BIN_DIR ?= bin
 CMD_DIR ?= ./cmd/wdm
 GO_E2E_TAG ?= docker_e2e
 
-.PHONY: build build-linux test test-race coverage coverage-check catalog-freshness catalog-freshness-test release-notes-test e2e lint vet fmt tidy clean help
+CATALOG_DIR ?= $(if $(XDG_DATA_HOME),$(XDG_DATA_HOME),$(HOME)/.local/share)/wdm/catalogs
+
+.PHONY: build build-linux test test-race coverage coverage-check catalog-freshness catalog-freshness-test release-notes-test dev-catalog-seed e2e lint vet fmt tidy clean help
 
 build: ## Build local binary
 	$(GO) build -o $(BIN_DIR)/$(APP_NAME) $(CMD_DIR)
@@ -32,6 +34,19 @@ catalog-freshness-test: ## Test the catalog freshness guard
 
 release-notes-test: ## Test release notes extraction
 	sh scripts/extract-release-notes_test.sh
+
+dev-catalog-seed: ## Seed the in-repo catalog into the local data dir for dev testing (UNVERIFIED; FORCE=1 to overwrite)
+	@if [ -f "$(CATALOG_DIR)/stable/catalog.yaml" ] && [ -z "$(FORCE)" ]; then \
+		echo "Refusing: a catalog already exists at $(CATALOG_DIR)/stable/catalog.yaml."; \
+		echo "Will not overwrite a real or verified catalog. Re-run with FORCE=1 to replace it."; \
+		exit 1; \
+	fi
+	@mkdir -p "$(CATALOG_DIR)"
+	@rm -rf "$(CATALOG_DIR)/stable" "$(CATALOG_DIR)/templates"
+	@cp -R catalog/stable "$(CATALOG_DIR)/stable"
+	@cp -R templates "$(CATALOG_DIR)/templates"
+	@echo "Seeded UNVERIFIED dev catalog into $(CATALOG_DIR) (stable/ + templates/)."
+	@echo "For local development testing only. Production installs use the signed 'wdm catalog update'."
 
 e2e: ## Run Docker e2e tests
 	$(GO) test -tags $(GO_E2E_TAG) ./tests/e2e/...
