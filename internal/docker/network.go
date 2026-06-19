@@ -31,7 +31,37 @@ type NetworkSpec struct {
 	// `docker network create`. It is only meaningful alongside a Subnet and
 	// must fall within it. Empty lets Docker pick the subnet's first address.
 	Gateway string
+
+	// AppID, when set, stamps the wdm ownership labels (PRD §10) onto a
+	// newly-created network: `--label wdm.managed=true --label wdm.app=<AppID>`.
+	// It must be the app's canonical catalog ID. Empty leaves the create
+	// command label-free. Labels are applied only to networks wdm creates here;
+	// a network reached through the EnsureNetwork "already exists" path is NOT
+	// re-labeled (an accepted limitation — re-stamping existing networks is the
+	// deferred label-sweep's job, out of scope for the create path).
+	AppID string
 }
+
+// managedNetworkLabel and appNetworkLabelPrefix are the PRD §10 ownership
+// labels stamped onto wdm-created networks. They are emitted in this fixed
+// order (`wdm.managed=true` then `wdm.app=<appID>`) so the create argv is
+// deterministic and the last-gate validator can match the pair positionally.
+const (
+	managedNetworkLabel   = "wdm.managed=true"
+	appNetworkLabelPrefix = "wdm.app="
+)
+
+// managedNetworkLabelFilter and managedNetworkListFormat are the fixed tokens
+// of the label-filtered managed-network list (`network ls --filter
+// label=wdm.managed=true --format {{.Name}}`). They are constants so the
+// builder and the last-gate validator match the exact same literals — the list
+// is the discovery half of the self-uninstall network sweep (PRD §39), finding
+// every wdm.managed=true network including ones orphaned by an app the operator
+// already deleted.
+const (
+	managedNetworkLabelFilter = "label=" + managedNetworkLabel
+	managedNetworkListFormat  = "{{.Name}}"
+)
 
 // EnsureNetwork ensures one network exists before compose deployment.
 // If it already exists, the internal flag must match exactly and, when the spec
@@ -99,6 +129,7 @@ func EnsureNetworkReport(ctx context.Context, client Client, network NetworkSpec
 			internal: normalized.Internal,
 			subnet:   normalized.Subnet,
 			gateway:  normalized.Gateway,
+			appID:    normalized.AppID,
 		},
 	)
 	if createErr != nil {
@@ -130,6 +161,85 @@ func RemoveNetwork(ctx context.Context, client Client, networkName string) error
 
 	_, err = client.Run(ctx, removeNetworkInvocation{name: name})
 	return err
+}
+
+// RemoveNetworkIfPresent removes a single network by name like [RemoveNetwork]
+// but treats an already-absent network as success (idempotent). It exists for
+// the self-uninstall best-effort network cleanup (PRD §39), where a network the
+// teardown already dropped — or one a previous run removed — must not surface as
+// an error. A genuine removal failure (for example a network still holding
+// endpoints) propagates unchanged so the caller can record it and continue. The
+// not-found tolerance is local to this seam; [RemoveNetwork]'s other callers
+// keep failing closed on every error.
+func RemoveNetworkIfPresent(ctx context.Context, client Client, networkName string) error {
+	if client == nil {
+		return types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	name, err := validateNetworkName(networkName)
+	if err != nil {
+		return err
+	}
+
+	res, err := client.Run(ctx, removeNetworkInvocation{name: name})
+	if err == nil {
+		return nil
+	}
+	if isMissingNetworkError(res, err, name) {
+		return nil
+	}
+	return err
+}
+
+// ListManagedNetworks returns the names of every Docker network carrying the
+// `wdm.managed=true` label, including ones orphaned by an app whose stack the
+// operator already deleted (its compose file is gone, so the compose-derived
+// network discovery can no longer find them). It is the discovery half of the
+// self-uninstall network sweep (PRD §39): the names feed the same best-effort
+// [RemoveNetworkIfPresent] cleanup, so a leftover labeled network no longer
+// survives an uninstall. The list is read through a strictly-allowlisted
+// `network ls --filter label=wdm.managed=true --format {{.Name}}` invocation;
+// names are parsed one per line, trimmed, with blank lines dropped. A daemon
+// failure propagates so the caller can treat it as a non-fatal cleanup
+// degradation and continue.
+func ListManagedNetworks(ctx context.Context, client Client) ([]string, error) {
+	if client == nil {
+		return nil, types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	res, err := client.Run(ctx, managedNetworkListInvocation{})
+	if err != nil {
+		return nil, err
+	}
+
+	return parseManagedNetworkNames(res.Stdout), nil
+}
+
+// parseManagedNetworkNames splits the `network ls --format {{.Name}}` output
+// into one network name per line, trimming surrounding whitespace and dropping
+// blank lines. Docker emits one name per line with a trailing newline; an empty
+// output (no managed networks) yields an empty slice. Unlike the strict inspect
+// parsers this tolerates blank lines rather than failing closed, because the
+// list only feeds the best-effort sweep — each name is still re-validated by
+// the strict network-name validator before any `network rm` reaches the daemon.
+func parseManagedNetworkNames(stdout string) []string {
+	names := []string{}
+	for line := range strings.Lines(stdout) {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // verifyExistingNetworkSubnet refuses an existing network whose configured
@@ -181,6 +291,11 @@ type networkCreateInvocation struct {
 	internal bool
 	subnet   string
 	gateway  string
+
+	// appID, when non-empty, stamps the PRD §10 ownership labels onto the
+	// created network. It is the app's canonical catalog ID, validated by the
+	// same charset the catalog schema enforces.
+	appID string
 }
 
 func (networkCreateInvocation) isDockerInvocation() {}
@@ -193,6 +308,15 @@ type removeNetworkInvocation struct {
 
 func (removeNetworkInvocation) isDockerInvocation() {}
 
+// managedNetworkListInvocation maps to the label-filtered managed-network list
+// (`network ls --filter label=wdm.managed=true --format {{.Name}}`) so
+// [ListManagedNetworks] can discover every wdm.managed=true network, including
+// orphaned ones, for the self-uninstall sweep (PRD §39). It carries no fields:
+// the filter and format are fixed literals.
+type managedNetworkListInvocation struct{}
+
+func (managedNetworkListInvocation) isDockerInvocation() {}
+
 func validateNetworkSpec(network NetworkSpec) (NetworkSpec, error) {
 	name, err := validateNetworkName(network.Name)
 	if err != nil {
@@ -204,12 +328,43 @@ func validateNetworkSpec(network NetworkSpec) (NetworkSpec, error) {
 		return NetworkSpec{}, err
 	}
 
+	appID, err := validateNetworkAppID(network.AppID)
+	if err != nil {
+		return NetworkSpec{}, err
+	}
+
 	return NetworkSpec{
 		Name:     name,
 		Internal: network.Internal,
 		Subnet:   subnet,
 		Gateway:  gateway,
+		AppID:    appID,
 	}, nil
+}
+
+// networkAppIDPattern mirrors the catalog app_id schema (PRD §9, §17):
+// lowercase ASCII letter first, then lowercase letters, digits, or hyphen,
+// length 1-63. It is the charset stamped into the `wdm.app=<appID>` label, so
+// only a well-formed app ID can ever reach the create argv or the daemon.
+var networkAppIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+// validateNetworkAppID accepts an empty app ID (the create command is then
+// label-free) and otherwise requires the canonical catalog app_id charset. The
+// labels are stamped from this value, so validating it here keeps a malformed
+// or injection-bearing ID out of the argv (PRD §10, §12).
+func validateNetworkAppID(rawAppID string) (string, error) {
+	if rawAppID == "" {
+		return "", nil
+	}
+	if !networkAppIDPattern.MatchString(rawAppID) {
+		return "", types.WrapError(
+			types.ErrCodeUsageValidation,
+			"network app id is invalid",
+			"use the catalog app_id: lowercase ascii starting with a letter, then lowercase letters/digits/hyphen, length 1-63",
+			fmt.Errorf("network app id %q does not match allowed format", rawAppID),
+		)
+	}
+	return rawAppID, nil
 }
 
 // validateNetworkAddressing validates the optional static-addressing fields: a

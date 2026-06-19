@@ -22,12 +22,13 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 | Command | Description |
 |---|---|
-| `wdm apps list` | List managed Docker Compose stacks. |
+| `wdm apps list` | List managed Docker Compose stacks with their live runtime state. |
 | `wdm apps install <app-id>` | Install and start a curated stack. |
 | `wdm apps status <app-id>` | Show the runtime status of a managed stack. |
 | `wdm apps logs <app-id>` | Stream redacted logs from a stack. |
 | `wdm apps update <app-id>` | Update a stack to the current catalog version. |
 | `wdm apps restart <app-id>` | Restart a stack's containers in place. |
+| `wdm apps stop-all` | Stop every running managed stack at once, preserving all data. |
 | `wdm apps remove <app-id>` | Remove a stack, keeping its files and volumes. |
 | `wdm apps delete <app-id>` | Permanently delete a stack's files and directory. |
 | `wdm apps validate <app-id>` | Validate a stack's Docker Compose configuration. |
@@ -59,6 +60,13 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 - `--yes` — accept safe confirmations.
 - `--stack-path <path>` — override the default stack path.
 
+**`wdm apps stop-all`**
+
+- Runs `docker compose stop` against every managed stack that has at least one running container. Containers stop but stay defined; networks, named volumes, and all data are preserved (this is not `down`).
+- Targets only running apps: stacks that are already stopped are skipped and reported as "already stopped". When no app is running, it prints "No running apps to stop." and exits `0` without prompting.
+- Continues on error: every targeted (running) stack is attempted even if some fail, and the command exits nonzero when any targeted stack failed.
+- `--yes` — accept the safe stop confirmation without prompting.
+
 **`wdm apps remove <app-id>`**
 
 - `--yes` — accept safe confirmations.
@@ -68,6 +76,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 - `--confirm-name <app-id>` — required. Type the exact app id to confirm deletion.
 - `--stack-path <path>` — override the default stack path.
+- After `docker compose down`, and before the stack files are deleted, `delete` removes the app's `wdm`-created Docker networks best-effort. Named volumes and all data are still **kept** (never `down -v`). A network already gone counts as removed; one that cannot be removed (for example still holding an endpoint) is reported with the exact `docker network rm <name>` command and never aborts the deletion. Reinstall recreates the networks. Unlike `delete`, `remove` leaves the networks in place.
 
 **`wdm apps backups restore <app-id> <snapshot>`**
 
@@ -123,12 +132,54 @@ Inspect and clear the global runtime lock that guards state-changing operations.
 
 - `wdm lock clear` — `--yes`.
 
+### Resources
+
+View or change a managed app's per-service resource limits. This is a top-level command, not under `wdm apps`.
+
+| Command | Description |
+|---|---|
+| `wdm resources <app-id>` | View an app's resource limits, or change them with the limit flags below. |
+
+- With **no limit flags**, `resources` prints the read-only current-values view: for each adjustable service, the memory, CPU, and PID limits currently in effect alongside the catalog's allowed bands (memory and CPU show `min` / `recommended` / `max`; PIDs show `default` / `max`). A service the catalog forbids overriding is shown marked `(not adjustable)`.
+- With one or more limit flags, `resources` changes the selected service's limits. `wdm` validates the requested values against the catalog bands, backs up the config, rewrites only the resource variables in the stack's `.env` in place (every secret and unrelated value is preserved), validates the resulting Compose configuration, and recreates the container (a brief downtime). Limits left unset are kept as-is; an explicit empty memory/CPU value or a zero PID value is rejected. The new limits are stored in the `.env`, so they survive catalog updates.
+- `--service <name>` — service whose limits change. Defaults to the app's primary (first adjustable) service.
+- `--memory <value>` — new memory limit in Docker form, for example `1g`.
+- `--cpus <value>` — new CPU quota as a decimal string, for example `1.5`.
+- `--pids <n>` — new PID limit.
+- `--yes` — accept the recreate confirmation without prompting.
+- `--stack-path <path>` — assert the managed stack path being reconfigured. It is a fail-closed cross-check against the resolved app, never an alternate path.
+
+### Uninstall
+
+Remove `wdm` itself and tear down every managed app. This is a top-level command, not under `wdm apps`.
+
+| Command | Description |
+|---|---|
+| `wdm uninstall` | Tear down every managed app and remove `wdm`'s own footprint. |
+
+- Runs `docker compose down --rmi all` against every managed stack, removing containers and the stack's images. After every app is down it also removes the `wdm`-created Docker networks (the ones `wdm` pre-creates at install and the compose declares `external`, so `down` never removes them), then sweeps every remaining network carrying the `wdm.managed=true` label — including ones orphaned by an app you deleted earlier (whose compose file is gone) — leaving Docker clean. It then removes `wdm`'s own footprint: the config, data, and state directories and the `wdm` binary (and its `.previous` sibling).
+- Named volumes and every `~/docker/<app>/` stack directory are **kept**. This is never `docker compose down -v`; no user data is deleted. Scope is wdm-managed apps and wdm's footprint only — never a system-wide Docker prune.
+- Network cleanup is best-effort: a network already gone counts as removed, and a network that cannot be removed is left in place and reported with the exact `docker network rm <name>` command to run manually. It never aborts the uninstall. Networks created before label support (pre-`wdm.managed=true`) are not matched by the sweep and must be removed manually.
+- Fail-closed: if any stack fails to tear down it aborts before removing anything, leaves `wdm` installed, lists the stacks that failed, and exits nonzero. On full success the `wdm` binary is already gone and the command exits `0`.
+- `--yes` — accept the destructive uninstall confirmation without prompting. Without a terminal to prompt on and without `--yes`, the uninstall is declined.
+
 ## Examples
 
 Install a stack with a public domain and a catalog placeholder:
 
 ```sh
 wdm apps install nextcloud --domain cloud.example.com --set timezone=Europe/Berlin --yes
+```
+
+List every managed stack with its live runtime state. Plain output is one
+tab-separated `app_id<TAB>stack_path<TAB>state` line per stack; the `--json`
+envelope carries the same entries under the `apps` key, each with a live
+`state` (`running`, `stopped`, `needs_attention`, or `removed`) and `needs_attention`
+flag derived from real container state:
+
+```sh
+wdm apps list
+wdm apps list --json
 ```
 
 Get a stack's status as JSON for a script:
@@ -156,7 +207,25 @@ wdm apps remove nextcloud --yes
 wdm apps delete nextcloud --confirm-name nextcloud
 ```
 
-`remove` stops a stack and leaves its files and volumes in place, so you can reinstall or restart it. `delete` permanently removes the stack's files and directory and requires `--confirm-name <app-id>`.
+`remove` stops a stack and leaves its files, volumes, and networks in place, so you can reinstall or restart it. `delete` permanently removes the stack's files and directory, removes the app's `wdm`-created Docker networks best-effort (data and named volumes are still kept), and requires `--confirm-name <app-id>`.
+
+View an app's current resource limits and the catalog's allowed bands:
+
+```sh
+wdm resources nextcloud
+```
+
+Raise an app's memory and CPU limits, leaving the PID limit unchanged, and skip the recreate prompt:
+
+```sh
+wdm resources nextcloud --memory 2g --cpus 2 --yes
+```
+
+Uninstall `wdm` and tear down every managed app, keeping all volumes and stack data:
+
+```sh
+wdm uninstall --yes
+```
 
 ## Exit codes
 

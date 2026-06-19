@@ -243,7 +243,7 @@ func (m model) installCatalogView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -262,7 +262,7 @@ func (m model) installFormView() string {
 			b.WriteByte('\n')
 		}
 		b.WriteByte('\n')
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -307,7 +307,7 @@ func (m model) installFormView() string {
 	b.WriteByte('\n')
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -385,7 +385,7 @@ func (m model) installResultView() string {
 
 	if m.installResult == nil {
 		b.WriteString("Install completed.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -440,7 +440,7 @@ func (m model) installResultView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

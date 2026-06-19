@@ -21,6 +21,13 @@
 //     UpdateRequest/Result,
 //     RemoveRequest/Result — lifecycle method payloads (PRD §17, §19, §20)
 //   - RestartRequest/Result,
+//     StopAllRequest/Result, StoppedApp — batch "stop all apps"
+//     payloads (issue #27)
+//   - ReconfigureRequest/Result,
+//     ResourceSettings, ResourceServiceSettings — per-app resource
+//     management payloads (issue #28)
+//   - UninstallRequest/Result, TornDownApp — self-uninstall payloads
+//     (PRD §39, issue #29)
 //     ValidationResult,
 //     BackupInfo,
 //     RestoreBackupRequest/Result,
@@ -29,6 +36,7 @@
 //     DeleteRequest/Result,
 //     RuntimeLockStatus — engine-gap payloads (PRD §18, §19,
 //   - ConfirmationKindDeleteDestructive — the DeleteApp Confirmation.Kind (PRD §19)
+//   - ConfirmationKindUninstallDestructive — the Uninstall Confirmation.Kind (PRD §39)
 //   - CatalogUpdateQuery/Status,
 //     CatalogUpdateRequest/Result,
 //     CatalogChange,
@@ -51,7 +59,8 @@
 //   - LogsRequest, LogLine — Engine.Logs streaming payloads (PRD §24)
 //   - Progress,
 //     StepInstall* / StepUpdate* /
-//     StepRemove* / StepRestart* /
+//     StepRemove* / StepRestart* / StepReconfigure* /
+//     StepStopAll* / StepUninstall* /
 //     StepRestore* / StepDelete* /
 //     StepCatalogUpdate* /
 //     StepSelfUpdate*

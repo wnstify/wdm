@@ -30,6 +30,10 @@ Repository and release credentials are stored in GitHub as repository or organiz
 
 Rotate a project secret when it may have been exposed, when the maintainer account or repository settings change in a way that affects access, or when the secret's purpose changes. Release signing key rotation requires updating the GitHub Actions secret and committing the matching public key in `internal/release/signing_public_key.pem` with the next signed release.
 
+## Destructive Operations
+
+`wdm`'s destructive operations are destructive-but-fail-closed and never delete user data. `wdm uninstall` tears down every managed app with `docker compose down --rmi all`, removes the `wdm`-created Docker networks best-effort (declared `external` in the rendered compose, so `down` never removes them; an unremovable one is reported with the manual `docker network rm` command and never aborts the run), and then removes `wdm`'s own footprint (config, data, and state directories and the binary). It never runs `docker compose down -v`: named volumes and every `~/docker/<app>/` stack directory are preserved. Its scope is wdm-managed apps and wdm's own footprint only, never a system-wide Docker prune. If any stack fails to tear down, the operation aborts before removing any footprint, leaves `wdm` installed, and reports the failed stacks. The same no-`-v`, data-preserving guarantee applies to `wdm apps remove` and `wdm apps delete`: neither ever deletes named volumes or on-disk data. `wdm apps delete` additionally removes the app's `wdm`-created Docker networks best-effort (an unremovable one is reported with the manual `docker network rm` command and never aborts the deletion); `wdm apps remove` leaves the networks in place.
+
 ## Dependency and Static-Analysis Findings
 
 The project treats Software Composition Analysis (SCA), Static Application Security Testing (SAST), and license findings as release-blocking inputs.

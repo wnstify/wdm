@@ -488,6 +488,69 @@ func TestEnsureNetwork_ExistingSubnetMatchSkipsCreate(t *testing.T) {
 	}
 }
 
+// TestEnsureNetwork_CreateThreadsAppIDIntoLabels proves a spec carrying an app
+// ID stamps that ID into the create invocation so the builder emits the PRD §10
+// ownership labels on the newly-created network.
+func TestEnsureNetwork_CreateThreadsAppIDIntoLabels(t *testing.T) {
+	t.Parallel()
+
+	runCalls := 0
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+			runCalls++
+			switch runCalls {
+			case 1:
+				return CommandResult{
+					Stderr: "Error response from daemon: network wdm_default not found",
+				}, errors.New("exit status 1")
+			case 2:
+				createInv, ok := inv.(networkCreateInvocation)
+				require.True(t, ok)
+				require.Equal(t, "wdm_default", createInv.name)
+				require.Equal(t, "n8n", createInv.appID)
+				return CommandResult{}, nil
+			default:
+				t.Fatalf("unexpected run call %d", runCalls)
+				return CommandResult{}, nil
+			}
+		},
+	}
+
+	created, err := EnsureNetworkReport(
+		t.Context(),
+		fake,
+		NetworkSpec{Name: "wdm_default", AppID: "n8n"},
+	)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Len(t, fake.calls, 2)
+}
+
+// TestEnsureNetwork_InvalidAppIDRefusesBeforeDaemon proves a malformed app ID
+// (here, an injection attempt) is refused by spec validation before any daemon
+// call — the label value can never reach the create argv.
+func TestEnsureNetwork_InvalidAppIDRefusesBeforeDaemon(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{
+		runFn: func(context.Context, Invocation) (CommandResult, error) {
+			t.Fatal("no daemon call may run when the app id is invalid")
+			return CommandResult{}, nil
+		},
+	}
+
+	_, err := EnsureNetworkReport(
+		t.Context(),
+		fake,
+		NetworkSpec{Name: "wdm_default", AppID: "n8n; reboot"},
+	)
+	require.Error(t, err)
+	var typedErr *types.Error
+	require.ErrorAs(t, err, &typedErr)
+	require.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
+	require.Empty(t, fake.calls)
+}
+
 func TestEnsureNetwork_ExistingSubnetMismatchReturnsUsageValidation(t *testing.T) {
 	t.Parallel()
 
@@ -785,6 +848,100 @@ func TestRemoveNetwork_PropagatesCommandError(t *testing.T) {
 	require.Len(t, fake.calls, 1)
 }
 
+func TestRemoveNetworkIfPresent_RejectsNilClient(t *testing.T) {
+	t.Parallel()
+
+	err := RemoveNetworkIfPresent(t.Context(), nil, "wdm_default")
+	requireUsageValidationError(t, err)
+}
+
+func TestRemoveNetworkIfPresent_RejectsInvalidNameBeforeRunningClient(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{}
+	err := RemoveNetworkIfPresent(t.Context(), fake, "Wdm/Default")
+	requireUsageValidationError(t, err)
+	require.Empty(t, fake.calls)
+}
+
+func TestRemoveNetworkIfPresent_RemovesNamedNetwork(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+			removeInv, ok := inv.(removeNetworkInvocation)
+			require.True(t, ok)
+			require.Equal(t, "wdm_default", removeInv.name)
+			return CommandResult{}, nil
+		},
+	}
+
+	err := RemoveNetworkIfPresent(t.Context(), fake, "wdm_default")
+	require.NoError(t, err)
+	require.Len(t, fake.calls, 1)
+}
+
+// A not-found result is tolerated as success (idempotent) on both the classic
+// and modern daemon phrasings, on stderr and on the error string.
+func TestRemoveNetworkIfPresent_ToleratesMissingNetwork(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		result CommandResult
+		err    error
+	}{
+		{
+			name:   "classic stderr phrasing",
+			result: CommandResult{Stderr: "Error: No such network: wdm_default"},
+			err:    errors.New("exit status 1"),
+		},
+		{
+			name:   "modern stderr phrasing",
+			result: CommandResult{Stderr: "Error response from daemon: network wdm_default not found"},
+			err:    errors.New("exit status 1"),
+		},
+		{
+			name:   "phrasing on error string only",
+			result: CommandResult{},
+			err:    errors.New("no such network: wdm_default"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := &ensureNetworkFakeClient{
+				runFn: func(_ context.Context, _ Invocation) (CommandResult, error) {
+					return tt.result, tt.err
+				},
+			}
+
+			err := RemoveNetworkIfPresent(t.Context(), fake, "wdm_default")
+			require.NoError(t, err)
+			require.Len(t, fake.calls, 1)
+		})
+	}
+}
+
+// A removal failure that is NOT a missing-network condition propagates so the
+// caller can record it.
+func TestRemoveNetworkIfPresent_PropagatesOtherFailures(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("network wdm_default has active endpoints")
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, _ Invocation) (CommandResult, error) {
+			return CommandResult{Stderr: "Error response from daemon: error while removing network: network wdm_default id ... has active endpoints"}, boom
+		},
+	}
+
+	err := RemoveNetworkIfPresent(t.Context(), fake, "wdm_default")
+	require.Same(t, boom, err)
+	require.Len(t, fake.calls, 1)
+}
+
 func TestRun_NetworkInvocationsBuildExactArgv(t *testing.T) {
 	t.Parallel()
 
@@ -839,6 +996,38 @@ func TestRun_NetworkInvocationsBuildExactArgv(t *testing.T) {
 				gateway:  "10.8.0.1",
 			},
 			wantArg: []string{"network", "create", "--internal", "--subnet", "10.8.0.0/24", "--gateway", "10.8.0.1", "wg"},
+		},
+		{
+			name: "create with ownership labels",
+			inv: networkCreateInvocation{
+				name:  "wdm_default",
+				appID: "n8n",
+			},
+			wantArg: []string{
+				"network", "create",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=n8n",
+				"wdm_default",
+			},
+		},
+		{
+			name: "create internal with subnet, gateway, and labels",
+			inv: networkCreateInvocation{
+				name:     "wg",
+				internal: true,
+				subnet:   "10.8.0.0/24",
+				gateway:  "10.8.0.1",
+				appID:    "wireguard",
+			},
+			wantArg: []string{
+				"network", "create",
+				"--internal",
+				"--subnet", "10.8.0.0/24",
+				"--gateway", "10.8.0.1",
+				"--label", "wdm.managed=true",
+				"--label", "wdm.app=wireguard",
+				"wg",
+			},
 		},
 		{
 			name: "remove",
@@ -936,7 +1125,34 @@ func TestValidateCommandSpec_AllowsNetworkShapes(t *testing.T) {
 		argv: []string{"network", "create", "--internal", "--subnet", "10.8.0.0/24", "--gateway", "10.8.0.1", "wg"},
 	}))
 	require.NoError(t, validateCommandSpec(commandSpec{
+		argv: []string{
+			"network", "create",
+			"--label", "wdm.managed=true",
+			"--label", "wdm.app=n8n",
+			"wdm_default",
+		},
+	}))
+	require.NoError(t, validateCommandSpec(commandSpec{
+		argv: []string{
+			"network", "create",
+			"--internal",
+			"--subnet", "10.8.0.0/24",
+			"--gateway", "10.8.0.1",
+			"--label", "wdm.managed=true",
+			"--label", "wdm.app=wireguard",
+			"wg",
+		},
+	}))
+	require.NoError(t, validateCommandSpec(commandSpec{
 		argv: []string{"network", "rm", "wdm_default"},
+	}))
+	// The managed-network sweep list: the only allowlisted `network ls` shape.
+	require.NoError(t, validateCommandSpec(commandSpec{
+		argv: []string{
+			"network", "ls",
+			"--filter", "label=wdm.managed=true",
+			"--format", "{{.Name}}",
+		},
 	}))
 }
 
@@ -1032,6 +1248,26 @@ func TestValidateCommandSpec_RejectsUnsafeNetworkShapes(t *testing.T) {
 			argv: []string{"network", "ls"},
 		},
 		{
+			name: "ls with different filter label",
+			argv: []string{"network", "ls", "--filter", "label=wdm.app=n8n", "--format", "{{.Name}}"},
+		},
+		{
+			name: "ls with different format",
+			argv: []string{"network", "ls", "--filter", "label=wdm.managed=true", "--format", "{{.ID}}"},
+		},
+		{
+			name: "ls without format suffix",
+			argv: []string{"network", "ls", "--filter", "label=wdm.managed=true"},
+		},
+		{
+			name: "ls managed shape with trailing flag",
+			argv: []string{"network", "ls", "--filter", "label=wdm.managed=true", "--format", "{{.Name}}", "--quiet"},
+		},
+		{
+			name: "ls with quiet flag instead of filter",
+			argv: []string{"network", "ls", "--quiet"},
+		},
+		{
 			name: "network remove with extra arg",
 			argv: []string{"network", "rm", "wdm_default", "wdm_other"},
 		},
@@ -1067,6 +1303,102 @@ func TestValidateCommandSpec_RejectsUnsafeNetworkShapes(t *testing.T) {
 
 			err := validateCommandSpec(commandSpec{argv: tt.argv})
 			requireUsageValidationError(t, err)
+		})
+	}
+}
+
+func TestBuildManagedNetworkListCommand_BuildsExactArgv(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildManagedNetworkListCommand()
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"network", "ls",
+		"--filter", "label=wdm.managed=true",
+		"--format", "{{.Name}}",
+	}, cmd.argv)
+}
+
+func TestListManagedNetworks_RejectsNilClient(t *testing.T) {
+	t.Parallel()
+
+	names, err := ListManagedNetworks(t.Context(), nil)
+	requireUsageValidationError(t, err)
+	require.Nil(t, names)
+}
+
+func TestListManagedNetworks_RunsExactInvocationAndParsesNames(t *testing.T) {
+	t.Parallel()
+
+	fake := &ensureNetworkFakeClient{
+		runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+			_, ok := inv.(managedNetworkListInvocation)
+			require.True(t, ok)
+			return CommandResult{Stdout: "wdm_default\nwdm_proxy\n"}, nil
+		},
+	}
+
+	names, err := ListManagedNetworks(t.Context(), fake)
+	require.NoError(t, err)
+	require.Equal(t, []string{"wdm_default", "wdm_proxy"}, names)
+	require.Len(t, fake.calls, 1)
+}
+
+func TestListManagedNetworks_PropagatesCommandError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("docker ls failed")
+	fake := &ensureNetworkFakeClient{
+		runFn: func(context.Context, Invocation) (CommandResult, error) {
+			return CommandResult{}, boom
+		},
+	}
+
+	names, err := ListManagedNetworks(t.Context(), fake)
+	require.Same(t, boom, err)
+	require.Nil(t, names)
+}
+
+func TestParseManagedNetworkNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		stdout   string
+		expected []string
+	}{
+		{
+			name:     "empty output",
+			stdout:   "",
+			expected: []string{},
+		},
+		{
+			name:     "single name with trailing newline",
+			stdout:   "wdm_default\n",
+			expected: []string{"wdm_default"},
+		},
+		{
+			name:     "multiple names",
+			stdout:   "wdm_default\nwdm_proxy\nwdm_orphan\n",
+			expected: []string{"wdm_default", "wdm_proxy", "wdm_orphan"},
+		},
+		{
+			name:     "no trailing newline",
+			stdout:   "wdm_default\nwdm_proxy",
+			expected: []string{"wdm_default", "wdm_proxy"},
+		},
+		{
+			name:     "blank lines and surrounding whitespace dropped",
+			stdout:   "  wdm_default \n\n\twdm_proxy\t\n  \n",
+			expected: []string{"wdm_default", "wdm_proxy"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tt.expected, parseManagedNetworkNames(tt.stdout))
 		})
 	}
 }

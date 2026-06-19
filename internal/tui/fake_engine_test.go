@@ -12,12 +12,21 @@ type fakeEngine struct {
 	listApps               []types.AppInfo
 	listErr                error
 	listCalls              int
+	listStatusApps         []types.AppRuntimeStatus
+	listStatusErr          error
+	listStatusCalls        int
 	statuses               map[string]*types.AppStatus
 	statusErr              error
 	statusCalls            []string
 	restartResult          *types.RestartResult
 	restartErr             error
 	restartCalls           []string
+	stopAllResult          *types.StopAllResult
+	stopAllErr             error
+	stopAllCalls           int
+	uninstallResult        *types.UninstallResult
+	uninstallErr           error
+	uninstallCalls         int
 	validationResult       *types.ValidationResult
 	validationErr          error
 	validateCalls          []string
@@ -57,6 +66,13 @@ type fakeEngine struct {
 	clearRuntimeLockErr    error
 	clearRuntimeLockCalls  int
 
+	resourceSettings      *types.ResourceSettings
+	resourceSettingsErr   error
+	resourceSettingsCalls []string
+	reconfigureResult     *types.ReconfigureResult
+	reconfigureErr        error
+	reconfigureRequests   []types.ReconfigureRequest
+
 	catalogUpdateStatus    *types.CatalogUpdateStatus
 	catalogUpdateStatusErr error
 	checkCatalogUpdateN    int
@@ -90,6 +106,11 @@ var _ engine.Engine = (*fakeEngine)(nil)
 func (f *fakeEngine) List(context.Context) ([]types.AppInfo, error) {
 	f.listCalls++
 	return f.listApps, f.listErr
+}
+
+func (f *fakeEngine) ListStatus(context.Context) ([]types.AppRuntimeStatus, error) {
+	f.listStatusCalls++
+	return f.listStatusApps, f.listStatusErr
 }
 
 func (f *fakeEngine) Status(_ context.Context, appID string) (*types.AppStatus, error) {
@@ -145,6 +166,45 @@ func (f *fakeEngine) Restart(
 ) (*types.RestartResult, error) {
 	f.restartCalls = append(f.restartCalls, req.AppID)
 	return f.restartResult, f.restartErr
+}
+
+func (f *fakeEngine) StopAll(
+	_ context.Context,
+	_ types.StopAllRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.StopAllResult, error) {
+	f.stopAllCalls++
+	return f.stopAllResult, f.stopAllErr
+}
+
+// ResourceSettings and Reconfigure back the per-app resource-management
+// TUI surface (issue #28): ResourceSettings feeds the read-only current
+// values and bands, Reconfigure records the request the screen builds.
+
+func (f *fakeEngine) ResourceSettings(_ context.Context, appID string) (*types.ResourceSettings, error) {
+	f.resourceSettingsCalls = append(f.resourceSettingsCalls, appID)
+	return f.resourceSettings, f.resourceSettingsErr
+}
+
+func (f *fakeEngine) Reconfigure(
+	_ context.Context,
+	req types.ReconfigureRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.ReconfigureResult, error) {
+	f.reconfigureRequests = append(f.reconfigureRequests, req)
+	return f.reconfigureResult, f.reconfigureErr
+}
+
+func (f *fakeEngine) Uninstall(
+	_ context.Context,
+	_ types.UninstallRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.UninstallResult, error) {
+	f.uninstallCalls++
+	return f.uninstallResult, f.uninstallErr
 }
 
 func (f *fakeEngine) ValidateConfig(_ context.Context, appID string) (*types.ValidationResult, error) {

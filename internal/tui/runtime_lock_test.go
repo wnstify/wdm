@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -85,6 +86,36 @@ func TestModel_RuntimeLockViewRendersBusyErrorMessageAndMissingStatus(t *testing
 		assert.Contains(t, view, "No runtime lock status available.")
 		assert.Contains(t, view, "Actions")
 	})
+}
+
+func TestModel_RuntimeLockReturnToDashboardSelectsAndNavigates(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{runtimeLockStatus: staleRuntimeLockFixture()}
+	m := loadRuntimeLockPrompt(t, fake)
+	require.Equal(t, 0, m.runtimeLockCursor)
+	require.Equal(t, screenRuntimeLock, m.screen)
+	require.Equal(t, runtimeLockRecoveryActions, m.runtimeLockActions())
+
+	// Down moves onto "Return to dashboard"; Up returns to "Clear stale lock".
+	m = updateModel(t, m, downKey())
+	assert.Equal(t, 1, m.runtimeLockCursor)
+	next, cmd := m.updateRuntimeLockKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	assert.Equal(t, 0, m.runtimeLockCursor, "Up must move the runtime-lock cursor back toward the first action")
+
+	// Selecting "Return to dashboard" leaves the recovery screen without
+	// clearing the lock.
+	m = updateModel(t, m, downKey())
+	require.Equal(t, "Return to dashboard", m.runtimeLockActions()[m.runtimeLockCursor])
+	m.runtimeLockMessage = "Runtime lock cleared."
+	next, cmd = m.updateRuntimeLockKey(enterKey())
+	m = assertModel(t, next)
+	require.Nil(t, cmd, "Return to dashboard must not emit a command")
+	assert.Equal(t, screenDashboard, m.screen, "Return to dashboard must navigate back to the dashboard")
+	assert.Equal(t, 0, fake.clearRuntimeLockCalls, "Return to dashboard must not clear the runtime lock")
+	assert.Empty(t, m.runtimeLockMessage, "Return to dashboard must clear any prior status message")
 }
 
 func loadRuntimeLockPrompt(t *testing.T, eng *fakeEngine) model {

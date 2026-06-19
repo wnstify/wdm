@@ -85,7 +85,7 @@ func (m model) runtimeLockView() string {
 
 	if m.busy {
 		b.WriteString("Clearing runtime lock...\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -120,7 +120,7 @@ func (m model) runtimeLockView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

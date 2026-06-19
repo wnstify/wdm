@@ -196,39 +196,45 @@ func (c *execClient) Run(ctx context.Context, inv Invocation) (CommandResult, er
 	return redacted, nil
 }
 
+// buildComposeInvocationCommand handles the `docker compose ...` deployment
+// and logs invocations, keeping the compose family out of buildCommand's main
+// switch so its cyclomatic complexity stays bounded as verbs are added. It
+// returns handled=false for any non-compose invocation so buildCommand falls
+// through to the remaining cases.
+func buildComposeInvocationCommand(inv Invocation) (cmd commandSpec, handled bool, err error) {
+	switch typedInv := inv.(type) {
+	case composeConfigInvocation:
+		cmd, err = buildComposeConfigCommand(typedInv)
+	case composePullInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "pull")
+	case composeUpInvocation:
+		cmd, err = buildComposeUpCommand(typedInv)
+	case composeRestartInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "restart")
+	case composeStopInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "stop")
+	case composeDownInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "down")
+	case composeDownRemoveImagesInvocation:
+		cmd, err = buildComposeDownRemoveImagesCommand(typedInv)
+	case composeLogsInvocation:
+		cmd, err = buildComposeLogsCommand(typedInv)
+	default:
+		return commandSpec{}, false, nil
+	}
+	return cmd, true, err
+}
+
 func buildCommand(inv Invocation) (commandSpec, error) {
+	if cmd, handled, err := buildComposeInvocationCommand(inv); handled {
+		return cmd, err
+	}
+
 	switch typedInv := inv.(type) {
 	case VersionInvocation:
 		return commandSpec{argv: []string{"version"}}, nil
 	case ComposeVersionInvocation:
 		return commandSpec{argv: []string{"compose", "version"}}, nil
-	case composeConfigInvocation:
-		return buildComposeConfigCommand(typedInv)
-	case composePullInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"pull",
-		)
-	case composeUpInvocation:
-		return buildComposeUpCommand(typedInv)
-	case composeRestartInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"restart",
-		)
-	case composeDownInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"down",
-		)
-	case composeLogsInvocation:
-		return buildComposeLogsCommand(typedInv)
 	case networkInspectInvocation:
 		return buildNetworkInspectCommand(typedInv.name)
 	case networkSubnetInvocation:
@@ -237,6 +243,8 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 		return buildNetworkCreateCommand(typedInv)
 	case removeNetworkInvocation:
 		return buildRemoveNetworkCommand(typedInv.name)
+	case managedNetworkListInvocation:
+		return buildManagedNetworkListCommand()
 	case removeNamedVolumeInvocation:
 		return buildRemoveNamedVolumeCommand(typedInv.name)
 	case projectContainerListInvocation:
@@ -318,6 +326,25 @@ func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
 	if inv.forceRecreate {
 		cmd.argv = append(cmd.argv, "--force-recreate")
 	}
+	return cmd, nil
+}
+
+// buildComposeDownRemoveImagesCommand builds `docker compose ... down --rmi
+// all` for the self-uninstall teardown (PRD §39). It reuses the validated
+// down base and appends only `--rmi all` — never `-v` — so the forbidden
+// volume-removal flag can never reach the argv. The allowlist re-checks the
+// exact shape before exec.
+func buildComposeDownRemoveImagesCommand(inv composeDownRemoveImagesInvocation) (commandSpec, error) {
+	cmd, err := buildComposeProjectCommand(
+		inv.composeFile,
+		inv.envFile,
+		inv.projectName,
+		"down",
+	)
+	if err != nil {
+		return commandSpec{}, err
+	}
+	cmd.argv = append(cmd.argv, "--rmi", "all")
 	return cmd, nil
 }
 
@@ -406,8 +433,35 @@ func buildNetworkCreateCommand(inv networkCreateInvocation) (commandSpec, error)
 	if inv.gateway != "" {
 		argv = append(argv, "--gateway", inv.gateway)
 	}
+	// PRD §10 ownership labels, in fixed order so the argv is deterministic and
+	// the last-gate validator can match the pair positionally. Stamped only
+	// when the spec carries an app ID; the validator re-checks the charset.
+	if inv.appID != "" {
+		argv = append(
+			argv,
+			"--label", managedNetworkLabel,
+			"--label", appNetworkLabelPrefix+inv.appID,
+		)
+	}
 	argv = append(argv, networkName)
 	return commandSpec{argv: argv}, nil
+}
+
+// buildManagedNetworkListCommand builds the fixed label-filtered managed-network
+// list argv: `network ls --filter label=wdm.managed=true --format {{.Name}}`.
+// Every token is a constant, so no caller input reaches the argv; the matching
+// validator arm accepts only this exact shape (PRD §39).
+func buildManagedNetworkListCommand() (commandSpec, error) {
+	return commandSpec{
+		argv: []string{
+			"network",
+			"ls",
+			"--filter",
+			managedNetworkLabelFilter,
+			"--format",
+			managedNetworkListFormat,
+		},
+	}, nil
 }
 
 func buildRemoveNetworkCommand(name string) (commandSpec, error) {
@@ -603,8 +657,13 @@ func isComposeProjectArgv(argv []string) bool {
 	}
 
 	switch argv[7] {
-	case "pull", "restart", "down":
+	case "pull", "restart", "stop":
 		return len(argv) == 8
+	case "down":
+		// Plain safe down (no -v), or the self-uninstall down --rmi all
+		// teardown (PRD §39). -v is never allowlisted in either shape.
+		return len(argv) == 8 ||
+			len(argv) == 10 && argv[8] == "--rmi" && argv[9] == "all"
 	case "up":
 		return len(argv) == 9 && argv[8] == "-d" ||
 			len(argv) == 10 && argv[8] == "-d" && argv[9] == "--force-recreate"
@@ -635,6 +694,16 @@ func validateNetworkArgv(argv []string) error {
 	case len(argv) == 3 && argv[1] == "rm":
 		_, err := validateNetworkName(argv[2])
 		return err
+	case len(argv) == 6 &&
+		argv[1] == "ls" &&
+		argv[2] == "--filter" &&
+		argv[3] == managedNetworkLabelFilter &&
+		argv[4] == "--format" &&
+		argv[5] == managedNetworkListFormat:
+		// The managed-network sweep list (PRD §39): the ONLY allowlisted
+		// `network ls` shape. Every token is a fixed literal, so any other
+		// `network ls` invocation still falls through to the default refusal.
+		return nil
 	default:
 		return unsupportedDockerArgv(argv)
 	}
@@ -642,10 +711,12 @@ func validateNetworkArgv(argv []string) error {
 
 // validateNetworkCreateArgv enforces the fixed `network create` argv grammar:
 // an optional `--internal` flag, an optional `--subnet <cidr>` pair, an optional
-// `--gateway <ip>` pair, in that order, and the network name as the trailing
-// token. A `--gateway` clause is rejected unless a `--subnet` clause preceded it,
-// matching Docker's own constraint. Each flag value is re-validated here — the
-// allow-list is the last gate before exec, so it never trusts the builder (PRD §12).
+// `--gateway <ip>` pair, then the optional ordered ownership-label pair
+// (`--label wdm.managed=true --label wdm.app=<appID>`, PRD §10), in that order,
+// and the network name as the trailing token. A `--gateway` clause is rejected
+// unless a `--subnet` clause preceded it, matching Docker's own constraint. Each
+// flag value is re-validated here — the allow-list is the last gate before exec,
+// so it never trusts the builder (PRD §12).
 func validateNetworkCreateArgv(argv []string) error {
 	rest := argv[2:]
 	if len(rest) > 0 && rest[0] == "--internal" {
@@ -668,11 +739,47 @@ func validateNetworkCreateArgv(argv []string) error {
 		}
 		rest = rest[2:]
 	}
+	var err error
+	rest, err = consumeNetworkLabelArgs(argv, rest)
+	if err != nil {
+		return err
+	}
 	if len(rest) != 1 {
 		return unsupportedDockerArgv(argv)
 	}
-	_, err := validateNetworkName(rest[0])
+	_, err = validateNetworkName(rest[0])
 	return err
+}
+
+// consumeNetworkLabelArgs validates the optional ownership-label pair stamped by
+// the create builder and returns the remaining tokens. The pair is all-or-
+// nothing and positionally fixed: `--label wdm.managed=true` immediately
+// followed by `--label wdm.app=<appID>`, where <appID> matches the catalog
+// app_id charset. A lone `--label`, a wrong key, a wrong managed value, or an
+// out-of-charset app id is rejected — this is the last gate before exec, so a
+// label value carrying shell metacharacters or extra tokens never reaches the
+// daemon (PRD §10, §12).
+func consumeNetworkLabelArgs(argv, rest []string) ([]string, error) {
+	if len(rest) == 0 || rest[0] != "--label" {
+		return rest, nil
+	}
+	if len(rest) < 4 || rest[2] != "--label" {
+		return nil, unsupportedDockerArgv(argv)
+	}
+	if rest[1] != managedNetworkLabel {
+		return nil, unsupportedDockerArgv(argv)
+	}
+	appID, ok := strings.CutPrefix(rest[3], appNetworkLabelPrefix)
+	if !ok {
+		return nil, unsupportedDockerArgv(argv)
+	}
+	if !networkAppIDPattern.MatchString(appID) {
+		return nil, usageValidationError(
+			"network app label is invalid",
+			fmt.Errorf("network app label value %q does not match allowed app id format", appID),
+		)
+	}
+	return rest[4:], nil
 }
 
 func validateNetworkSubnetArg(subnet string) error {

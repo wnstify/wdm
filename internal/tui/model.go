@@ -22,10 +22,12 @@ var dashboardActions = []string{
 	"Install an app",
 	"Update apps",
 	"Check my apps",
+	"Stop all apps",
 	"Backups",
 	"Settings",
 	"Update catalog",
 	"Update wdm",
+	"Uninstall wdm",
 }
 
 type screen int
@@ -34,6 +36,10 @@ const (
 	screenDashboard screen = iota
 	screenPlaceholder
 	screenCheckApps
+	screenStopAll
+	screenStopAllResult
+	screenUninstall
+	screenUninstallResult
 	screenAppActions
 	screenFirstRunWelcome
 	screenFirstRunSystemCheck
@@ -55,11 +61,13 @@ const (
 	screenCatalogUpdateResult
 	screenSelfUpdate
 	screenSelfUpdateResult
+	screenResources
 )
 
 var checkAppActions = []string{
 	"View details",
 	"Restart app",
+	"Manage resources",
 	"Remove app",
 	"Validate config",
 	"Return to dashboard",
@@ -82,7 +90,7 @@ type model struct {
 	err                error
 	progress           progressMsg
 	modal              *confirmationRequestedMsg
-	apps               []types.AppInfo
+	apps               []types.AppRuntimeStatus
 	status             *types.AppStatus
 	validation         *types.ValidationResult
 	actionMessage      string
@@ -109,11 +117,22 @@ type model struct {
 	runtimeLockCursor  int
 	runtimeLockMessage string
 
+	resourceSettings    *types.ResourceSettings
+	resourceLoadErr     error
+	resourceService     string
+	resourceFields      []resourceField
+	resourceFieldCursor int
+	reconfigureResult   *types.ReconfigureResult
+
 	catalogUpdateStatus *types.CatalogUpdateStatus
 	catalogUpdateResult *types.CatalogUpdateResult
 
 	selfUpdateStatus *types.SelfUpdateStatus
 	selfUpdateResult *types.SelfUpdateResult
+
+	stopAllResult *types.StopAllResult
+
+	uninstallResult *types.UninstallResult
 
 	// launchCheckActive is true while the daily-on-launch update check runs, so
 	// the dashboard renders launchCheckNotice. launchCheckBanner holds
@@ -283,7 +302,32 @@ func (m model) updateLoadMsg(msg tea.Msg) (tea.Model, bool) {
 		m.err = msg.err
 		m.selfUpdateStatus = msg.status
 	default:
+		return m.updateResourceLoadMsg(msg)
+	}
+	return m, true
+}
+
+// updateResourceLoadMsg settles the model after Engine.ResourceSettings
+// returns (issue #28). It is split out of updateLoadMsg to keep that
+// dispatcher under the cyclomatic budget; the routing default forwards here.
+func (m model) updateResourceLoadMsg(msg tea.Msg) (tea.Model, bool) {
+	settingsMsg, ok := msg.(resourceSettingsLoadedMsg)
+	if !ok {
 		return m, false
+	}
+
+	m.busy = false
+	m.err = nil
+	m.resourceLoadErr = settingsMsg.err
+	m.resourceSettings = settingsMsg.settings
+	m.resourceFieldCursor = 0
+	m.resourceFields = nil
+	m.resourceService = ""
+	if settingsMsg.err == nil {
+		if svc := resourceServiceSettings(settingsMsg.settings); svc != nil {
+			m.resourceService = svc.Service
+			m.resourceFields = newResourceFields(svc)
+		}
 	}
 	return m, true
 }
@@ -333,6 +377,10 @@ func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.validation = msg.result
 		m.actionMessage = ""
+	case reconfigureFinishedMsg:
+		m.busy = false
+		m.err = msg.err
+		m.reconfigureResult = msg.result
 	case installFinishedMsg:
 		m.busy = false
 		m.err = msg.err
@@ -368,12 +416,67 @@ func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.screen = screenRestoreResult
 		}
+	case uninstallFinishedMsg:
+		return m.applyUninstallFinished(msg)
+	default:
+		if next, ok := m.updateDistributionFinishedMsg(msg); ok {
+			return next, nil
+		}
+	}
+	return m, nil
+}
+
+// applyUninstallFinished settles the model after Engine.Uninstall returns
+// and decides whether to quit. Uninstall is fail-closed: on a full success
+// (no error, no failed stacks) the running binary is already gone from
+// disk, so the model advances to the result screen and returns tea.Quit so
+// the program exits after the result has been rendered. On an abort (a
+// non-empty Failed) or a whole-operation error (a declined confirmation,
+// lock contention, cancellation), wdm is still installed: the result/error
+// is shown on the uninstall screens and the program keeps running so the
+// user can read the outcome and return to the dashboard.
+func (m model) applyUninstallFinished(msg uninstallFinishedMsg) (tea.Model, tea.Cmd) {
+	m.busy = false
+	m.err = msg.err
+	m.uninstallResult = msg.result
+
+	if msg.result == nil {
+		// A whole-operation error returned no result; stay on the uninstall
+		// screen and surface the error there.
+		return m, nil
+	}
+
+	m.screen = screenUninstallResult
+	if msg.err == nil && len(msg.result.Failed) == 0 {
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// updateDistributionFinishedMsg handles the trust/distribution and batch
+// finished messages (catalog update, stop-all, self-update). It is split
+// out of updateFinishedMsg to keep each switch under the cyclomatic
+// budget; the routing default in updateFinishedMsg forwards here.
+func (m model) updateDistributionFinishedMsg(msg tea.Msg) (tea.Model, bool) {
+	switch msg := msg.(type) {
 	case catalogUpdateFinishedMsg:
 		m.busy = false
 		m.err = msg.err
 		m.catalogUpdateResult = msg.result
 		if msg.err == nil {
 			m.screen = screenCatalogUpdateResult
+		}
+	case stopAllFinishedMsg:
+		m.busy = false
+		m.err = msg.err
+		m.stopAllResult = msg.result
+		// StopAll is continue-on-error: a non-nil result with per-stack
+		// failures is still a completed batch, so the result screen shows
+		// whenever a result is present. A whole-operation error (declined
+		// confirmation, lock contention, cancellation) returns no result and
+		// keeps the stop screen, surfacing the error there.
+		if msg.result != nil {
+			m.screen = screenStopAllResult
 		}
 	case selfUpdateFinishedMsg:
 		m.busy = false
@@ -390,8 +493,10 @@ func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.result != nil {
 			m.screen = screenSelfUpdateResult
 		}
+	default:
+		return m, false
 	}
-	return m, nil
+	return m, true
 }
 
 func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -405,9 +510,20 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		// Text-entry screens must receive printable runes, including 'q'.
+		// Quit also binds ctrl+c (a non-rune key), so gate only the rune case
+		// and let it fall through to updateScreenSpecificKey for typing.
+		if m.isTextEntryScreen() && msg.Type == tea.KeyRunes {
+			break
+		}
 		m.exiting = true
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Back):
+		// Same as Quit: 'b' is a printable rune that must reach the field on
+		// text-entry screens, while esc (a non-rune key) still cancels/goes back.
+		if m.isTextEntryScreen() && msg.Type == tea.KeyRunes {
+			break
+		}
 		m.back()
 	case m.tooSmall():
 		return m, nil
@@ -428,6 +544,17 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// isTextEntryScreen reports whether the current screen accepts typed text, so
+// the global 'b'/'q' shortcuts must not shadow runes destined for a field.
+func (m model) isTextEntryScreen() bool {
+	switch m.screen {
+	case screenInstallForm, screenSettings, screenDeleteName, screenResources:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m model) updateScreenSpecificKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	switch m.screen {
 	case screenInstallForm:
@@ -441,6 +568,9 @@ func (m model) updateScreenSpecificKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool
 		return next, cmd, true
 	case screenDeleteName:
 		next, cmd := m.updateDeleteNameKey(msg)
+		return next, cmd, true
+	case screenResources:
+		next, cmd := m.updateResourcesKey(msg)
 		return next, cmd, true
 	default:
 		return m, nil, false
@@ -520,6 +650,14 @@ func (m *model) back() {
 		m.err = nil
 		m.removeResult = nil
 		m.deleteResult = nil
+	case screenResources:
+		m.screen = screenAppActions
+		m.err = nil
+		m.resourceLoadErr = nil
+		m.resourceSettings = nil
+		m.resourceService = ""
+		m.resourceFields = nil
+		m.reconfigureResult = nil
 	case screenBackupsList:
 		m.screen = screenBackupsApps
 		m.err = nil
@@ -527,7 +665,7 @@ func (m *model) back() {
 	case screenInstallForm:
 		m.screen = screenInstallCatalog
 		m.err = nil
-	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenPlaceholder, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
+	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenPlaceholder, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
 		m.screen = screenDashboard
 		m.firstRun = false
 		m.err = nil
@@ -552,6 +690,15 @@ func (m model) selectDashboardAction() (tea.Model, tea.Cmd) {
 		m.updateResult = nil
 		m.progress = progressMsg{}
 		return m, m.loadAppsCmd()
+	}
+
+	if dashboardActions[m.cursor] == "Stop all apps" {
+		m.screen = screenStopAll
+		m.busy = true
+		m.err = nil
+		m.stopAllResult = nil
+		m.progress = progressMsg{}
+		return m, m.stopAllCmd()
 	}
 
 	if dashboardActions[m.cursor] == "Backups" {
@@ -593,6 +740,15 @@ func (m model) selectDashboardAction() (tea.Model, tea.Cmd) {
 		return m, m.checkSelfUpdateCmd()
 	}
 
+	if dashboardActions[m.cursor] == "Uninstall wdm" {
+		m.screen = screenUninstall
+		m.busy = true
+		m.err = nil
+		m.uninstallResult = nil
+		m.progress = progressMsg{}
+		return m, m.uninstallCmd()
+	}
+
 	if dashboardActions[m.cursor] != "Check my apps" {
 		m.screen = screenPlaceholder
 		return m, nil
@@ -627,6 +783,19 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.actionMessage = ""
 		return m, m.restartAppCmd(m.activeAppID())
+	case "Manage resources":
+		m.screen = screenResources
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		m.resourceLoadErr = nil
+		m.resourceSettings = nil
+		m.resourceService = ""
+		m.resourceFields = nil
+		m.resourceFieldCursor = 0
+		m.reconfigureResult = nil
+		m.progress = progressMsg{}
+		return m, m.loadResourceSettingsCmd(m.activeAppID())
 	case "Remove app":
 		m.screen = screenRemoveActions
 		m.err = nil
@@ -647,7 +816,7 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 }
 
 type appsLoadedMsg struct {
-	apps []types.AppInfo
+	apps []types.AppRuntimeStatus
 	err  error
 }
 
@@ -668,7 +837,7 @@ type validationFinishedMsg struct {
 
 func (m model) loadAppsCmd() tea.Cmd {
 	return func() tea.Msg {
-		apps, err := m.eng.List(m.ctx)
+		apps, err := m.eng.ListStatus(m.ctx)
 		return appsLoadedMsg{apps: apps, err: err}
 	}
 }
@@ -755,6 +924,8 @@ func (m model) screenView() string {
 	switch m.screen {
 	case screenCheckApps:
 		return m.checkAppsView()
+	case screenStopAll, screenStopAllResult:
+		return m.stopAllScreenView()
 	case screenAppActions:
 		return m.appActionsView()
 	case screenFirstRunWelcome:
@@ -785,14 +956,32 @@ func (m model) screenView() string {
 		return m.settingsView()
 	case screenRuntimeLock:
 		return m.runtimeLockView()
-	case screenCatalogUpdate, screenCatalogUpdateResult:
-		return m.catalogUpdateScreenView()
-	case screenSelfUpdate, screenSelfUpdateResult:
-		return m.selfUpdateScreenView()
 	case screenPlaceholder:
 		return m.placeholderView()
 	default:
+		if view, ok := m.distributionScreenView(); ok {
+			return view
+		}
 		return m.dashboardView()
+	}
+}
+
+// distributionScreenView renders the trust/distribution screens (catalog
+// update, self-update). It is split out of screenView to keep that
+// dispatcher under the cyclomatic budget; the default arm forwards here
+// before falling back to the dashboard.
+func (m model) distributionScreenView() (string, bool) {
+	switch m.screen {
+	case screenCatalogUpdate, screenCatalogUpdateResult:
+		return m.catalogUpdateScreenView(), true
+	case screenSelfUpdate, screenSelfUpdateResult:
+		return m.selfUpdateScreenView(), true
+	case screenUninstall, screenUninstallResult:
+		return m.uninstallScreenView(), true
+	case screenResources:
+		return m.resourcesView(), true
+	default:
+		return "", false
 	}
 }
 
@@ -854,7 +1043,7 @@ func (m model) dashboardView() string {
 	m.writeLaunchCheckStatus(&b)
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -891,7 +1080,7 @@ func (m model) placeholderView() string {
 	b.WriteString(titleStyle().Render(dashboardActions[m.cursor]))
 	b.WriteString("\n\n")
 	b.WriteString("This screen lands later in Wave H.\n\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -931,7 +1120,7 @@ func (m model) checkAppsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -944,7 +1133,7 @@ func (m model) appActionsView() string {
 		b.WriteString("Working on ")
 		b.WriteString(m.activeAppID())
 		b.WriteString("...\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -988,7 +1177,7 @@ func (m model) appActionsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -1031,11 +1220,23 @@ func (m model) writeStatusSummary(b *strings.Builder) {
 	}
 }
 
-func appListState(app types.AppInfo) string {
-	if app.NeedsAttention {
+// appListState renders the live runtime state of one managed app for the
+// "Check my apps" list, fed by Engine.ListStatus (PRD §18). It maps the
+// engine's State vocabulary to the user-facing label, rendering "stopped" as
+// a calm off state rather than a problem; an empty State (an app the engine
+// could not summarize) and any unrecognized value fall back to the
+// needs-attention reading rather than implying the app is healthy.
+func appListState(app types.AppRuntimeStatus) string {
+	switch app.State {
+	case "running":
+		return "running"
+	case "stopped":
+		return "stopped"
+	case "removed":
+		return "removed"
+	default:
 		return "needs attention"
 	}
-	return "running"
 }
 
 func (m model) confirmationView() string {
@@ -1052,6 +1253,9 @@ func titleStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Bold(true)
 }
 
-func helpLine() string {
+func (m model) helpLine() string {
+	if m.isTextEntryScreen() {
+		return "Enter: select    Esc: back    Ctrl+C: quit\n"
+	}
 	return "Enter: select    Back: b    Quit: q\n"
 }

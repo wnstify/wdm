@@ -2,6 +2,7 @@ package security
 
 import (
 	"io"
+	"os"
 	"testing"
 )
 
@@ -30,4 +31,18 @@ func SwapEntropyForTest(t *testing.T, r io.Reader) {
 	prev := entropy
 	entropy = r
 	t.Cleanup(func() { entropy = prev })
+}
+
+// SwapChmodSecretFileForTest replaces the package-private
+// [chmodSecretFile] seam with fn for the lifetime of the calling test
+// and restores the prior value through [testing.T.Cleanup]. It lets
+// external tests drive [CreateSecretFile]'s chmod-failure cleanup arm
+// without touching production behavior, which keeps the real method.
+// Concurrency: callers MUST NOT use `t.Parallel` while the seam is
+// swapped — it is a process-global package variable.
+func SwapChmodSecretFileForTest(t *testing.T, fn func(*os.File, os.FileMode) error) {
+	t.Helper()
+	prev := chmodSecretFile
+	chmodSecretFile = fn
+	t.Cleanup(func() { chmodSecretFile = prev })
 }

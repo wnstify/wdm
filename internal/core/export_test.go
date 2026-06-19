@@ -348,3 +348,91 @@ const ManualInstallHintForTest = manualInstallHint
 func DefaultRunVersionSmokeForTest(ctx context.Context, binaryPath string) (string, error) {
 	return defaultRunVersionSmoke(ctx, binaryPath)
 }
+
+// ReconfigureRewriteResultForTest is a test-only projection of the
+// reconfigure resolve + in-place rewrite outcome: the validated resource
+// values [buildReconfigurePlan] merged from the request and the on-disk
+// .env, and the new .env bytes [rewriteResourceEnvLines] produced by
+// editing only the targeted service's three resource-limit lines.
+type ReconfigureRewriteResultForTest struct {
+	Memory  string
+	CPUs    string
+	PIDs    int
+	EnvFile []byte
+}
+
+// ReconfigureRewriteStackResultForTest is a test-only projection of the
+// full in-place rewrite seam [Engine.rewriteReconfigureStack]: the secret
+// literals the returned plan carries for the caller's redactor, and the
+// rewritten .env bytes. It exists so a test can prove the rewrite seeds the
+// redactor and that the catalog-vs-compose guards run against the on-disk
+// compose.
+type ReconfigureRewriteStackResultForTest struct {
+	ReusedSecretValues []string
+	GeneratedValues    []string
+	EnvFile            []byte
+}
+
+// ReconfigureRewriteStackForTest drives the EXACT in-place rewrite the live
+// `wdm resources` reconfigure runs: it resolves the plan with
+// [buildReconfigurePlan] and then calls [Engine.rewriteReconfigureStack],
+// which reads the on-disk .env and compose, edits only the targeted resource
+// lines, seeds the redactor secret literals, and re-runs the install-arc
+// catalog-vs-compose guards against the unchanged on-disk compose. It returns
+// the secret literals the plan carries plus the rewritten .env, or the
+// verification error a tampered on-disk compose triggers.
+func (e *Engine) ReconfigureRewriteStackForTest(
+	ctx context.Context,
+	req types.ReconfigureRequest,
+	app catalog.App,
+	stackPath string,
+	composeProject string,
+) (ReconfigureRewriteStackResultForTest, error) {
+	plan, err := buildReconfigurePlan(req, app, stackPath, composeProject)
+	if err != nil {
+		return ReconfigureRewriteStackResultForTest{}, err
+	}
+	rewrite, err := e.rewriteReconfigureStack(ctx, plan, nil)
+	if err != nil {
+		return ReconfigureRewriteStackResultForTest{}, err
+	}
+	return ReconfigureRewriteStackResultForTest{
+		ReusedSecretValues: rewrite.reusedSecretValues,
+		GeneratedValues:    rewrite.generatedValues,
+		EnvFile:            rewrite.rendered.EnvBytes,
+	}, nil
+}
+
+// ReconfigureResolveRewriteForTest drives the EXACT reconfigure resolve +
+// in-place rewrite chain the live `wdm resources` reconfigure uses, without
+// the runtime lock, backup, Docker, or manifest steps: it runs
+// [buildReconfigurePlan] (catalog band + allow_override validation, the
+// on-disk .env read via readServiceResourceValues, and the requested-vs-
+// installed merge) and then [rewriteResourceEnvLines] over the stack's
+// existing .env bytes with serviceKey(plan.service) and the merged values —
+// the same two functions [Engine.rewriteReconfigureStack] calls. It exists
+// so the catalog-wide reconfigure regression guard exercises the real path
+// rather than a reimplementation. envBytes are the stack's current .env; the
+// returned EnvFile is the rewritten output.
+func ReconfigureResolveRewriteForTest(
+	req types.ReconfigureRequest,
+	app catalog.App,
+	stackPath string,
+	composeProject string,
+	envBytes []byte,
+) (ReconfigureRewriteResultForTest, error) {
+	plan, err := buildReconfigurePlan(req, app, stackPath, composeProject)
+	if err != nil {
+		return ReconfigureRewriteResultForTest{}, err
+	}
+	newEnv, err := rewriteResourceEnvLines(envBytes, serviceKey(plan.service), plan.memory, plan.cpus, plan.pids)
+	if err != nil {
+		return ReconfigureRewriteResultForTest{}, err
+	}
+	return ReconfigureRewriteResultForTest{
+		Memory:  plan.memory,
+		CPUs:    plan.cpus,
+		PIDs:    plan.pids,
+		EnvFile: newEnv,
+	}, nil
+}

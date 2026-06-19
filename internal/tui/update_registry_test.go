@@ -30,10 +30,10 @@ func TestUpdateAppsView_BusyDisclosesNetworkContact(t *testing.T) {
 		t.Parallel()
 
 		m := newReadyModel(&fakeEngine{
-			listApps: []types.AppInfo{{AppID: "alpha", TemplateName: "Alpha"}},
+			listStatusApps: []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"}},
 		})
 		m.screen = screenUpdateApps
-		m.apps = []types.AppInfo{{AppID: "alpha", TemplateName: "Alpha"}}
+		m.apps = []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"}}
 		m.busy = true
 
 		view := m.updateAppsView()
@@ -87,7 +87,7 @@ func TestUpdateAppsView_BusySurfacesRegistryProgress(t *testing.T) {
 
 	m := newReadyModel(&fakeEngine{})
 	m.screen = screenUpdateApps
-	m.apps = []types.AppInfo{{AppID: "alpha", TemplateName: "Alpha"}}
+	m.apps = []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"}}
 	m.busy = true
 	m.progress = progressMsg{
 		step:    types.StepUpdatePlanning,
@@ -113,13 +113,13 @@ func TestUpdateFlow_RegistryProgressFlowsThroughBridge(t *testing.T) {
 	sender := newRecordingSender()
 	fake := &registryProgressEngine{
 		fakeEngine: &fakeEngine{
-			listApps:     []types.AppInfo{{AppID: "alpha", TemplateName: "Alpha"}},
-			updateResult: &types.UpdateResult{AppID: "alpha", NewTemplateVersion: "2"},
+			listStatusApps: []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"}},
+			updateResult:   &types.UpdateResult{AppID: "alpha", NewTemplateVersion: "2"},
 		},
 	}
 	m := newModelWithContextSender(t.Context(), fake, sender.Send)
 	m.screen = screenUpdateApps
-	m.apps = []types.AppInfo{{AppID: "alpha", TemplateName: "Alpha"}}
+	m.apps = []types.AppRuntimeStatus{{AppInfo: types.AppInfo{AppID: "alpha", TemplateName: "Alpha"}, State: "running"}}
 	m.appCursor = 0
 
 	// Selecting an app launches the update command; run it on a goroutine

@@ -139,7 +139,7 @@ func (m model) selfUpdateView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -193,7 +193,7 @@ func (m model) selfUpdateResultView() string {
 	result := m.selfUpdateResult
 	if result == nil {
 		b.WriteString("No self-update result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -233,7 +233,7 @@ func (m model) selfUpdateResultView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
