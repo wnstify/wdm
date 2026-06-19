@@ -28,7 +28,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 | `wdm apps logs <app-id>` | Stream redacted logs from a stack. |
 | `wdm apps update <app-id>` | Update a stack to the current catalog version. |
 | `wdm apps restart <app-id>` | Restart a stack's containers in place. |
-| `wdm apps stop-all` | Stop every managed stack at once, preserving all data. |
+| `wdm apps stop-all` | Stop every running managed stack at once, preserving all data. |
 | `wdm apps remove <app-id>` | Remove a stack, keeping its files and volumes. |
 | `wdm apps delete <app-id>` | Permanently delete a stack's files and directory. |
 | `wdm apps validate <app-id>` | Validate a stack's Docker Compose configuration. |
@@ -62,8 +62,9 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 **`wdm apps stop-all`**
 
-- Runs `docker compose stop` against every managed stack. Containers stop but stay defined; networks, named volumes, and all data are preserved (this is not `down`).
-- Continues on error: every stack is attempted even if some fail, and the command exits nonzero when any stack failed.
+- Runs `docker compose stop` against every managed stack that has at least one running container. Containers stop but stay defined; networks, named volumes, and all data are preserved (this is not `down`).
+- Targets only running apps: stacks that are already stopped are skipped and reported as "already stopped". When no app is running, it prints "No running apps to stop." and exits `0` without prompting.
+- Continues on error: every targeted (running) stack is attempted even if some fail, and the command exits nonzero when any targeted stack failed.
 - `--yes` — accept the safe stop confirmation without prompting.
 
 **`wdm apps remove <app-id>`**

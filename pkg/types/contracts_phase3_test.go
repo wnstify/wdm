@@ -76,11 +76,15 @@ func TestStopAllResult_JSONContract_PopulatedFields(t *testing.T) {
 		Failed: []types.StoppedApp{
 			{AppID: "freshrss", ComposeProject: "wdm-freshrss", Error: "daemon unreachable"},
 		},
+		AlreadyStopped: []types.StoppedApp{
+			{AppID: "vaultwarden"},
+		},
 	})
 
 	assert.JSONEq(t, `{
 		"stopped":[{"app_id":"uptime-kuma","compose_project":"wdm-uptime-kuma"}],
-		"failed":[{"app_id":"freshrss","compose_project":"wdm-freshrss","error":"daemon unreachable"}]
+		"failed":[{"app_id":"freshrss","compose_project":"wdm-freshrss","error":"daemon unreachable"}],
+		"already_stopped":[{"app_id":"vaultwarden"}]
 	}`, got)
 }
 

@@ -140,13 +140,14 @@ exits nonzero when any app failed.
 func writeStopAllFinish(w io.Writer, result *types.StopAllResult) error {
 	var b strings.Builder
 
+	skipped := stopAllSkippedNote(result)
 	switch {
 	case len(result.Stopped) == 0 && len(result.Failed) == 0:
-		b.WriteString("No managed apps to stop.\n")
+		b.WriteString("No running apps to stop." + skipped + "\n")
 	case len(result.Failed) == 0:
-		fmt.Fprintf(&b, "Stopped %d app(s).\n", len(result.Stopped))
+		fmt.Fprintf(&b, "Stopped %d app(s).%s\n", len(result.Stopped), skipped)
 	default:
-		fmt.Fprintf(&b, "Stopped %d app(s); %d failed.\n", len(result.Stopped), len(result.Failed))
+		fmt.Fprintf(&b, "Stopped %d app(s); %d failed.%s\n", len(result.Stopped), len(result.Failed), skipped)
 	}
 
 	if len(result.Stopped) > 0 {
@@ -167,4 +168,15 @@ func writeStopAllFinish(w io.Writer, result *types.StopAllResult) error {
 		return fmt.Errorf("apps stop-all: writing finish screen: %w", err)
 	}
 	return nil
+}
+
+// stopAllSkippedNote returns a short parenthetical note about the managed
+// apps that were already stopped and so skipped, or an empty string when
+// none were skipped. It is appended to the finish-screen headline so the
+// plain output explains why fewer apps were stopped than are installed.
+func stopAllSkippedNote(result *types.StopAllResult) string {
+	if len(result.AlreadyStopped) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d already stopped, skipped)", len(result.AlreadyStopped))
 }

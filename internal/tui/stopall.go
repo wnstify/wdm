@@ -82,11 +82,20 @@ func (m model) stopAllResultView() string {
 
 	switch {
 	case len(result.Stopped) == 0 && len(result.Failed) == 0:
-		b.WriteString("No managed apps to stop.\n")
+		b.WriteString("No running apps to stop.\n")
 	case len(result.Failed) == 0:
-		b.WriteString("All managed apps were stopped.\n")
+		b.WriteString("All running apps were stopped.\n")
 	default:
-		b.WriteString("Some managed apps failed to stop; see below.\n")
+		b.WriteString("Some apps failed to stop; see below.\n")
+	}
+
+	if len(result.AlreadyStopped) > 0 {
+		b.WriteString("\nAlready stopped (skipped)\n")
+		for _, app := range result.AlreadyStopped {
+			b.WriteString("- ")
+			b.WriteString(app.AppID)
+			b.WriteByte('\n')
+		}
 	}
 
 	if len(result.Stopped) > 0 {

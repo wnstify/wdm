@@ -11,13 +11,22 @@ import (
 	"github.com/wnstify/wdm/pkg/types"
 )
 
-// StopAll stops every managed stack at once (issue #27). It runs
-// `docker compose stop` against each managed stack discovered under the
-// configured stack base: the running containers stop but stay defined,
-// so containers, networks, and named volumes are preserved and all data
-// survives — this is NOT `docker compose down`. The operation is
-// whole-stack and all-apps only; [types.StopAllRequest] carries no
-// selector.
+// StopAll stops the RUNNING managed stacks at once (issue #27). It runs
+// `docker compose stop` against each managed stack that has at least one
+// running container under the configured stack base: the running containers
+// stop but stay defined, so containers, networks, and named volumes are
+// preserved and all data survives — this is NOT `docker compose down`. The
+// operation is whole-stack and all-apps only; [types.StopAllRequest] carries
+// no selector.
+// Running-only targeting: the plan filters the managed set to the stacks
+// with at least one running container, judged live through the same
+// [docker.InspectProjectContainers] read the status path uses. Stacks that
+// are already not running (cleanly stopped or removed) are SKIPPED — they are
+// reported in [types.StopAllResult.AlreadyStopped] but never confirmed,
+// stopped, or counted as failures. When NO managed stack is running the
+// confirmer is not consulted at all and StopAll returns cleanly with empty
+// Stopped/Failed slices, so "nothing to stop" is a success no-op, not a
+// prompt for zero apps.
 // Lock posture (PRD §26): StopAll is a state-changing engine entry, so
 // the global runtime.lock is acquired ONCE at entry — attributed
 // "stop-all" — and held for the whole batch. Each per-stack stop then
@@ -25,22 +34,26 @@ import (
 // through the held fd before the Docker call, mirroring Restart. The
 // managed set is enumerated through the shared non-blocking scan
 // ([state.ScanStacks]); a stack with a corrupt manifest is folded into a
-// scan warning and skipped, exactly as Engine.List does.
+// scan warning and skipped, exactly as Engine.List does. The running-detection
+// inspect is read-only and acquires no per-stack flock (PRD §26 read posture),
+// mirroring Status/ListStatus; the exclusive flock is taken only for the
+// stacks that proceed to a stop.
 // Confirmation (PRD §37): a single SAFE confirmation gates the whole
-// batch immediately before any stop. `docker compose stop` preserves all
-// data, so the payload Kind is "stop_all_safe" and --yes auto-accepts it.
-// A nil confirmer refuses with [types.ErrCodeUsageValidation]; a decline
-// maps to [types.ErrCodeUserCanceled] with zero side effects (no Docker
-// call); a confirmer error propagates wrapped.
-// Partial failure: StopAll is continue-on-error. Every managed stack is
-// attempted even if some fail (`docker compose stop` is idempotent, so an
-// already-stopped stack is a success no-op). Per-stack failures are
-// captured into [types.StopAllResult.Failed] with the redacted docker-layer
-// detail; the stacks that stopped land in [types.StopAllResult.Stopped].
+// batch of running stacks immediately before any stop. `docker compose stop`
+// preserves all data, so the payload Kind is "stop_all_safe" and --yes
+// auto-accepts it. A nil confirmer refuses with [types.ErrCodeUsageValidation]
+// (only when there is at least one running stack to stop); a decline maps to
+// [types.ErrCodeUserCanceled] with zero side effects (no Docker stop); a
+// confirmer error propagates wrapped.
+// Partial failure: StopAll is continue-on-error. Every TARGETED (running)
+// stack is attempted even if some fail; a stack that stops between plan and
+// execution is a harmless no-op. Per-stack failures are captured into
+// [types.StopAllResult.Failed] with the redacted docker-layer detail; the
+// stacks that stopped land in [types.StopAllResult.Stopped].
 // A non-nil error is returned ONLY for whole-operation failures — a nil
-// confirmer, a declined confirmation, lock contention, the enumeration
-// itself failing, or context cancellation — never for a single stack that
-// failed to stop.
+// confirmer (when a stop was planned), a declined confirmation, lock
+// contention, the enumeration or inspection itself failing, or context
+// cancellation — never for a single stack that failed to stop.
 func (e *Engine) StopAll(
 	ctx context.Context,
 	_ types.StopAllRequest,
@@ -56,29 +69,54 @@ func (e *Engine) StopAll(
 	}
 	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
 
-	apps, err := e.planStopAll(ctx, onProgress)
+	// The stop path generates no secrets and reads no .env content, so the
+	// Docker client carries the structural redactor only (mirrors the
+	// restart path's client). It is built once and reused by the
+	// running-detection inspect and the per-stack stop.
+	client, err := e.buildDockerClient(security.NewActiveRedactor(nil))
 	if err != nil {
 		return nil, err
 	}
 
-	if err := confirmStopAll(ctx, confirmer, apps, onProgress); err != nil {
+	running, alreadyStopped, err := e.planStopAll(ctx, client, onProgress)
+	if err != nil {
 		return nil, err
 	}
 
-	return e.executeStopAll(ctx, apps, onProgress)
+	// Nothing running: skip the confirmer entirely and return a clean
+	// no-op. The user is not prompted to confirm zero stops.
+	if len(running) == 0 {
+		if onProgress != nil {
+			onProgress(types.StepStopAllPlanning, 100, "no running apps to stop")
+		}
+		return &types.StopAllResult{
+			Stopped:        []types.StoppedApp{},
+			Failed:         []types.StoppedApp{},
+			AlreadyStopped: skippedStoppedApps(alreadyStopped),
+		}, nil
+	}
+
+	if err := confirmStopAll(ctx, confirmer, running, onProgress); err != nil {
+		return nil, err
+	}
+
+	return e.executeStopAll(ctx, client, running, alreadyStopped, onProgress)
 }
 
-// planStopAll enumerates the managed stacks to stop under the held
-// runtime.lock. It reuses [Engine.List]'s scan so corrupt manifests are
-// logged as warnings and excluded, matching the List contract. The scan
-// makes no Docker call. An empty managed set is not an error: it yields
-// an empty app list and StopAll returns an empty result.
+// planStopAll enumerates the managed stacks and partitions them into the
+// stacks to stop (at least one running container) and the stacks already not
+// running (skipped). It reuses [Engine.List]'s scan so corrupt manifests are
+// logged as warnings and excluded, matching the List contract, then inspects
+// each managed stack's containers read-only to judge whether any is running.
+// An empty managed set is not an error: it yields two empty slices and
+// StopAll returns a clean no-op result.
 func (e *Engine) planStopAll(
 	ctx context.Context,
+	client docker.Client,
 	onProgress types.ProgressFn,
-) ([]types.AppInfo, error) {
+) (running, alreadyStopped []types.AppInfo, err error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if onProgress != nil {
 		onProgress(types.StepStopAllPlanning, 5, "finding managed apps to stop")
@@ -86,27 +124,74 @@ func (e *Engine) planStopAll(
 
 	apps, err := e.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+
+	for _, app := range apps {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		isRunning, err := e.stackHasRunningContainer(ctx, client, app.AppID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if isRunning {
+			running = append(running, app)
+		} else {
+			alreadyStopped = append(alreadyStopped, app)
+		}
 	}
 
 	if onProgress != nil {
 		onProgress(types.StepStopAllPlanning, 15, fmt.Sprintf(
-			"stop planned for %d managed app(s)",
-			len(apps),
+			"stop planned for %d running app(s); %d already stopped",
+			len(running),
+			len(alreadyStopped),
 		))
 	}
-	return apps, nil
+	return running, alreadyStopped, nil
 }
 
-// confirmStopAll asks the Confirmer to authorize the whole batch once,
-// immediately before any stop. A nil confirmer refuses with
+// stackHasRunningContainer reports whether the managed stack appID has at
+// least one running managed container, read live and read-only through the
+// shared inspect the status path uses. It resolves the stack the same way
+// the read-only Status path does (no exclusive flock) and reuses the shared
+// managed-container fusion and running-count primitives so the StopAll plan
+// and the "stopped" status classification can never drift.
+func (e *Engine) stackHasRunningContainer(
+	ctx context.Context,
+	client docker.Client,
+	appID string,
+) (bool, error) {
+	_, lock, err := e.resolveManagedStack(ctx, appID)
+	if err != nil {
+		return false, err
+	}
+
+	containers, err := docker.InspectProjectContainers(ctx, client, lock.ComposeProject)
+	if err != nil {
+		return false, err
+	}
+
+	scratch := &types.AppStatus{}
+	managed, _ := fuseManagedServiceStatuses(
+		appID,
+		expectedStatusServices(lock),
+		completedServiceSet(lock.CompletedServices),
+		containers,
+		scratch,
+	)
+	return runningManagedCount(managed) > 0, nil
+}
+
+// confirmStopAll asks the Confirmer to authorize the running batch once,
+// immediately before any stop. It is only reached when at least one stack is
+// running (the empty-plan case returns before confirming), so the payload
+// always names a non-empty set. A nil confirmer refuses with
 // [types.ErrCodeUsageValidation] per the pkg/engine contract, a decline
 // maps to [types.ErrCodeUserCanceled], and a confirmer error propagates
 // wrapped. The confirm runs before any Docker mutation, so a decline
 // leaves every stack exactly as it was.
-// An empty managed set still requires the confirmer to be non-nil (the
-// fail-closed contract is uniform), but the payload states there is
-// nothing to stop.
 func confirmStopAll(
 	ctx context.Context,
 	confirmer types.Confirmer,
@@ -142,24 +227,19 @@ func confirmStopAll(
 }
 
 // stopAllConfirmation assembles the SAFE batch consequence payload: an
-// explicit statement that every managed app's containers will be stopped
-// (preserved, not removed, no data loss) and the list of apps. The Kind
+// explicit statement that the running apps' containers will be stopped
+// (preserved, not removed, no data loss) and the list of those apps. The Kind
 // is the SAFE "stop_all_safe" literal (mirroring restart's
 // "restart_safe"): `docker compose stop` removes nothing, so --yes
 // auto-accepts it. The payload carries no secret values (app ids only),
-// so it is sink-safe.
+// so it is sink-safe. It is only built for a non-empty running set.
 func stopAllConfirmation(apps []types.AppInfo) types.Confirmation {
-	var lines []string
-	if len(apps) == 0 {
-		lines = append(lines, "there are no managed apps to stop")
-	} else {
-		lines = append(lines, fmt.Sprintf(
-			"this stops the containers of %d managed app(s) (no removal, no data loss)",
-			len(apps),
-		))
-		for _, app := range apps {
-			lines = append(lines, "stops app "+app.AppID)
-		}
+	lines := []string{fmt.Sprintf(
+		"this stops the containers of %d running app(s) (no removal, no data loss)",
+		len(apps),
+	)}
+	for _, app := range apps {
+		lines = append(lines, "stops app "+app.AppID)
 	}
 	return types.Confirmation{
 		Kind:    "stop_all_safe",
@@ -168,29 +248,41 @@ func stopAllConfirmation(apps []types.AppInfo) types.Confirmation {
 	}
 }
 
-// executeStopAll runs `docker compose stop` for each managed app under
-// the runtime.lock already held by [Engine.StopAll]. It is
-// continue-on-error: a single stack's failure is captured into the result
-// and the loop moves on, so one unreachable stack never blocks the rest.
+// skippedStoppedApps maps the already-not-running managed apps the plan
+// skipped into [types.StoppedApp] entries for [types.StopAllResult.AlreadyStopped].
+// They carry the app id only: no stop ran, so there is no Compose project to
+// report from a held flock and no failure detail. A nil or empty input
+// yields a nil slice so the result omits the field.
+func skippedStoppedApps(apps []types.AppInfo) []types.StoppedApp {
+	if len(apps) == 0 {
+		return nil
+	}
+	skipped := make([]types.StoppedApp, 0, len(apps))
+	for _, app := range apps {
+		skipped = append(skipped, types.StoppedApp{AppID: app.AppID})
+	}
+	return skipped
+}
+
+// executeStopAll runs `docker compose stop` for each running managed app
+// under the runtime.lock already held by [Engine.StopAll], using the client
+// the plan stage already built. It is continue-on-error: a single stack's
+// failure is captured into the result and the loop moves on, so one
+// unreachable stack never blocks the rest. The already-stopped stacks the
+// plan skipped are carried straight into the result for transparency.
 // Context cancellation is the only whole-operation abort — it stops the
 // loop and propagates, because a canceled batch should not keep issuing
 // Docker calls.
 func (e *Engine) executeStopAll(
 	ctx context.Context,
-	apps []types.AppInfo,
+	client docker.Client,
+	apps, alreadyStopped []types.AppInfo,
 	onProgress types.ProgressFn,
 ) (*types.StopAllResult, error) {
 	result := &types.StopAllResult{
-		Stopped: []types.StoppedApp{},
-		Failed:  []types.StoppedApp{},
-	}
-
-	// The stop path generates no secrets and reads no .env content, so the
-	// Docker client carries the structural redactor only (mirrors the
-	// restart path's client).
-	client, err := e.buildDockerClient(security.NewActiveRedactor(nil))
-	if err != nil {
-		return nil, err
+		Stopped:        []types.StoppedApp{},
+		Failed:         []types.StoppedApp{},
+		AlreadyStopped: skippedStoppedApps(alreadyStopped),
 	}
 
 	total := len(apps)

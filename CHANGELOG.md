@@ -7,16 +7,22 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
 
 ### Added
 - Added a "Stop all apps" action to the dashboard and a `wdm apps stop-all`
-  command that runs `docker compose stop` against every managed stack at once.
-  It preserves all data (containers, networks, and named volumes stay defined),
-  continues on error so one unreachable stack does not block the rest, and exits
-  nonzero when any stack fails.
+  command that runs `docker compose stop` against every running managed stack at
+  once. It targets only apps with a running container, preserves all data
+  (containers, networks, and named volumes stay defined), continues on error so
+  one unreachable stack does not block the rest, and exits nonzero when any
+  targeted stack fails.
 - Added a `stopped` runtime state for apps whose managed containers all exist
   but are not running (for example after `docker compose stop`). It reports
   `needs_attention: false` so a cleanly stopped app is no longer shown as
   needing attention; `needs_attention` is reserved for genuine trouble.
 
 ### Changed
+- `wdm apps stop-all` now stops only running apps. Stacks that are already
+  stopped are skipped and reported as already stopped (in `--json` under
+  `already_stopped` and as a short note in plain output). When no app is
+  running, it prints "No running apps to stop." and exits `0` without prompting,
+  instead of confirming and "stopping" apps that were already down.
 - The dashboard "Check my apps" list and `wdm apps list` now report each app's
   live runtime state (running / stopped / needs attention / removed) from real
   Docker container state instead of always showing "running". `wdm apps list

@@ -115,13 +115,55 @@ func TestAppsStopAll_CleanSuccess_ExitsZero(t *testing.T) {
 	assert.Contains(t, stdout, "Stopped 1 app(s).")
 }
 
-func TestAppsStopAll_EmptyManagedSet_RendersNoApps(t *testing.T) {
+func TestAppsStopAll_NoRunningApps_RendersNoRunning(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeEngine{stopAllResult: &types.StopAllResult{}}
 	stdout, _, err := runLeaf(t, fake, "apps", "stop-all", "--yes")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "No managed apps to stop.")
+	assert.Contains(t, stdout, "No running apps to stop.")
+}
+
+// When every managed app is already stopped, the plain finish screen reports
+// "No running apps to stop." with the already-stopped count, and exits zero.
+func TestAppsStopAll_AllAlreadyStopped_RendersSkippedNote(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		stopAllResult: &types.StopAllResult{
+			AlreadyStopped: []types.StoppedApp{
+				{AppID: "vaultwarden"},
+				{AppID: "freshrss"},
+			},
+		},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "apps", "stop-all", "--yes")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "No running apps to stop.")
+	assert.Contains(t, stdout, "(2 already stopped, skipped)")
+}
+
+// --json carries the already_stopped array alongside stopped.
+func TestAppsStopAll_JSON_IncludesAlreadyStopped(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		stopAllResult: &types.StopAllResult{
+			Stopped:        []types.StoppedApp{{AppID: "vaultwarden"}},
+			AlreadyStopped: []types.StoppedApp{{AppID: "freshrss"}},
+		},
+	}
+
+	stdout, _, err := runLeaf(t, fake, "apps", "stop-all", "--json")
+	require.NoError(t, err)
+
+	lines := nonEmptyLines(stdout)
+	require.Len(t, lines, 1)
+	data := decodeEnvelopeData(t, lines[0])
+	skipped, ok := data["already_stopped"].([]any)
+	require.True(t, ok, "result must carry the already_stopped array")
+	assert.Len(t, skipped, 1)
 }
 
 // stop-all takes no positional args; extra args fail before the engine

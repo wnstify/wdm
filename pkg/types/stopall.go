@@ -29,17 +29,24 @@ type StoppedApp struct {
 	Error string `json:"error,omitempty"`
 }
 
-// StopAllResult summarizes a completed StopAll run. StopAll is
-// continue-on-error: every managed stack is attempted even if some fail,
-// so the result partitions the managed set into the stacks that stopped
-// and the stacks that failed. An empty managed set yields two empty
-// slices and a nil operation error.
+// StopAllResult summarizes a completed StopAll run. StopAll targets only
+// the managed stacks that have at least one running container; it is
+// continue-on-error, so every targeted stack is attempted even if some
+// fail. The result partitions the targeted set into the stacks that stopped
+// and the stacks that failed, and separately lists the managed stacks that
+// were already not running and so were skipped without a stop attempt. A
+// managed set with no running stacks yields empty Stopped/Failed slices, a
+// populated AlreadyStopped slice, and a nil operation error.
 type StopAllResult struct {
-	// Stopped lists the stacks that stopped cleanly (including already
-	// stopped no-ops).
+	// Stopped lists the stacks that stopped cleanly.
 	Stopped []StoppedApp `json:"stopped,omitempty"`
 
 	// Failed lists the stacks whose stop failed, each carrying its
 	// redacted failure detail in StoppedApp.Error.
 	Failed []StoppedApp `json:"failed,omitempty"`
+
+	// AlreadyStopped lists the managed stacks that had no running container
+	// at plan time and so were skipped without a stop attempt. They are
+	// reported for transparency; skipping them is not a failure.
+	AlreadyStopped []StoppedApp `json:"already_stopped,omitempty"`
 }
