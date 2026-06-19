@@ -191,8 +191,11 @@ func TestDeleteApp_HappyPathConfirmsDownDeletesAndReports(t *testing.T) {
 		"the §19 list must name .wdm-backups/ with its snapshot count")
 	assert.Contains(t, payload.Message, "named volumes and app data are NOT deleted")
 	assert.Contains(t, payload.Message, "keeps named volume wdm-delete-happy-app_data")
-	assert.Contains(t, payload.Message, "the app's wdm-created docker networks are removed",
-		"the confirmation must state networks are removed (reinstall recreates them)")
+	// The seeded compose declares no external networks, so the confirmation
+	// must NOT claim any wdm-created networks are removed (Greptile P2: the
+	// network-removal line is conditional on the app actually having them).
+	assert.NotContains(t, payload.Message, "wdm-created docker network",
+		"with no external networks the confirmation must not mention network removal")
 	// The.env content (a secret) must NEVER reach the confirm payload.
 	assert.NotContains(t, payload.Message, "super-secret",
 		"the confirmation payload must list filenames only, never .env content")
@@ -275,6 +278,12 @@ func TestDeleteApp_RemovesExternalNetworksAfterDown(t *testing.T) {
 	// wdm-created networks — never the compose-down step's ID.
 	assert.Contains(t, steps, types.StepDeleteRemoveNetworks,
 		"the dedicated network-removal step must fire when networks exist")
+
+	// With external networks present, the confirmation must state they are
+	// removed (the conditional wording's positive case).
+	require.Len(t, confirmer.calls, 1)
+	assert.Contains(t, confirmer.calls[0].Message, "wdm-created docker network(s) are removed",
+		"the confirmation must state networks are removed when the app has them")
 
 	assert.Equal(t, []string{"wdm_back", "wdm_front"}, removeCalls,
 		"both external networks must be targeted by network rm, in sorted order")

@@ -545,7 +545,8 @@ func confirmDelete(
 // .wdm-backups/ snapshot count called out — the permanence
 // warning that this is NOT the safe remove and cannot be undone (§19:450),
 // the named Docker volumes that survive the deletion (§19:454-455 — v1 never
-// deletes them), and a note that the app's wdm-created networks are removed
+// deletes them), and — only when the rendered compose actually declares
+// wdm-created (external) networks — a note that those networks are removed
 // (PRD §10, §19; reinstall recreates them). The payload carries no secret
 // values — paths, Compose project, and volume/network names only, never.env
 // content — so it is sink-safe by construction.
@@ -569,7 +570,14 @@ func deleteConfirmation(plan *deletePlan) types.Confirmation {
 	for _, volume := range plan.remainingNamedVolumes {
 		lines = append(lines, "keeps named volume "+volume)
 	}
-	lines = append(lines, "the app's wdm-created docker networks are removed (reinstall recreates them)")
+	if composePath, err := security.SafeJoin(plan.stackPath, installComposeFilename); err == nil {
+		if names := readExternalNetworkNames(composePath); len(names) > 0 {
+			lines = append(lines, fmt.Sprintf(
+				"the app's %d wdm-created docker network(s) are removed (reinstall recreates them)",
+				len(names),
+			))
+		}
+	}
 	return types.Confirmation{
 		Kind:    types.ConfirmationKindDeleteDestructive,
 		Title:   "delete " + plan.appID,
