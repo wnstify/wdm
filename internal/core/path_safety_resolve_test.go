@@ -17,24 +17,29 @@ func TestResolveDirs_RejectsRelativePaths(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		cfg  config
+		name    string
+		cfg     config
+		wantErr string
 	}{
 		{
-			name: "relative config path",
-			cfg:  config{configPath: "relative/config.toml"},
+			name:    "relative config path",
+			cfg:     config{configPath: "relative/config.toml", stateDir: "/abs/state", dataDir: "/abs/share", stackBaseDir: "/abs/docker"},
+			wantErr: "WithConfigPath requires absolute path",
 		},
 		{
-			name: "relative state dir",
-			cfg:  config{stateDir: "relative/state"},
+			name:    "relative state dir",
+			cfg:     config{configPath: "/abs/config.toml", stateDir: "relative/state", dataDir: "/abs/share", stackBaseDir: "/abs/docker"},
+			wantErr: "WithStateDir requires absolute path",
 		},
 		{
-			name: "relative data dir",
-			cfg:  config{dataDir: "relative/share"},
+			name:    "relative data dir",
+			cfg:     config{configPath: "/abs/config.toml", stateDir: "/abs/state", dataDir: "relative/share", stackBaseDir: "/abs/docker"},
+			wantErr: "WithDataDir requires absolute path",
 		},
 		{
-			name: "relative stack base dir",
-			cfg:  config{stackBaseDir: "relative/docker"},
+			name:    "relative stack base dir",
+			cfg:     config{configPath: "/abs/config.toml", stateDir: "/abs/state", dataDir: "/abs/share", stackBaseDir: "relative/docker"},
+			wantErr: "WithStackBaseDir requires absolute path",
 		},
 	}
 
@@ -42,9 +47,13 @@ func TestResolveDirs_RejectsRelativePaths(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Sibling fields are absolute so only the field under test trips
+			// the IsAbs gate; asserting the specific message pins each case to
+			// its intended branch and keeps it independent of XDG/$HOME lookups.
 			cfg := tt.cfg
 			err := resolveDirs(&cfg)
 			require.Error(t, err)
+			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
@@ -67,5 +76,6 @@ func TestResolveStackBase_RejectsRelativeSettingsBase(t *testing.T) {
 	// must be rejected rather than used as a relative working directory.
 	base, err := resolveStackBase("", &types.Settings{BaseStackPath: "docker"})
 	require.Error(t, err)
+	require.ErrorContains(t, err, "stack base must resolve to an absolute path")
 	require.Empty(t, base)
 }
