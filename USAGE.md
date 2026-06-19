@@ -141,8 +141,8 @@ View or change a managed app's per-service resource limits. This is a top-level 
 | `wdm resources <app-id>` | View an app's resource limits, or change them with the limit flags below. |
 
 - With **no limit flags**, `resources` prints the read-only current-values view: for each adjustable service, the memory, CPU, and PID limits currently in effect alongside the catalog's allowed bands (memory and CPU show `min` / `recommended` / `max`; PIDs show `default` / `max`). A service the catalog forbids overriding is shown marked `(not adjustable)`.
-- With one or more limit flags, `resources` changes the selected service's limits. `wdm` validates the requested values against the catalog bands, backs up the config, rewrites only the resource variables in the stack's `.env` (every secret and unrelated value is preserved), re-renders the Compose file, validates it, and recreates the container (a brief downtime). Limits left unset are kept as-is; an explicit empty memory/CPU value or a zero PID value is rejected. The new limits are stored in the `.env`, so they survive catalog updates.
-- `--service <name>` — service whose limits change. Defaults to `app`, the conventional primary service.
+- With one or more limit flags, `resources` changes the selected service's limits. `wdm` validates the requested values against the catalog bands, backs up the config, rewrites only the resource variables in the stack's `.env` in place (every secret and unrelated value is preserved), validates the resulting Compose configuration, and recreates the container (a brief downtime). Limits left unset are kept as-is; an explicit empty memory/CPU value or a zero PID value is rejected. The new limits are stored in the `.env`, so they survive catalog updates.
+- `--service <name>` — service whose limits change. Defaults to the app's primary (first adjustable) service.
 - `--memory <value>` — new memory limit in Docker form, for example `1g`.
 - `--cpus <value>` — new CPU quota as a decimal string, for example `1.5`.
 - `--pids <n>` — new PID limit.

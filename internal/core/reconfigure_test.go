@@ -150,11 +150,103 @@ func renderReconfigureEnv(env map[string]string) string {
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
 
+// derivedDomainApp returns a catalog entry modeling a derived-domain app
+// (the shape of baserow/serpbear/docuseal/vaultwarden): its .env template
+// references an install-only input (APP_DOMAIN) that is NEVER persisted to
+// .env and is used to compute a derived value (APP_PUBLIC_URL). A
+// reconfigure that re-rendered this .env would fail because APP_DOMAIN is
+// absent from the resolution — the exact issue #28 bug. The in-place edit
+// must succeed because it never re-renders.
+func derivedDomainApp(appID string) catalog.App {
+	app := reconfigureApp(appID)
+	app.Placeholders = append([]catalog.Placeholder{
+		{Name: "APP_DOMAIN", Type: "string", Required: true},
+	}, app.Placeholders...)
+	return app
+}
+
+func derivedDomainTemplates(appID string) map[string]string {
+	dir := "templates/" + appID + "/"
+	templates := reconfigureTemplates(appID)
+	// The .env template requires APP_DOMAIN (an install-only input) and
+	// derives APP_PUBLIC_URL from it. Re-rendering without APP_DOMAIN in the
+	// resolution would fail with "required placeholder ... absent from
+	// resolution" — the issue #28 regression this guards.
+	templates[dir+".env.tmpl"] = "DB_PASSWORD={{ .DB_PASSWORD }}\n" +
+		"APP_PUBLIC_URL=https://{{ .APP_DOMAIN }}\n" +
+		"MEMORY_LIMIT_APP={{ .MEMORY_LIMIT_APP }}\n" +
+		"CPUS_LIMIT_APP={{ .CPUS_LIMIT_APP }}\n" +
+		"PIDS_LIMIT_APP={{ .PIDS_LIMIT_APP }}\n"
+	return templates
+}
+
+// TestReconfigure_DerivedDomainAppInPlaceEdit is the issue #28 regression
+// guard: a derived-domain app (baserow shape) whose .env carries a derived
+// APP_PUBLIC_URL computed from an install-only APP_DOMAIN input that was
+// never persisted to .env. The OLD re-render path failed here with
+// "required placeholder ... absent from resolution"; the in-place edit
+// must succeed, change ONLY the targeted resource line, and preserve the
+// derived value and the secret byte-for-byte.
+func TestReconfigure_DerivedDomainAppInPlaceEdit(t *testing.T) {
+	t.Parallel()
+
+	app := derivedDomainApp("reconf-derived-app")
+	catalogFS := catalogFixtureFSWithFiles(t, derivedDomainTemplates(app.AppID), app)
+	eng, stateDir := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallSecretGeneratorForTest(eng, func(security.Encoding) (string, error) {
+		t.Fatalf("no secret may be generated on reconfigure")
+		return "", nil
+	})
+	fake := &fakeDockerClient{}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+
+	stackBase := filepath.Join(filepath.Dir(stateDir), "stacks")
+	stackPath := filepath.Join(stackBase, app.AppID)
+	lock := updateStackLockForApp(app, stackPath)
+	lock.GeneratedFields = []string{"DB_PASSWORD"}
+	writeStatusStackLock(t, stackBase, app.AppID, lock)
+
+	const derivedURL = "APP_PUBLIC_URL=https://baserow.example.com"
+	envBytes := []byte("DB_PASSWORD=" + reconfigureSecretValue + "\n" +
+		derivedURL + "\n" +
+		"MEMORY_LIMIT_APP=" + reconfigureInstallMemory + "\n" +
+		"CPUS_LIMIT_APP=" + reconfigureInstallCPUs + "\n" +
+		"PIDS_LIMIT_APP=" + reconfigureInstallPIDs + "\n")
+	envPath := filepath.Join(stackPath, ".env")
+	require.NoError(t, os.WriteFile(envPath, envBytes, 0o600))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stackPath, "docker-compose.yml"),
+		[]byte("services:\n  app:\n    image: docker.io/example/app:1.0.0\n"),
+		0o644,
+	))
+
+	res, err := eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   app.AppID,
+		Service: "app",
+		Memory:  strPtr("1g"),
+	}, nil, &fakeConfirmer{})
+	require.NoError(t, err, "the in-place edit must not need the install-only APP_DOMAIN input")
+	require.NotNil(t, res)
+	assert.NoError(t, err)
+
+	envAfter, err := os.ReadFile(envPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(envAfter), "MEMORY_LIMIT_APP=1g",
+		"the targeted resource var changed to the new value")
+	assert.Contains(t, string(envAfter), derivedURL,
+		"the derived APP_PUBLIC_URL is preserved byte-for-byte (never re-rendered)")
+	assert.Contains(t, string(envAfter), "DB_PASSWORD="+reconfigureSecretValue,
+		"the install-time secret is preserved byte-for-byte")
+	assert.NotContains(t, string(envAfter), "absent from resolution")
+	assert.Contains(t, fake.invocationTypes, "docker.composeUpInvocation",
+		"the recreate runs after the in-place edit")
+}
+
 // TestReconfigure_HappyPathRewritesResourceVarsAndRecreates is the
 // end-to-end happy path: a request changing memory and cpus rewrites
 // ONLY those resource vars in .env, preserves the secret and the
-// untouched pids var, re-renders, validates, confirms, recreates, and
-// commits the manifest with a reconfigure operation kind.
+// untouched pids var, validates the unchanged compose, confirms,
+// recreates, and commits the manifest with a reconfigure operation kind.
 func TestReconfigure_HappyPathRewritesResourceVarsAndRecreates(t *testing.T) {
 	t.Parallel()
 
@@ -193,6 +285,183 @@ func TestReconfigure_HappyPathRewritesResourceVarsAndRecreates(t *testing.T) {
 		"the install-time secret is preserved byte-for-byte")
 	assert.Equal(t, os.FileMode(0o600), fileModePerm(t, fx.envPath),
 		".env keeps secret-file mode after the rewrite")
+}
+
+// TestReconfigure_BandedRejectionMessages proves each out-of-band
+// rejection states the allowed range in the "must be between" form so the
+// operator sees the band without a second lookup (issue #28 bug 2). The
+// reconfigureApp band is memory 256m-1g, cpus 0.25-2.0, pids 1-500.
+func TestReconfigure_BandedRejectionMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		id   string
+		req  func(appID string) types.ReconfigureRequest
+		want string
+	}{
+		{
+			name: "memory over max",
+			id:   "reconf-banded-memmax",
+			req: func(appID string) types.ReconfigureRequest {
+				return types.ReconfigureRequest{AppID: appID, Service: "app", Memory: strPtr("4g")}
+			},
+			want: "memory limit must be between 256m and 1g",
+		},
+		{
+			name: "cpus over max",
+			id:   "reconf-banded-cpumax",
+			req: func(appID string) types.ReconfigureRequest {
+				return types.ReconfigureRequest{AppID: appID, Service: "app", CPUs: strPtr("8.0")}
+			},
+			want: "cpus limit must be between 0.25 and 2.0",
+		},
+		{
+			name: "pids over max",
+			id:   "reconf-banded-pidmax",
+			req: func(appID string) types.ReconfigureRequest {
+				return types.ReconfigureRequest{AppID: appID, Service: "app", PIDs: intPtr(9000)}
+			},
+			want: "pids limit must be between 1 and 500",
+		},
+		{
+			name: "empty memory",
+			id:   "reconf-banded-memempty",
+			req: func(appID string) types.ReconfigureRequest {
+				return types.ReconfigureRequest{AppID: appID, Service: "app", Memory: strPtr("")}
+			},
+			want: "memory limit must be between 256m and 1g",
+		},
+		{
+			name: "empty cpus",
+			id:   "reconf-banded-cpuempty",
+			req: func(appID string) types.ReconfigureRequest {
+				return types.ReconfigureRequest{AppID: appID, Service: "app", CPUs: strPtr("")}
+			},
+			want: "cpus limit must be between 0.25 and 2.0",
+		},
+		{
+			name: "sub-1 pids",
+			id:   "reconf-banded-pidsub1",
+			req: func(appID string) types.ReconfigureRequest {
+				return types.ReconfigureRequest{AppID: appID, Service: "app", PIDs: intPtr(0)}
+			},
+			want: "pids limit must be between 1 and 500",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fx := newReconfigureFixture(t, reconfigureApp(tt.id), nil)
+			res, err := fx.eng.Reconfigure(t.Context(), tt.req(fx.appID), nil, &fakeConfirmer{})
+			require.Error(t, err)
+			assert.Nil(t, res)
+			assertUsageValidation(t, err)
+			assert.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+// TestReconfigure_RewriteCarriesStackSecretsForRedactor proves the
+// in-place rewrite returns a plan whose reusedSecretValues carries the
+// stack's secret-typed .env values. The caller (applyReconfigure) concats
+// generatedValues + reusedSecretValues into the redactor used for the .env
+// write, deploy, restore, and lock-manifest phases; an empty slice would
+// make that redactor a no-op and let a docker error echo a substituted
+// secret. The on-disk compose matches the catalog pin, so the in-place
+// guard set passes and the rewrite returns the secret literals.
+func TestReconfigure_RewriteCarriesStackSecretsForRedactor(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-secret-redactor")
+	fx := newReconfigureFixture(t, app, nil)
+
+	got, err := fx.eng.ReconfigureRewriteStackForTest(
+		t.Context(),
+		types.ReconfigureRequest{AppID: fx.appID, Service: "app", Memory: strPtr("1g")},
+		app,
+		fx.stackPath,
+		"wdm-"+fx.appID,
+	)
+	require.NoError(t, err, "the untampered in-place rewrite must pass the catalog-vs-compose guards")
+
+	assert.Contains(t, got.ReusedSecretValues, reconfigureSecretValue,
+		"the rewrite plan must carry the stack secret so the caller's redactor is non-empty")
+
+	literals := append(append([]string{}, got.GeneratedValues...), got.ReusedSecretValues...)
+	assert.NotEmpty(t, literals,
+		"slices.Concat(generatedValues, reusedSecretValues) must yield the secret literals")
+}
+
+// TestReconfigure_TamperedPublicBindRefused proves the in-place rewrite
+// re-runs the catalog-vs-compose guards against the ON-DISK compose: a
+// hand-tampered compose that binds a port on 0.0.0.0 (a public bind the
+// catalog never declared) is refused fail-closed before the recreate. The
+// reconfigure is the only mutating path that previously skipped these
+// guards, so a tampered compose could otherwise be force-recreated
+// unchecked.
+func TestReconfigure_TamperedPublicBindRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-tamper-bind")
+	fx := newReconfigureFixture(t, app, nil)
+
+	tampered := "services:\n" +
+		"  app:\n" +
+		"    image: docker.io/example/app:1.0.0\n" +
+		"    ports:\n" +
+		"      - \"0.0.0.0:18080:18080\"\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fx.stackPath, "docker-compose.yml"),
+		[]byte(tampered),
+		0o644,
+	))
+
+	_, err := fx.eng.ReconfigureRewriteStackForTest(
+		t.Context(),
+		types.ReconfigureRequest{AppID: fx.appID, Service: "app", Memory: strPtr("1g")},
+		app,
+		fx.stackPath,
+		"wdm-"+fx.appID,
+	)
+	require.Error(t, err, "a public-bind tamper in the on-disk compose must be refused")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"no recreate runs when the guard refuses the tampered compose")
+}
+
+// TestReconfigure_TamperedPrivilegeRefused proves the in-place rewrite
+// refuses a compose that grants a container privilege (privileged: true)
+// the catalog never declared. Like the public-bind tamper, this exercises
+// the catalog-vs-compose guard set against the on-disk compose before the
+// force-recreate.
+func TestReconfigure_TamperedPrivilegeRefused(t *testing.T) {
+	t.Parallel()
+
+	app := reconfigureApp("reconf-tamper-priv")
+	fx := newReconfigureFixture(t, app, nil)
+
+	tampered := "services:\n" +
+		"  app:\n" +
+		"    image: docker.io/example/app:1.0.0\n" +
+		"    privileged: true\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fx.stackPath, "docker-compose.yml"),
+		[]byte(tampered),
+		0o644,
+	))
+
+	_, err := fx.eng.ReconfigureRewriteStackForTest(
+		t.Context(),
+		types.ReconfigureRequest{AppID: fx.appID, Service: "app", Memory: strPtr("1g")},
+		app,
+		fx.stackPath,
+		"wdm-"+fx.appID,
+	)
+	require.Error(t, err, "an undeclared privileged: true in the on-disk compose must be refused")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"no recreate runs when the guard refuses the tampered compose")
 }
 
 // TestReconfigure_OutOfBandRejectedBeforeAnyChange proves an over-max
@@ -515,62 +784,35 @@ func TestReconfigure_BackupFailureAbortsBeforeRewrite(t *testing.T) {
 	assert.Zero(t, fx.fake.calls, "a backup failure aborts before any Docker call")
 }
 
-// TestReconfigure_RewriteFailureAbortsBeforeDeploy proves a render fault in
-// the rewrite (a poisoned compose template) aborts before any byte is
-// written and before any Docker call: the backup ran, the on-disk .env is
-// unchanged, and no recreate happens. rewriteReconfigureStack is pure, so
-// the fault is pre-exposure and needs no restore.
-func TestReconfigure_RewriteFailureAbortsBeforeDeploy(t *testing.T) {
+// TestReconfigure_MalformedEnvAbortsBeforeDeploy proves a corrupt stack
+// .env (a non-KEY=VALUE line) aborts the in-place rewrite before any byte
+// is written and before any Docker call: planReconfigure reads the .env
+// first and refuses fail-closed, so the on-disk .env is untouched and no
+// recreate happens.
+func TestReconfigure_MalformedEnvAbortsBeforeDeploy(t *testing.T) {
 	t.Parallel()
 
-	app := reconfigureApp("reconf-rewritefail-app")
-	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
-		"templates/" + app.AppID + "/docker-compose.yml.tmpl": "services:\n  app:\n    image: ${X} {{ .Broken\n",
-		"templates/" + app.AppID + "/.env.tmpl": "DB_PASSWORD={{ .DB_PASSWORD }}\n" +
-			"MEMORY_LIMIT_APP={{ .MEMORY_LIMIT_APP }}\n" +
-			"CPUS_LIMIT_APP={{ .CPUS_LIMIT_APP }}\n" +
-			"PIDS_LIMIT_APP={{ .PIDS_LIMIT_APP }}\n",
-	}, app)
-	eng, stateDir := newTestEngine(t, core.WithCatalog(catalogFS))
-	core.SetInstallSecretGeneratorForTest(eng, func(security.Encoding) (string, error) {
-		t.Fatalf("no secret may be generated on reconfigure")
-		return "", nil
-	})
-	fake := &fakeDockerClient{}
-	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+	fx := newReconfigureFixture(t, reconfigureApp("reconf-badenv-app"), nil)
+	envBytes := []byte("DB_PASSWORD=" + reconfigureSecretValue + "\n" +
+		"this-line-has-no-equals\n" +
+		"MEMORY_LIMIT_APP=" + reconfigureInstallMemory + "\n" +
+		"CPUS_LIMIT_APP=" + reconfigureInstallCPUs + "\n" +
+		"PIDS_LIMIT_APP=" + reconfigureInstallPIDs + "\n")
+	require.NoError(t, os.WriteFile(fx.envPath, envBytes, 0o600))
 
-	stackBase := filepath.Join(filepath.Dir(stateDir), "stacks")
-	stackPath := filepath.Join(stackBase, app.AppID)
-	lock := updateStackLockForApp(app, stackPath)
-	lock.GeneratedFields = []string{"DB_PASSWORD"}
-	writeStatusStackLock(t, stackBase, app.AppID, lock)
-	envBytes := []byte(renderReconfigureEnv(map[string]string{
-		"DB_PASSWORD":      reconfigureSecretValue,
-		"MEMORY_LIMIT_APP": reconfigureInstallMemory,
-		"CPUS_LIMIT_APP":   reconfigureInstallCPUs,
-		"PIDS_LIMIT_APP":   reconfigureInstallPIDs,
-	}))
-	envPath := filepath.Join(stackPath, ".env")
-	require.NoError(t, os.WriteFile(envPath, envBytes, 0o600))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(stackPath, "docker-compose.yml"),
-		[]byte("services:\n  app:\n    image: docker.io/example/app:1.0.0\n"),
-		0o644,
-	))
-
-	res, err := eng.Reconfigure(t.Context(), types.ReconfigureRequest{
-		AppID:   app.AppID,
+	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   fx.appID,
 		Service: "app",
 		Memory:  strPtr("1g"),
 	}, nil, &fakeConfirmer{})
 	require.Error(t, err)
 	assert.Nil(t, res)
-	assertVerificationFailed(t, err)
-	assert.Zero(t, fake.calls, "a render fault aborts before any Docker call")
+	assertUsageValidation(t, err)
+	assert.Zero(t, fx.fake.calls, "a malformed .env aborts before any Docker call")
 
-	envAfter, err := os.ReadFile(envPath)
+	envAfter, err := os.ReadFile(fx.envPath)
 	require.NoError(t, err)
-	assert.Equal(t, envBytes, envAfter, "a pre-exposure rewrite fault must not touch .env")
+	assert.Equal(t, envBytes, envAfter, "a pre-exposure refusal must not touch .env")
 }
 
 // TestReconfigure_MissingEnvResourceVarRefused proves readServiceResourceValues
@@ -683,69 +925,6 @@ func TestReconfigure_ClosedEngineRefused(t *testing.T) {
 	assert.ErrorIs(t, err, core.ErrClosed)
 
 	assert.Zero(t, fx.fake.calls)
-}
-
-// TestReconfigure_TamperedPublicBindRefused proves the install-arc
-// public-bind scan is wired into the reconfigure re-render path: a tampered
-// catalog template that binds an undeclared port on 0.0.0.0 is refused with
-// the redacted verification error before any byte is written or recreate
-// runs. The backup precedes the rewrite, but no Docker call happens.
-func TestReconfigure_TamperedPublicBindRefused(t *testing.T) {
-	t.Parallel()
-
-	app := reconfigureApp("reconf-publicbind-app")
-	templates := reconfigureTemplates(app.AppID)
-	templates["templates/"+app.AppID+"/docker-compose.yml.tmpl"] = `services:
-  app:
-    image: docker.io/example/app:1.0.0
-    ports:
-      - "0.0.0.0:8099:8099"
-    environment:
-      DB_PASSWORD: ${DB_PASSWORD}
-    deploy:
-      resources:
-        limits:
-          memory: ${MEMORY_LIMIT_APP}
-          cpus: ${CPUS_LIMIT_APP}
-        reservations:
-          pids: ${PIDS_LIMIT_APP}
-`
-	catalogFS := catalogFixtureFSWithFiles(t, templates, app)
-	eng, stateDir := newTestEngine(t, core.WithCatalog(catalogFS))
-	core.SetInstallSecretGeneratorForTest(eng, func(security.Encoding) (string, error) {
-		t.Fatalf("no secret may be generated on reconfigure")
-		return "", nil
-	})
-	fake := &fakeDockerClient{}
-	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
-
-	stackBase := filepath.Join(filepath.Dir(stateDir), "stacks")
-	stackPath := filepath.Join(stackBase, app.AppID)
-	lock := updateStackLockForApp(app, stackPath)
-	lock.GeneratedFields = []string{"DB_PASSWORD"}
-	writeStatusStackLock(t, stackBase, app.AppID, lock)
-	require.NoError(t, os.WriteFile(filepath.Join(stackPath, ".env"), []byte(renderReconfigureEnv(map[string]string{
-		"DB_PASSWORD":      reconfigureSecretValue,
-		"MEMORY_LIMIT_APP": reconfigureInstallMemory,
-		"CPUS_LIMIT_APP":   reconfigureInstallCPUs,
-		"PIDS_LIMIT_APP":   reconfigureInstallPIDs,
-	})), 0o600))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(stackPath, "docker-compose.yml"),
-		[]byte("services:\n  app:\n    image: docker.io/example/app:1.0.0\n"),
-		0o644,
-	))
-
-	res, err := eng.Reconfigure(t.Context(), types.ReconfigureRequest{
-		AppID:   app.AppID,
-		Service: "app",
-		Memory:  strPtr("1g"),
-	}, nil, &fakeConfirmer{})
-	require.Error(t, err)
-	assert.Nil(t, res)
-	assertVerificationFailed(t, err)
-	assert.ErrorContains(t, err, "tcp/8099")
-	assert.Zero(t, fake.calls, "a public-bind refusal aborts before any Docker call")
 }
 
 // TestReconfigure_EmptyAppIDRejected proves planReconfigure refuses an
@@ -995,30 +1174,4 @@ func TestReconfigure_DeployFailureEmitsRestoreProgress(t *testing.T) {
 	assert.Nil(t, res)
 	assert.Contains(t, steps, types.StepReconfigureConfigRestore,
 		"the sad path must emit the config-restore progress step")
-}
-
-// TestReconfigure_DuplicatePlaceholderRefused proves the rewrite's
-// placeholder-resolution guard rejects a catalog that declares the same
-// placeholder twice, fail-closed before any byte is written. The backup
-// runs first (it precedes the rewrite), but no Docker call happens.
-func TestReconfigure_DuplicatePlaceholderRefused(t *testing.T) {
-	t.Parallel()
-
-	app := reconfigureApp("reconf-dupph-app")
-	regenerableFalse := false
-	app.Placeholders = append(app.Placeholders, catalog.Placeholder{
-		Name: "DB_PASSWORD", Type: "secret", Required: true, Encoding: "base64url", Regenerable: &regenerableFalse,
-	})
-	fx := newReconfigureFixture(t, app, nil)
-
-	res, err := fx.eng.Reconfigure(t.Context(), types.ReconfigureRequest{
-		AppID:   fx.appID,
-		Service: "app",
-		Memory:  strPtr("1g"),
-	}, nil, &fakeConfirmer{})
-	require.Error(t, err)
-	assert.Nil(t, res)
-	assertVerificationFailed(t, err)
-	assert.ErrorContains(t, err, "duplicate placeholder")
-	assert.Zero(t, fx.fake.calls, "a catalog-shape fault aborts before any Docker call")
 }

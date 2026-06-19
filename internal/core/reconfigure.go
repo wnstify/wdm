@@ -190,21 +190,21 @@ func buildReconfigurePlan(
 	// any backup or mutation, so the engine API is safe for every caller.
 	if req.Memory != nil && strings.TrimSpace(*req.Memory) == "" {
 		return nil, usageValidationError(
-			"memory limit is empty",
-			"pass a Docker memory value such as 512m or 1g",
+			fmt.Sprintf("memory limit must be between %s and %s", profile.Memory.Min, profile.Memory.Max),
+			fmt.Sprintf("pass a Docker memory value between %s and %s for %s", profile.Memory.Min, profile.Memory.Max, req.Service),
 			fmt.Errorf("service %q memory override is empty", req.Service),
 		)
 	}
 	if req.CPUs != nil && strings.TrimSpace(*req.CPUs) == "" {
 		return nil, usageValidationError(
-			"cpus limit is empty",
-			"pass a cpu quota such as 1.5",
+			fmt.Sprintf("cpus limit must be between %s and %s", profile.CPUs.Min, profile.CPUs.Max),
+			fmt.Sprintf("pass a cpu quota between %s and %s for %s", profile.CPUs.Min, profile.CPUs.Max, req.Service),
 			fmt.Errorf("service %q cpus override is empty", req.Service),
 		)
 	}
 	if req.PIDs != nil && *req.PIDs < 1 {
 		return nil, usageValidationError(
-			"pids limit must be at least 1",
+			fmt.Sprintf("pids limit must be between 1 and %d", profile.PIDs.Max),
 			fmt.Sprintf("choose a pids value between 1 and %d for %s", profile.PIDs.Max, req.Service),
 			fmt.Errorf("service %q pids override %d is below 1", req.Service, *req.PIDs),
 		)

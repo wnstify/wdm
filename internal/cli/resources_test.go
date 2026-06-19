@@ -166,6 +166,50 @@ func TestResources_FlagToPointerMapping(t *testing.T) {
 	assert.Equal(t, 400, *req.PIDs)
 }
 
+// TestResources_OmittedServiceResolvesPrimary proves that with --service
+// omitted the command resolves the target through ResourceSettings to the
+// app's first adjustable service (baserow's "baserow"), not the literal
+// "app" that would fail the band lookup for such an app.
+func TestResources_OmittedServiceResolvesPrimary(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		resourceSettings: &types.ResourceSettings{
+			AppID: "baserow",
+			Services: []types.ResourceServiceSettings{
+				{Service: "postgres", Adjustable: false},
+				{Service: "baserow", Adjustable: true},
+			},
+		},
+		reconfigureResult: &types.ReconfigureResult{AppID: "baserow", Service: "baserow"},
+	}
+
+	_, _, err := runLeaf(t, fake, "resources", "baserow", "--memory", "1g", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "baserow", fake.reconfigureReq.Service,
+		"an omitted --service resolves to the first adjustable catalog service, not the literal \"app\"")
+}
+
+// TestResources_ExplicitServiceBypassesResolution proves an explicit
+// --service is sent verbatim and is not overridden by the primary-service
+// resolution.
+func TestResources_ExplicitServiceBypassesResolution(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		resourceSettings: &types.ResourceSettings{
+			AppID:    "baserow",
+			Services: []types.ResourceServiceSettings{{Service: "baserow", Adjustable: true}},
+		},
+		reconfigureResult: &types.ReconfigureResult{AppID: "baserow", Service: "postgres"},
+	}
+
+	_, _, err := runLeaf(t, fake, "resources", "baserow", "--service", "postgres", "--memory", "1g", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "postgres", fake.reconfigureReq.Service,
+		"an explicit --service must be sent verbatim")
+}
+
 func TestResources_StackPathMapsOntoRequest(t *testing.T) {
 	t.Parallel()
 
