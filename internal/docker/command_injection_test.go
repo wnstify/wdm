@@ -89,6 +89,12 @@ func TestCommandInjection_NameShapedInputsRefuseOWASPPayloads(t *testing.T) {
 			},
 		},
 		{
+			name: "compose down remove images project name",
+			call: func(ctx context.Context, client Client, payload string) error {
+				return ComposeDownRemoveImages(ctx, client, project(payload))
+			},
+		},
+		{
 			name: "compose pull project name",
 			call: func(ctx context.Context, client Client, payload string) error {
 				return ComposePull(ctx, client, project(payload))

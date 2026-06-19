@@ -196,46 +196,45 @@ func (c *execClient) Run(ctx context.Context, inv Invocation) (CommandResult, er
 	return redacted, nil
 }
 
+// buildComposeInvocationCommand handles the `docker compose ...` deployment
+// and logs invocations, keeping the compose family out of buildCommand's main
+// switch so its cyclomatic complexity stays bounded as verbs are added. It
+// returns handled=false for any non-compose invocation so buildCommand falls
+// through to the remaining cases.
+func buildComposeInvocationCommand(inv Invocation) (cmd commandSpec, handled bool, err error) {
+	switch typedInv := inv.(type) {
+	case composeConfigInvocation:
+		cmd, err = buildComposeConfigCommand(typedInv)
+	case composePullInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "pull")
+	case composeUpInvocation:
+		cmd, err = buildComposeUpCommand(typedInv)
+	case composeRestartInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "restart")
+	case composeStopInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "stop")
+	case composeDownInvocation:
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "down")
+	case composeDownRemoveImagesInvocation:
+		cmd, err = buildComposeDownRemoveImagesCommand(typedInv)
+	case composeLogsInvocation:
+		cmd, err = buildComposeLogsCommand(typedInv)
+	default:
+		return commandSpec{}, false, nil
+	}
+	return cmd, true, err
+}
+
 func buildCommand(inv Invocation) (commandSpec, error) {
+	if cmd, handled, err := buildComposeInvocationCommand(inv); handled {
+		return cmd, err
+	}
+
 	switch typedInv := inv.(type) {
 	case VersionInvocation:
 		return commandSpec{argv: []string{"version"}}, nil
 	case ComposeVersionInvocation:
 		return commandSpec{argv: []string{"compose", "version"}}, nil
-	case composeConfigInvocation:
-		return buildComposeConfigCommand(typedInv)
-	case composePullInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"pull",
-		)
-	case composeUpInvocation:
-		return buildComposeUpCommand(typedInv)
-	case composeRestartInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"restart",
-		)
-	case composeStopInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"stop",
-		)
-	case composeDownInvocation:
-		return buildComposeProjectCommand(
-			typedInv.composeFile,
-			typedInv.envFile,
-			typedInv.projectName,
-			"down",
-		)
-	case composeLogsInvocation:
-		return buildComposeLogsCommand(typedInv)
 	case networkInspectInvocation:
 		return buildNetworkInspectCommand(typedInv.name)
 	case networkSubnetInvocation:
@@ -325,6 +324,25 @@ func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
 	if inv.forceRecreate {
 		cmd.argv = append(cmd.argv, "--force-recreate")
 	}
+	return cmd, nil
+}
+
+// buildComposeDownRemoveImagesCommand builds `docker compose ... down --rmi
+// all` for the self-uninstall teardown (PRD §39). It reuses the validated
+// down base and appends only `--rmi all` — never `-v` — so the forbidden
+// volume-removal flag can never reach the argv. The allowlist re-checks the
+// exact shape before exec.
+func buildComposeDownRemoveImagesCommand(inv composeDownRemoveImagesInvocation) (commandSpec, error) {
+	cmd, err := buildComposeProjectCommand(
+		inv.composeFile,
+		inv.envFile,
+		inv.projectName,
+		"down",
+	)
+	if err != nil {
+		return commandSpec{}, err
+	}
+	cmd.argv = append(cmd.argv, "--rmi", "all")
 	return cmd, nil
 }
 
@@ -610,8 +628,13 @@ func isComposeProjectArgv(argv []string) bool {
 	}
 
 	switch argv[7] {
-	case "pull", "restart", "stop", "down":
+	case "pull", "restart", "stop":
 		return len(argv) == 8
+	case "down":
+		// Plain safe down (no -v), or the self-uninstall down --rmi all
+		// teardown (PRD §39). -v is never allowlisted in either shape.
+		return len(argv) == 8 ||
+			len(argv) == 10 && argv[8] == "--rmi" && argv[9] == "all"
 	case "up":
 		return len(argv) == 9 && argv[8] == "-d" ||
 			len(argv) == 10 && argv[8] == "-d" && argv[9] == "--force-recreate"
