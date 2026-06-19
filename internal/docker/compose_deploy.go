@@ -91,6 +91,30 @@ func ComposeRestart(ctx context.Context, client Client, project ComposeProject) 
 	return err
 }
 
+// ComposeStop executes plain `docker compose stop` for a validated
+// project. It stops the project's running containers without removing
+// them: the containers, networks, and named volumes stay defined and all
+// data is preserved (this is NOT `docker compose down`). No per-service
+// argument is ever passed: the whole stack stops together. `docker
+// compose stop` is idempotent, so an already-stopped stack is a no-op.
+func ComposeStop(ctx context.Context, client Client, project ComposeProject) error {
+	if client == nil {
+		return types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	inv, err := newComposeStopInvocation(project)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.Run(ctx, inv)
+	return err
+}
+
 // ComposeDown executes safe `docker compose down` (no -v) for a
 // validated project.
 func ComposeDown(ctx context.Context, client Client, project ComposeProject) error {
@@ -103,6 +127,31 @@ func ComposeDown(ctx context.Context, client Client, project ComposeProject) err
 	}
 
 	inv, err := newComposeDownInvocation(project)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.Run(ctx, inv)
+	return err
+}
+
+// ComposeDownRemoveImages executes `docker compose down --rmi all` (NEVER
+// -v) for a validated project. It removes the project's containers, the
+// default network Compose created for it, AND every image the project's
+// services reference — but never named volumes, so all data is preserved.
+// It is the self-uninstall teardown verb (PRD §39): wdm-managed scope only,
+// never a system-wide prune. The `--rmi all` flag is appended privately so
+// callers cannot inject the forbidden `-v`.
+func ComposeDownRemoveImages(ctx context.Context, client Client, project ComposeProject) error {
+	if client == nil {
+		return types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	inv, err := newComposeDownRemoveImagesInvocation(project)
 	if err != nil {
 		return err
 	}
@@ -136,6 +185,14 @@ type composeRestartInvocation struct {
 
 func (composeRestartInvocation) isDockerInvocation() {}
 
+type composeStopInvocation struct {
+	composeFile string
+	envFile     string
+	projectName string
+}
+
+func (composeStopInvocation) isDockerInvocation() {}
+
 type composeDownInvocation struct {
 	composeFile string
 	envFile     string
@@ -143,6 +200,14 @@ type composeDownInvocation struct {
 }
 
 func (composeDownInvocation) isDockerInvocation() {}
+
+type composeDownRemoveImagesInvocation struct {
+	composeFile string
+	envFile     string
+	projectName string
+}
+
+func (composeDownRemoveImagesInvocation) isDockerInvocation() {}
 
 func newComposePullInvocation(project ComposeProject) (composePullInvocation, error) {
 	normalized, err := validateComposeProject(project)
@@ -187,6 +252,19 @@ func newComposeRestartInvocation(project ComposeProject) (composeRestartInvocati
 	}, nil
 }
 
+func newComposeStopInvocation(project ComposeProject) (composeStopInvocation, error) {
+	normalized, err := validateComposeProject(project)
+	if err != nil {
+		return composeStopInvocation{}, err
+	}
+
+	return composeStopInvocation{
+		composeFile: normalized.ComposeFile,
+		envFile:     normalized.EnvFile,
+		projectName: normalized.ProjectName,
+	}, nil
+}
+
 func newComposeDownInvocation(project ComposeProject) (composeDownInvocation, error) {
 	normalized, err := validateComposeProject(project)
 	if err != nil {
@@ -194,6 +272,19 @@ func newComposeDownInvocation(project ComposeProject) (composeDownInvocation, er
 	}
 
 	return composeDownInvocation{
+		composeFile: normalized.ComposeFile,
+		envFile:     normalized.EnvFile,
+		projectName: normalized.ProjectName,
+	}, nil
+}
+
+func newComposeDownRemoveImagesInvocation(project ComposeProject) (composeDownRemoveImagesInvocation, error) {
+	normalized, err := validateComposeProject(project)
+	if err != nil {
+		return composeDownRemoveImagesInvocation{}, err
+	}
+
+	return composeDownRemoveImagesInvocation{
 		composeFile: normalized.ComposeFile,
 		envFile:     normalized.EnvFile,
 		projectName: normalized.ProjectName,

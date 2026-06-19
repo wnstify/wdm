@@ -54,6 +54,13 @@ import (
 //     retention copy is removed (on a failed replace) via os.Remove (single
 //     file), not RemoveAll — so no RemoveAll target is ever the install
 //     target or its sibling rollback binary.
+//   - internal/core/uninstall.go — the self-uninstall footprint removal
+//     (PRD §39); the os.RemoveAll runs only inside removeFootprintDir, after
+//     the target is symlink-resolved (filepath.EvalSymlinks), proven within
+//     the user home via security.EnsureWithinRoot, and rejected when it
+//     resolves to a suspiciously shallow path. The running binary and its
+//     .previous sibling are removed via os.Remove (single file), never
+//     RemoveAll.
 //
 // way 's forbidigo criterion was ticked at with its
 // own reconciliation note. The scan walks every production (non-_test.go)
@@ -63,6 +70,7 @@ var removeAllAllowedFiles = map[string]struct{}{
 	filepath.Join("internal", "core", "install.go"):           {},
 	filepath.Join("internal", "core", "self_update.go"):       {},
 	filepath.Join("internal", "core", "self_update_apply.go"): {},
+	filepath.Join("internal", "core", "uninstall.go"):         {},
 	filepath.Join("internal", "state", "backup.go"):           {},
 	filepath.Join("internal", "state", "catalog_bundle.go"):   {},
 }

@@ -77,7 +77,10 @@ func TestModel_DestructiveDeleteFlowPassesTypedNameAndRendersEngineConfirmation(
 		AppID:                 "uptime-kuma",
 		DeletedPaths:          []string{"/srv/wdm/uptime-kuma"},
 		RemainingNamedVolumes: []string{"wdm_uptime-kuma_data"},
-		RemainingNetworks:     []string{"wdm"},
+		RemovedNetworks:       []string{"wdm"},
+		RetainedNetworks: []types.RetainedNetwork{
+			{Name: "shared", Reason: "network shared has active endpoints"},
+		},
 	}
 	m := loadRemoveActionsScreenWithSender(t, fake, sender.Send)
 	m = updateModel(t, m, downKey())
@@ -122,6 +125,9 @@ func TestModel_DestructiveDeleteFlowPassesTypedNameAndRendersEngineConfirmation(
 	assert.Contains(t, view, "permanently deleted")
 	assert.Contains(t, view, "/srv/wdm/uptime-kuma")
 	assert.Contains(t, view, "wdm_uptime-kuma_data")
+	assert.Contains(t, view, "Networks removed:")
+	assert.Contains(t, view, "could not be removed")
+	assert.Contains(t, view, "docker network rm shared")
 	assert.Empty(t, fake.removeRequests)
 }
 
@@ -165,8 +171,8 @@ func TestModel_DeleteNameBackspaceRemovesLastRune(t *testing.T) {
 
 func removeFlowFake() *fakeEngine {
 	return &fakeEngine{
-		listApps: []types.AppInfo{
-			{AppID: "uptime-kuma", TemplateName: "Uptime Kuma"},
+		listStatusApps: []types.AppRuntimeStatus{
+			{AppInfo: types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma"}, State: "running"},
 		},
 		statuses: map[string]*types.AppStatus{
 			"uptime-kuma": {AppID: "uptime-kuma", State: "running"},
@@ -198,6 +204,68 @@ func (e *confirmingDeleteEngine) DeleteApp(
 	return e.deleteResult, e.deleteErr
 }
 
+func loadDeleteNameScreen(t *testing.T, eng *fakeEngine) model {
+	t.Helper()
+
+	m := loadRemoveActionsScreen(t, eng)
+	m = updateModel(t, m, downKey())
+	next, cmd := m.Update(enterKey())
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+	require.Equal(t, screenDeleteName, m.screen)
+	return m
+}
+
+func TestModel_DeleteNameAcceptsBAndQAsTypedInput(t *testing.T) {
+	t.Parallel()
+
+	m := loadDeleteNameScreen(t, removeFlowFake())
+
+	m = updateModel(t, m, runeKey('b'))
+	m = updateModel(t, m, runeKey('q'))
+
+	assert.Equal(t, "bq", m.deleteNameInput)
+	assert.Equal(t, screenDeleteName, m.screen)
+	assert.False(t, m.exiting)
+}
+
+func TestModel_DeleteNameTypesBeszelRegression(t *testing.T) {
+	t.Parallel()
+
+	m := loadDeleteNameScreen(t, removeFlowFake())
+
+	for _, r := range "beszel" {
+		m = updateModel(t, m, runeKey(r))
+	}
+
+	assert.Equal(t, "beszel", m.deleteNameInput)
+	assert.Equal(t, screenDeleteName, m.screen)
+}
+
+func TestModel_DeleteNameEscStillGoesBack(t *testing.T) {
+	t.Parallel()
+
+	m := loadDeleteNameScreen(t, removeFlowFake())
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = assertModel(t, next)
+	require.Nil(t, cmd)
+
+	assert.NotEqual(t, screenDeleteName, m.screen)
+	assert.False(t, m.exiting)
+}
+
+func TestModel_DeleteNameCtrlCStillQuits(t *testing.T) {
+	t.Parallel()
+
+	m := loadDeleteNameScreen(t, removeFlowFake())
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	require.NotNil(t, cmd)
+	assert.Equal(t, tea.Quit(), cmd())
+}
+
 func loadRemoveActionsScreen(t *testing.T, eng *fakeEngine) model {
 	t.Helper()
 
@@ -220,8 +288,9 @@ func loadRemoveActionsScreenWithSender(t *testing.T, eng engine.Engine, send fun
 	m = assertModel(t, next)
 	require.NotNil(t, cmd)
 	m = updateModel(t, m, cmd())
-	m = updateModel(t, m, downKey())
-	m = updateModel(t, m, downKey())
+	for checkAppActions[m.actionCursor] != "Remove app" {
+		m = updateModel(t, m, downKey())
+	}
 	next, cmd = m.Update(enterKey())
 	m = assertModel(t, next)
 	require.Nil(t, cmd)

@@ -90,7 +90,7 @@ func (m model) updateAppsView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 
@@ -101,7 +101,7 @@ func (m model) updateResultView() string {
 
 	if m.updateResult == nil {
 		b.WriteString("No update result returned.\n\n")
-		b.WriteString(helpLine())
+		b.WriteString(m.helpLine())
 		return b.String()
 	}
 
@@ -141,7 +141,7 @@ func (m model) updateResultView() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpLine())
+	b.WriteString(m.helpLine())
 	return b.String()
 }
 

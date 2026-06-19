@@ -19,8 +19,11 @@ import (
 // §19:453), then deletes everything wdm wrote for the app — the rendered
 // Compose file, the `.env`, the `.wdm.lock` manifest, the `.wdm-backups/`
 // config snapshots, and the stack directory itself — and reports what
-// survives. Named Docker volumes and catalog-declared networks are NEVER
-// deleted (§19:453-455).
+// survives. Named Docker volumes and on-disk data are NEVER deleted
+// (§19:453-455); the app's wdm-created Docker networks ARE removed
+// best-effort (a network that cannot be removed is reported with the manual
+// `docker network rm` command and never aborts the deletion; reinstall
+// recreates them).
 // This leaf is thin: it collects the flags, maps them verbatim
 // onto [types.DeleteRequest], and renders [types.DeleteResult]. It carries ZERO
 // deletion business logic — the engine owns the typed-name equality
@@ -108,9 +111,12 @@ Compose file, the .env, the .wdm.lock manifest, the .wdm-backups
 snapshots, and the stack directory itself. This is NOT the safe remove
 and it cannot be undone (PRD §19).
 
-Named Docker volumes and catalog-declared networks are never deleted;
-the result reports what survives. There is intentionally no flag to
-delete volumes or data.
+Named Docker volumes and on-disk data are never deleted; the app's
+wdm-created Docker networks are removed best-effort (a network that
+cannot be removed is reported with the manual docker network rm command
+and never aborts the deletion; reinstall recreates them). The result
+reports what was removed and what survives. There is intentionally no
+flag to delete volumes or data.
 
 To confirm the deletion you must type the exact app id with
 --confirm-name (typing the app id is the stronger confirmation). The
@@ -178,10 +184,11 @@ resolved stack and refuses on a mismatch.`,
 
 // writeDeleteFinish renders the PRD §19 destructive-deletion finish screen for
 // a completed deletion to w (stdout): that the app was permanently deleted,
-// then the deleted paths and what survives in Docker — the remaining named
-// volumes as a bulleted list and the remaining networks (only
-// when non-empty). The layout is line-oriented and free of table-art so cut(1)
-// and awk(1) stay usable, mirroring writeRemoveFinish.
+// then the deleted paths, the remaining named volumes as a bulleted list, the
+// wdm-created networks removed, and a manual `docker network rm` hint for any
+// that could not be removed (only when non-empty). The layout is line-oriented
+// and free of table-art so cut(1) and awk(1) stay usable, mirroring
+// writeRemoveFinish.
 // Empty-list honesty (mirroring writeRemoveFinish): the remaining named-volume
 // listing is opportunistic — a daemon-down or transient inspect failure yields
 // an EMPTY list, not a fault, so an empty RemainingNamedVolumes does not prove
@@ -209,15 +216,32 @@ func writeDeleteFinish(w io.Writer, result *types.DeleteResult) error {
 		b.WriteString("  none reported (Docker inspection data may be unavailable)\n")
 	}
 
-	if len(result.RemainingNetworks) > 0 {
-		b.WriteString("\nNetworks left in place:\n")
-		for _, network := range result.RemainingNetworks {
+	if len(result.RemovedNetworks) > 0 {
+		b.WriteString("\nNetworks removed:\n")
+		for _, network := range result.RemovedNetworks {
 			fmt.Fprintf(&b, "  - %s\n", network)
 		}
 	}
+
+	writeDeleteRetainedNetworks(&b, result)
 
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return fmt.Errorf("apps delete: writing finish screen: %w", err)
 	}
 	return nil
+}
+
+// writeDeleteRetainedNetworks appends a warning section naming the wdm-created
+// networks that could not be removed during deletion and the exact
+// `docker network rm <name>` command to finish the cleanup manually. Network
+// removal is best-effort and never aborts the deletion, so a retained network
+// is reported as a follow-up action, mirroring writeUninstallRetainedNetworks.
+func writeDeleteRetainedNetworks(b *strings.Builder, result *types.DeleteResult) {
+	if len(result.RetainedNetworks) == 0 {
+		return
+	}
+	b.WriteString("\nWARNING: some wdm-created networks could not be removed. Remove them manually:\n")
+	for _, network := range result.RetainedNetworks {
+		fmt.Fprintf(b, "    docker network rm %s\n", network.Name)
+	}
 }

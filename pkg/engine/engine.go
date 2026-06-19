@@ -26,6 +26,24 @@ type Engine interface {
 	// (defensive-copy semantics per golang-safety).
 	List(ctx context.Context) ([]types.AppInfo, error)
 
+	// ListStatus returns one [types.AppRuntimeStatus] per managed stack —
+	// the same set List reports — each carrying a LIVE runtime summary
+	// (running / needs_attention / removed) derived from Docker container
+	// inspection (PRD §18). It is the list-level companion to Status: the
+	// dashboard "Check my apps" list and `wdm apps list --json` use it so
+	// every entry reflects real container state rather than a hardcoded
+	// "running".
+	// It is deliberately lighter than per-app Status: it derives State
+	// from container inspection and the manifest alone, skipping the
+	// per-stack compose-config validation shell, and it never acquires the
+	// runtime lock (the read-only Status posture, PRD §26). Per-stack
+	// inspections run concurrently; output is sorted by app id so the order
+	// is deterministic regardless of completion order. A corrupt lock
+	// surfaces as a warning on its entry, not as a fatal error.
+	// Implementations MUST return a fresh slice on each call (defensive-copy
+	// semantics per golang-safety, matching List).
+	ListStatus(ctx context.Context) ([]types.AppRuntimeStatus, error)
+
 	// Status reports the operational state of a single managed stack
 	// identified by appID (PRD §18).
 	Status(ctx context.Context, appID string) (*types.AppStatus, error)
@@ -65,6 +83,72 @@ type Engine interface {
 	// the per-stack flock and consults confirmer before the recreate;
 	// onProgress receives the step_restart_* events.
 	Restart(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
+
+	// ResourceSettings reports a managed app's per-service resource limits
+	// — the values currently in effect (read from the stack's .env) and
+	// the catalog's allowed bands (min/recommended/max) — for the
+	// read-only `wdm resources <app>` view (issue #28). Read-only: it
+	// never acquires the runtime.lock, mirroring Status's posture. It is
+	// the inspection companion to Reconfigure.
+	ResourceSettings(ctx context.Context, appID string) (*types.ResourceSettings, error)
+
+	// Reconfigure changes one managed service's resource limits (memory,
+	// CPUs, PIDs) after install (issue #28). It edits ONLY the targeted
+	// resource-limit lines in the stack's .env in place — every secret,
+	// derived value, comment, and unrelated line is preserved byte-for-byte
+	// — leaves docker-compose.yml untouched, validates via docker compose
+	// config, and recreates the container with docker compose up -d
+	// --force-recreate. It does NOT re-render .env or compose from the
+	// catalog template, so apps with derived values built from install-only
+	// inputs reconfigure cleanly. Requested values are validated
+	// against the catalog's resource bands (min/max, allow_override): an
+	// out-of-band value or a service the catalog forbids overriding is
+	// refused fail-closed before any change. As a state-changing op it
+	// holds the global runtime.lock and the per-stack flock, backs up the
+	// config FIRST, and consults confirmer before the recreate (a brief
+	// downtime). A nil onProgress is tolerated; a nil confirmer refuses to
+	// proceed past the confirmation step. onProgress receives the
+	// step_reconfigure_* events.
+	Reconfigure(ctx context.Context, req types.ReconfigureRequest, onProgress ProgressFn, confirmer Confirmer) (*types.ReconfigureResult, error)
+
+	// StopAll stops every managed stack at once (issue #27): it runs
+	// docker compose stop against each stack, which stops the running
+	// containers without removing them, so containers, networks, and
+	// named volumes stay defined and all data is preserved (it is NOT
+	// docker compose down). It is whole-stack and all-apps only; the
+	// request carries no selector. As a state-changing op it holds the
+	// global runtime.lock once for the whole batch, takes the per-stack
+	// flock around each stop, and consults confirmer once before the
+	// batch with a SAFE payload listing the apps. StopAll is
+	// continue-on-error: every stack is attempted even if some fail, and
+	// the result partitions the managed set into Stopped and Failed.
+	// A non-nil error is returned only for whole-operation failures (a
+	// nil confirmer, a declined confirmation, lock contention, or
+	// cancellation); per-stack stop failures live in the result.
+	// onProgress receives the step_stop_all_* events.
+	StopAll(ctx context.Context, req types.StopAllRequest, onProgress ProgressFn, confirmer Confirmer) (*types.StopAllResult, error)
+
+	// Uninstall tears down every managed stack and then removes wdm's own
+	// on-disk footprint, including the running binary (PRD §39, issue
+	// #29). For each managed stack it runs docker compose down --rmi all
+	// (NEVER -v): containers and the stack's images are removed. After every
+	// app is down the wdm-created Docker networks are removed best-effort, but
+	// ALL named volumes and every ~/docker/<app>/ stack directory are KEPT —
+	// self-uninstall never deletes user data. It is wdm-managed scope only,
+	// never a system-wide prune. As a destructive
+	// state-changing op it holds the global runtime.lock once, takes the
+	// per-stack flock around each teardown, and consults confirmer once
+	// before the batch with a [types.ConfirmationKindUninstallDestructive]
+	// payload. Uninstall is fail-closed: if any stack teardown fails it
+	// ABORTS before removing any footprint, leaving wdm installed and
+	// listing the failed stacks in the result. Only when every stack tears
+	// down cleanly does it remove the config dir, the data/share dir, the
+	// state dir (with the runtime lock) last among directories, and the
+	// running binary plus its .previous sibling last of all. The core
+	// NEVER calls os.Exit: it returns the structured result and the
+	// CLI/TUI layer handles process exit. onProgress receives the
+	// step_uninstall_* events.
+	Uninstall(ctx context.Context, req types.UninstallRequest, onProgress ProgressFn, confirmer Confirmer) (*types.UninstallResult, error)
 
 	// ValidateConfig runs docker compose config --quiet against the
 	// managed stack's on-disk Compose file and reports the outcome (PRD

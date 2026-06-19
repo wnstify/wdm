@@ -267,15 +267,6 @@ func TestStatus_FusesEachAttentionCondition(t *testing.T) {
 			expectedReasons: []string{"container_missing"},
 		},
 		{
-			name:       "managed container exited unexpectedly",
-			mutateLock: func(lock *state.StackLock) { lock.LocalPorts = nil },
-			script: func(t *testing.T, fixture *statusTestFixture) {
-				inspect := statusContainerInspectStdout(t, "app", fixture.appID, fixture.hostPort, "exited", false, false, 137, "")
-				scriptStatusDocker(fixture, statusTestContainerID+"\n", inspect, nil)
-			},
-			expectedReasons: []string{"container_exited"},
-		},
-		{
 			name:       "managed container in restart loop",
 			mutateLock: func(lock *state.StackLock) { lock.LocalPorts = nil },
 			script: func(t *testing.T, fixture *statusTestFixture) {
@@ -487,28 +478,167 @@ func TestStatus_CompletedServiceExemption(t *testing.T) {
 }
 
 // TestStatus_OrdinaryServiceExitStillNeedsAttention is the regression
-// guard for the nil-completed sibling path: a service that is NOT in
-// completed_services and exited 0 still surfaces container_exited, so
-// the completed exemption never leaks to ordinary services.
+// guard for the nil-completed sibling path: an ordinary service (NOT in
+// completed_services) that exited 0 while a sibling is still running surfaces
+// container_exited, so the completed exemption never leaks to ordinary
+// services and a partial-up stack is not misread as cleanly stopped. The
+// running sibling keeps this a partial-up case rather than the all-down
+// stopped case.
 func TestStatus_OrdinaryServiceExitStillNeedsAttention(t *testing.T) {
 	t.Parallel()
 
 	fixture := newStatusFixture(t, func(lock *state.StackLock) {
 		lock.LocalPorts = nil
 		lock.CompletedServices = nil
+		lock.ImagePins = []state.ImagePin{
+			{Service: "app", Image: "docker.io/example/app", Tag: "1.0.0"},
+			{Service: "worker", Image: "docker.io/example/worker", Tag: "1.0.0"},
+		}
 	})
-	inspect := statusContainerInspectStdout(t, "app", fixture.appID, fixture.hostPort, "exited", false, false, 0, "")
-	scriptStatusDocker(fixture, statusTestContainerID+"\n", inspect, nil)
+	appUp := statusContainerInspectStdout(t, "app", fixture.appID, fixture.hostPort, "running", true, false, 0, "")
+	workerDown := statusContainerInspectStdout(t, "worker", fixture.appID, fixture.hostPort, "exited", false, false, 0, "")
+	calls := 0
+	fixture.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		switch fmt.Sprintf("%T", inv) {
+		case "docker.projectContainerListInvocation":
+			return docker.CommandResult{Stdout: statusTestContainerID + "\nabcdefabcdef\n"}, nil
+		case "docker.containerInspectInvocation":
+			calls++
+			if calls == 1 {
+				return docker.CommandResult{Stdout: appUp}, nil
+			}
+			return docker.CommandResult{Stdout: workerDown}, nil
+		default:
+			return docker.CommandResult{}, nil
+		}
+	}
 
 	status, err := fixture.eng.Status(t.Context(), fixture.appID)
 	require.NoError(t, err)
 	require.NotNil(t, status)
 
+	assert.Equal(t, "needs_attention", status.State)
 	assert.True(t, status.NeedsAttention)
 	assert.Equal(t, []string{"container_exited"}, status.AttentionReasons)
-	require.Len(t, status.Services, 1)
-	assert.Equal(t, "exited", status.Services[0].State)
-	assert.True(t, status.Services[0].NeedsAttention)
+	require.Len(t, status.Services, 2)
+	worker := status.Services[1]
+	assert.Equal(t, "worker", worker.Service)
+	assert.Equal(t, "exited", worker.State)
+	assert.True(t, worker.NeedsAttention)
+}
+
+// TestStatus_StoppedState drives the stopped classification through the full
+// Status path: a single managed service whose container is present but not
+// running reports the calm "stopped" state with NeedsAttention false and no
+// port_mismatch/container_exited reason, while a running container reports
+// "running" and a missing container reports "removed"-style needs-attention
+// (container_missing). The manifest keeps its local port so the suppression
+// of port_mismatch for a stopped app is exercised.
+func TestStatus_StoppedState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		listStdout      string
+		containerStatus string
+		running         bool
+		expectedState   string
+		expectAttention bool
+		forbidReasons   []string
+	}{
+		{
+			name:            "all containers present but stopped is stopped",
+			listStdout:      statusTestContainerID + "\n",
+			containerStatus: "exited",
+			running:         false,
+			expectedState:   "stopped",
+			expectAttention: false,
+			forbidReasons:   []string{"container_exited", "port_mismatch"},
+		},
+		{
+			name:            "running container is running",
+			listStdout:      statusTestContainerID + "\n",
+			containerStatus: "running",
+			running:         true,
+			expectedState:   "running",
+			expectAttention: false,
+		},
+		{
+			name:            "missing container needs attention",
+			listStdout:      "",
+			expectedState:   "needs_attention",
+			expectAttention: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newStatusFixture(t, nil)
+			inspect := ""
+			if tt.listStdout != "" {
+				inspect = statusContainerInspectStdout(
+					t, "app", fixture.appID, fixture.hostPort,
+					tt.containerStatus, tt.running, false, 0, "",
+				)
+			}
+			scriptStatusDocker(fixture, tt.listStdout, inspect, nil)
+
+			status, err := fixture.eng.Status(t.Context(), fixture.appID)
+			require.NoError(t, err)
+			require.NotNil(t, status)
+
+			assert.Equal(t, tt.expectedState, status.State)
+			assert.Equal(t, tt.expectAttention, status.NeedsAttention)
+			for _, reason := range tt.forbidReasons {
+				assert.NotContains(t, status.AttentionReasons, reason)
+			}
+			if tt.expectedState == "stopped" {
+				assert.Empty(t, status.AttentionReasons)
+			}
+		})
+	}
+}
+
+// TestStatus_PartialUpStaysNeedsAttention proves a mixed app — one service
+// running, one exited — is NOT classified stopped: a partial-up stack stays
+// needs_attention because something that should be running isn't.
+func TestStatus_PartialUpStaysNeedsAttention(t *testing.T) {
+	t.Parallel()
+
+	fixture := newStatusFixture(t, func(lock *state.StackLock) {
+		lock.LocalPorts = nil
+		lock.ImagePins = []state.ImagePin{
+			{Service: "app", Image: "docker.io/example/app", Tag: "1.0.0"},
+			{Service: "db", Image: "docker.io/example/db", Tag: "1.0.0"},
+		}
+	})
+
+	appUp := statusContainerInspectStdout(t, "app", fixture.appID, fixture.hostPort, "running", true, false, 0, "")
+	dbDown := statusContainerInspectStdout(t, "db", fixture.appID, fixture.hostPort, "exited", false, false, 1, "")
+	listStdout := statusTestContainerID + "\n" + "abcdefabcdef\n"
+	calls := 0
+	fixture.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		switch fmt.Sprintf("%T", inv) {
+		case "docker.projectContainerListInvocation":
+			return docker.CommandResult{Stdout: listStdout}, nil
+		case "docker.containerInspectInvocation":
+			calls++
+			if calls == 1 {
+				return docker.CommandResult{Stdout: appUp}, nil
+			}
+			return docker.CommandResult{Stdout: dbDown}, nil
+		default:
+			return docker.CommandResult{}, nil
+		}
+	}
+
+	status, err := fixture.eng.Status(t.Context(), fixture.appID)
+	require.NoError(t, err)
+	assert.Equal(t, "needs_attention", status.State)
+	assert.True(t, status.NeedsAttention)
+	assert.Contains(t, status.AttentionReasons, "container_exited")
 }
 
 // TestStatus_WedgedLiveHolderRuntimeLockIsStale covers the second

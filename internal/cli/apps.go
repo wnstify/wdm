@@ -14,11 +14,15 @@ import (
 // key, not at the top of envelope.data, because PRD §32 mandates an object,
 // and the keyed shape leaves room for sibling fields (warnings, scan_errors,
 // next_cursor) without breaking parsers.
+// Each entry is a [types.AppRuntimeStatus]: the manifest facts plus the
+// LIVE runtime state (running / stopped / needs_attention / removed) so a
+// JSON consumer sees real container state, not a placeholder. This is a
+// deliberate wire-contract change from the manifest-only AppInfo shape.
 // nil slices serialize to JSON "null". The leaf RunE normalizes a nil
-// [engine.Engine.List] result to an empty slice so the wire contract emits
-// "apps": [] for the no-stacks case.
+// [engine.Engine.ListStatus] result to an empty slice so the wire contract
+// emits "apps": [] for the no-stacks case.
 type appsListPayload struct {
-	Apps []types.AppInfo `json:"apps"`
+	Apps []types.AppRuntimeStatus `json:"apps"`
 }
 
 // newAppsCmd builds the `apps` command group (PRD §17–§20). Its leaves are
@@ -53,6 +57,7 @@ func newAppsCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 	apps.AddCommand(newAppsUpdateCmd(newEngine))
 	apps.AddCommand(newAppsRemoveCmd(newEngine))
 	apps.AddCommand(newAppsRestartCmd(newEngine))
+	apps.AddCommand(newAppsStopAllCmd(newEngine))
 	apps.AddCommand(newAppsValidateCmd(newEngine))
 	apps.AddCommand(newAppsBackupsCmd(newEngine))
 	apps.AddCommand(newAppsDeleteCmd(newEngine))
@@ -60,11 +65,13 @@ func newAppsCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 }
 
 // newAppsListCmd builds the `apps list` leaf (PRD §9). It calls
-// [engine.Engine.List] and emits one of two forms based on the root's --json
-// persistent flag:
-//   - Plain mode: one stack per line as "<app_id>\t<stack_path>", tab-
-//     separated so cut(1) and awk(1) parse without quoting. An empty result
-//     output on a fresh system").
+// [engine.Engine.ListStatus] — the live-status companion to List — and
+// emits one of two forms based on the root's --json persistent flag:
+//   - Plain mode: one stack per line as "<app_id>\t<stack_path>\t<state>",
+//     tab-separated so cut(1) and awk(1) parse without quoting. The state
+//     column is the live runtime state (running / stopped / needs_attention /
+//     removed). An empty result prints nothing ("no managed apps on a fresh
+//     system").
 //   - JSON mode: the wdm.v1 envelope wraps an object whose "apps" key holds
 //     the slice (PRD §32). A nil result is normalized to an empty slice.
 //
@@ -89,7 +96,7 @@ func newAppsListCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 			}
 			defer eng.Close() //nolint:errcheck // best-effort cleanup; engine.Close is a no-op flip today and will release resources in a later phase
 
-			apps, err := eng.List(cmd.Context())
+			apps, err := eng.ListStatus(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -100,13 +107,13 @@ func newAppsListCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 			}
 			if useJSON {
 				if apps == nil {
-					apps = []types.AppInfo{}
+					apps = []types.AppRuntimeStatus{}
 				}
 				return EmitJSON(cmd.OutOrStdout(), appsListPayload{Apps: apps})
 			}
 
 			for _, a := range apps {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", a.AppID, a.StackPath); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", a.AppID, a.StackPath, a.State); err != nil {
 					return fmt.Errorf("apps list: writing output: %w", err)
 				}
 			}

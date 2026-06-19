@@ -722,7 +722,7 @@ func TestInstallPlan_ResourcePlanningAndEnvProjection(t *testing.T) {
 				name:     "memory out of range",
 				app:      baseApp,
 				override: types.ResourceOverride{Service: "app", Memory: "4g"},
-				want:     "memory override is out of range",
+				want:     "memory limit must be between 1g and 3g",
 			},
 			{
 				name:     "invalid cpu",
@@ -734,13 +734,13 @@ func TestInstallPlan_ResourcePlanningAndEnvProjection(t *testing.T) {
 				name:     "cpu out of range",
 				app:      baseApp,
 				override: types.ResourceOverride{Service: "app", CPUs: "4.0"},
-				want:     "cpu override is out of range",
+				want:     "cpus limit must be between 1.0 and 3.0",
 			},
 			{
 				name:     "pids out of range",
 				app:      baseApp,
 				override: types.ResourceOverride{Service: "app", PIDs: 201},
-				want:     "pids override is out of range",
+				want:     "pids limit must be between 1 and 200",
 			},
 		}
 		for _, tt := range tests {
@@ -2573,6 +2573,42 @@ func TestInstall_DeployFailureRollsBackOnlyThisInstallsDockerResources(t *testin
 	assert.NoFileExists(t, filepath.Join(stackPath, ".env"))
 	assert.NoFileExists(t, filepath.Join(stackPath, ".wdm.lock"))
 	assert.NoDirExists(t, stackPath)
+}
+
+// TestInstall_CreatesNetworksWithOwnershipLabels proves a newly-created network
+// carries the canonical app ID into its create invocation so the PRD §10
+// ownership labels (wdm.managed=true, wdm.app=<appID>) are stamped. Existing
+// networks reached via the "already exists" path are NOT re-labeled (the
+// accepted limitation), so this only covers the create path.
+func TestInstall_CreatesNetworksWithOwnershipLabels(t *testing.T) {
+	t.Parallel()
+
+	app := appFixture("label-net-app", freeLocalTCPPort(t))
+	app.Networks = []catalog.Network{{Name: "wdm_labeled", Internal: false}}
+	eng, _ := newInstallDeployTestEngine(t, app)
+
+	var createAppID string
+	fake := &fakeDockerClient{
+		runFn: func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+			switch fmt.Sprintf("%T", inv) {
+			case "docker.networkInspectInvocation":
+				return missingNetworkResult("wdm_labeled")
+			case "docker.networkCreateInvocation":
+				createAppID = invocationField(inv, "appID:")
+				return docker.CommandResult{}, nil
+			default:
+				return docker.CommandResult{}, nil
+			}
+		},
+	}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+
+	res, err := eng.Install(t.Context(), types.InstallRequest{AppID: app.AppID}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, "label-net-app", createAppID,
+		"the create invocation must carry the canonical app id so the ownership labels are stamped")
 }
 
 func TestInstall_DeployFailureRemovesCreatedNetworksInReverseOrder(t *testing.T) {

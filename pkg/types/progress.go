@@ -43,6 +43,25 @@ const (
 	// StepUpdateConfigRestore reports update-time config restore.
 	StepUpdateConfigRestore = "step_update_config_restore"
 
+	// StepReconfigurePlanning reports reconfigure planning.
+	StepReconfigurePlanning = "step_reconfigure_planning"
+	// StepReconfigureBackup reports pre-reconfigure backup creation.
+	StepReconfigureBackup = "step_reconfigure_backup"
+	// StepReconfigureRender reports reconfigure-time rendering.
+	StepReconfigureRender = "step_reconfigure_render"
+	// StepReconfigureComposeValidate reports compose validation for reconfigure.
+	StepReconfigureComposeValidate = "step_reconfigure_compose_validate"
+	// StepReconfigureConfirm reports reconfigure confirmation gating.
+	StepReconfigureConfirm = "step_reconfigure_confirm"
+	// StepReconfigureDeploy reports reconfigure deployment.
+	StepReconfigureDeploy = "step_reconfigure_deploy"
+	// StepReconfigureLockUpdate reports lock manifest update after deploy.
+	StepReconfigureLockUpdate = "step_reconfigure_lock_update"
+	// StepReconfigureStatus reports post-reconfigure status verification.
+	StepReconfigureStatus = "step_reconfigure_status"
+	// StepReconfigureConfigRestore reports reconfigure-time config restore.
+	StepReconfigureConfigRestore = "step_reconfigure_config_restore"
+
 	// StepRemovePlanning reports remove planning.
 	StepRemovePlanning = "step_remove_planning"
 	// StepRemoveConfirm reports remove confirmation gating.
@@ -63,6 +82,25 @@ const (
 	// StepRestartStatus reports post-restart status verification.
 	StepRestartStatus = "step_restart_status"
 
+	// StepStopAllPlanning reports stop-all managed-stack enumeration.
+	StepStopAllPlanning = "step_stop_all_planning"
+	// StepStopAllConfirm reports stop-all confirmation gating.
+	StepStopAllConfirm = "step_stop_all_confirm"
+	// StepStopAllExecute reports per-stack docker compose stop execution.
+	StepStopAllExecute = "step_stop_all_execute"
+
+	// StepUninstallPlanning reports self-uninstall managed-stack enumeration.
+	StepUninstallPlanning = "step_uninstall_planning"
+	// StepUninstallConfirm reports self-uninstall confirmation gating.
+	StepUninstallConfirm = "step_uninstall_confirm"
+	// StepUninstallTeardown reports per-stack docker compose down --rmi all teardown.
+	StepUninstallTeardown = "step_uninstall_teardown"
+	// StepUninstallNetworkSweep reports the label-based sweep of every remaining
+	// wdm.managed=true network, including orphaned ones, after teardown.
+	StepUninstallNetworkSweep = "step_uninstall_network_sweep"
+	// StepUninstallRemoveFootprint reports removal of wdm's on-disk footprint.
+	StepUninstallRemoveFootprint = "step_uninstall_remove_footprint"
+
 	// StepRestorePlanning reports config-restore planning.
 	StepRestorePlanning = "step_restore_planning"
 	// StepRestoreConfirm reports config-restore confirmation gating.
@@ -78,6 +116,9 @@ const (
 	StepDeleteConfirm = "step_delete_confirm"
 	// StepDeleteComposeDown reports docker compose down during delete.
 	StepDeleteComposeDown = "step_delete_compose_down"
+	// StepDeleteRemoveNetworks reports best-effort removal of the app's
+	// wdm-created networks after the down and before stack-file deletion.
+	StepDeleteRemoveNetworks = "step_delete_remove_networks"
 	// StepDeleteFiles reports stack-file deletion.
 	StepDeleteFiles = "step_delete_files"
 

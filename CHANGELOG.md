@@ -3,6 +3,81 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.0.4 - 2026-06-20
+
+### Added
+- Added per-app resource management: a top-level `wdm resources <app>` command
+  and a "Resources" action in the app actions menu (between Restart and Remove).
+  With no limit flags the command (and the screen) shows each adjustable
+  service's memory, CPU, and PID limits currently in effect alongside the
+  catalog's allowed bands. With `--memory`, `--cpus`, or `--pids` (and
+  `--service`, `--yes`, `--stack-path`, `--json`) it changes the selected
+  service's limits: `wdm` validates the request against the catalog bands, backs
+  up the config, rewrites only the resource variables in the stack's `.env`
+  in place (every secret, derived value, and unrelated line is preserved
+  byte-for-byte; the Compose file is left unchanged), re-checks the on-disk
+  Compose against the catalog policy, validates it fail-closed, and recreates
+  the container (a brief downtime). Limits left unset are kept as-is; an
+  explicit empty or zero value is rejected, and an out-of-band value is
+  reported with the allowed range. `--service` defaults to the app's primary
+  (first adjustable) service.
+  The new limits live in the `.env`, so they survive catalog updates, and no new
+  stack or override file is created.
+- Labeled every `wdm`-created Docker network at install with the Webnestify
+  ownership labels `wdm.managed=true` and `wdm.app=<app-id>` (one `docker network
+  create` per network, labels in a fixed order). Only newly-created networks are
+  labeled; a network reached through the "already exists" reconciliation path is
+  not re-labeled.
+- `wdm apps delete` now removes the app's `wdm`-created Docker networks
+  best-effort, after `docker compose down` and before the stack files are
+  deleted. A network already gone counts as removed; one that cannot be removed
+  is reported with the exact `docker network rm <name>` command and never aborts
+  the deletion. Named volumes and all on-disk data are still never deleted, and a
+  reinstall recreates the networks. Safe `wdm apps remove` is unchanged and still
+  leaves the networks in place.
+- Added an "Uninstall wdm" action to the dashboard and a top-level `wdm uninstall`
+  command that tears down every managed app with `docker compose down --rmi all`
+  (removing containers and images) and then removes `wdm`'s own
+  footprint, including the binary. After every app is down it also removes the
+  `wdm`-created Docker networks (declared `external` in the rendered compose, so
+  `docker compose down` never removes them), then sweeps every remaining network
+  carrying the `wdm.managed=true` label — including ones orphaned by an app you
+  deleted earlier, whose compose file is gone — so a self-uninstall leaves no
+  labeled networks behind. The sweep is best-effort: a network already gone
+  counts as removed, one that cannot be removed is reported with the exact
+  `docker network rm <name>` command to run manually, and a daemon problem
+  listing the networks degrades gracefully without aborting the uninstall.
+  Networks created before label support (pre-`wdm.managed=true`) are not matched
+  by the sweep and must be removed manually. Named volumes and every
+  `~/docker/<app>/` stack directory are kept;
+  this is never `docker compose down -v` and no user data is deleted. Scope is
+  wdm-managed apps and wdm's footprint only. It is fail-closed: if any stack fails
+  to tear down it aborts before removing anything, leaves `wdm` installed, lists
+  the failed stacks, and exits nonzero. The `--yes` flag accepts the destructive
+  confirmation without prompting.
+- Added a "Stop all apps" action to the dashboard and a `wdm apps stop-all`
+  command that runs `docker compose stop` against every running managed stack at
+  once. It targets only apps with a running container, preserves all data
+  (containers, networks, and named volumes stay defined), continues on error so
+  one unreachable stack does not block the rest, and exits nonzero when any
+  targeted stack fails.
+- Added a `stopped` runtime state for apps whose managed containers all exist
+  but are not running (for example after `docker compose stop`). It reports
+  `needs_attention: false` so a cleanly stopped app is no longer shown as
+  needing attention; `needs_attention` is reserved for genuine trouble.
+
+### Changed
+- `wdm apps stop-all` now stops only running apps. Stacks that are already
+  stopped are skipped and reported as already stopped (in `--json` under
+  `already_stopped` and as a short note in plain output). When no app is
+  running, it prints "No running apps to stop." and exits `0` without prompting,
+  instead of confirming and "stopping" apps that were already down.
+- The dashboard "Check my apps" list and `wdm apps list` now report each app's
+  live runtime state (running / stopped / needs attention / removed) from real
+  Docker container state instead of always showing "running". `wdm apps list
+  --json` entries gain a `state` field and a populated `needs_attention` flag,
+  and the plain output gains a trailing tab-separated state column.
+
 ## v1.0.3 - 2026-06-18
 
 ### Fixed

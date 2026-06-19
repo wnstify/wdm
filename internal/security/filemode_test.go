@@ -112,6 +112,35 @@ func TestCreateSecretFile_RejectsExistingFile(t *testing.T) {
 		"underlying fs.ErrExist must remain reachable for diagnostics")
 }
 
+// TestCreateSecretFile_ChmodFailureCleansUpPartialFile drives the
+// chmod-failure cleanup arm: when narrowing the freshly-opened file to
+// [security.SecretFileMode] fails, the function MUST close and remove
+// the partial artifact before returning so no leaky >0o600 file
+// survives on disk. The seam swap forces the failure deterministically;
+// the post-condition stat asserts the file is gone.
+// Not parallel: the swap mutates a process-global seam.
+func TestCreateSecretFile_ChmodFailureCleansUpPartialFile(t *testing.T) {
+	sentinel := errors.New("chmod denied by seam")
+	security.SwapChmodSecretFileForTest(t, func(*os.File, os.FileMode) error {
+		return sentinel
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.env")
+
+	f, err := security.CreateSecretFile(path)
+	require.Error(t, err, "chmod failure must surface as an error")
+	assert.Nil(t, f, "no file handle should be returned on chmod failure")
+	assert.True(t, types.IsCode(err, types.ErrCodeGeneric),
+		"chmod failure surfaces as ErrCodeGeneric")
+	assert.True(t, errors.Is(err, sentinel),
+		"underlying chmod error must remain reachable for diagnostics")
+
+	_, statErr := os.Stat(path)
+	assert.True(t, errors.Is(statErr, fs.ErrNotExist),
+		"partial file must be removed so no leaky >0o600 artifact survives")
+}
+
 // TestCreateSecretFile_LeavesCallerResponsibleForWriteAndClose
 // pins the PACKAGE INVARIANT: `CreateSecretFile` opens but does not
 // write, fsync, or close. The caller ('s `internal/state`

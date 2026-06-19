@@ -243,6 +243,11 @@ func TestRemove_HappyPathRunsConfirmDownManifestStatus(t *testing.T) {
 		assert.NotContains(t, inv, "down -v",
 			"no -v down invocation type may ever appear (row 31)")
 	}
+	// Regression: safe Remove NEVER removes networks (issue #33 only adds
+	// delete-time network removal). Remove preserves them and reports them in
+	// RemainingNetworks, so no network rm invocation may run.
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.removeNetworkInvocation",
+		"safe remove must never remove networks; it preserves them")
 
 	// Manifest commit point: last_successful_operation becomes
 	// kind="remove" while every other field is preserved byte-equivalent.

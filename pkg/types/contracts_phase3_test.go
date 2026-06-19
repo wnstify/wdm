@@ -66,6 +66,36 @@ func TestRestartResult_JSONContract_OmitsEmptyOptionalFields(t *testing.T) {
 	assert.JSONEq(t, `{"app_id":"uptime-kuma"}`, got)
 }
 
+func TestStopAllResult_JSONContract_PopulatedFields(t *testing.T) {
+	t.Parallel()
+
+	got := mustMarshalJSON(t, types.StopAllResult{
+		Stopped: []types.StoppedApp{
+			{AppID: "uptime-kuma", ComposeProject: "wdm-uptime-kuma"},
+		},
+		Failed: []types.StoppedApp{
+			{AppID: "freshrss", ComposeProject: "wdm-freshrss", Error: "daemon unreachable"},
+		},
+		AlreadyStopped: []types.StoppedApp{
+			{AppID: "vaultwarden"},
+		},
+	})
+
+	assert.JSONEq(t, `{
+		"stopped":[{"app_id":"uptime-kuma","compose_project":"wdm-uptime-kuma"}],
+		"failed":[{"app_id":"freshrss","compose_project":"wdm-freshrss","error":"daemon unreachable"}],
+		"already_stopped":[{"app_id":"vaultwarden"}]
+	}`, got)
+}
+
+func TestStopAllResult_JSONContract_OmitsEmptyOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	got := mustMarshalJSON(t, types.StopAllResult{})
+
+	assert.JSONEq(t, `{}`, got)
+}
+
 func TestValidationResult_JSONContract_PopulatedFields(t *testing.T) {
 	t.Parallel()
 
@@ -365,14 +395,18 @@ func TestDeleteResult_JSONContract_PopulatedFields(t *testing.T) {
 		AppID:                 "uptime-kuma",
 		DeletedPaths:          []string{"/home/test/docker/uptime-kuma"},
 		RemainingNamedVolumes: []string{"wdm-uptime-kuma_db_data"},
-		RemainingNetworks:     []string{"kuma"},
+		RemovedNetworks:       []string{"kuma"},
+		RetainedNetworks: []types.RetainedNetwork{
+			{Name: "shared", Reason: "network shared has active endpoints"},
+		},
 	})
 
 	assert.JSONEq(t, `{
 		"app_id":"uptime-kuma",
 		"deleted_paths":["/home/test/docker/uptime-kuma"],
 		"remaining_named_volumes":["wdm-uptime-kuma_db_data"],
-		"remaining_networks":["kuma"]
+		"removed_networks":["kuma"],
+		"retained_networks":[{"name":"shared","reason":"network shared has active endpoints"}]
 	}`, got)
 }
 
@@ -440,6 +474,39 @@ func TestConfirmationKindDeleteDestructive_IsStable(t *testing.T) {
 	assert.Equal(t, "delete_destructive", types.ConfirmationKindDeleteDestructive)
 }
 
+func TestConfirmationKindUninstallDestructive_IsStable(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "uninstall_destructive", types.ConfirmationKindUninstallDestructive)
+}
+
+func TestProgressStepConstants_UninstallAreStableAndUnique(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{name: "StepUninstallPlanning", got: types.StepUninstallPlanning, want: "step_uninstall_planning"},
+		{name: "StepUninstallConfirm", got: types.StepUninstallConfirm, want: "step_uninstall_confirm"},
+		{name: "StepUninstallTeardown", got: types.StepUninstallTeardown, want: "step_uninstall_teardown"},
+		{name: "StepUninstallRemoveFootprint", got: types.StepUninstallRemoveFootprint, want: "step_uninstall_remove_footprint"},
+	}
+
+	seen := make(map[string]string, len(cases))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.got)
+		})
+
+		previous, exists := seen[tc.got]
+		assert.Falsef(t, exists, "duplicate progress step value %q used by %s and %s", tc.got, previous, tc.name)
+		seen[tc.got] = tc.name
+	}
+}
+
 func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing.T) {
 	t.Parallel()
 
@@ -452,6 +519,9 @@ func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing
 		{name: "StepRestartConfirm", got: types.StepRestartConfirm, want: "step_restart_confirm"},
 		{name: "StepRestartExecute", got: types.StepRestartExecute, want: "step_restart_execute"},
 		{name: "StepRestartStatus", got: types.StepRestartStatus, want: "step_restart_status"},
+		{name: "StepStopAllPlanning", got: types.StepStopAllPlanning, want: "step_stop_all_planning"},
+		{name: "StepStopAllConfirm", got: types.StepStopAllConfirm, want: "step_stop_all_confirm"},
+		{name: "StepStopAllExecute", got: types.StepStopAllExecute, want: "step_stop_all_execute"},
 		{name: "StepRestorePlanning", got: types.StepRestorePlanning, want: "step_restore_planning"},
 		{name: "StepRestoreConfirm", got: types.StepRestoreConfirm, want: "step_restore_confirm"},
 		{name: "StepRestoreExecute", got: types.StepRestoreExecute, want: "step_restore_execute"},
@@ -459,6 +529,7 @@ func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing
 		{name: "StepDeletePlanning", got: types.StepDeletePlanning, want: "step_delete_planning"},
 		{name: "StepDeleteConfirm", got: types.StepDeleteConfirm, want: "step_delete_confirm"},
 		{name: "StepDeleteComposeDown", got: types.StepDeleteComposeDown, want: "step_delete_compose_down"},
+		{name: "StepDeleteRemoveNetworks", got: types.StepDeleteRemoveNetworks, want: "step_delete_remove_networks"},
 		{name: "StepDeleteFiles", got: types.StepDeleteFiles, want: "step_delete_files"},
 	}
 

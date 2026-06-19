@@ -40,9 +40,14 @@ type DeleteRequest struct {
 	DeleteNamedVolumes bool `json:"delete_named_volumes,omitempty"`
 }
 
-// DeleteResult summarizes a completed destructive deletion (PRD
-// §19:449, §19:454-455). Named volumes are never deleted, so the
-// remaining-volumes list reports what survives.
+// DeleteResult summarizes a completed destructive deletion (PRD §19).
+// Named volumes are never deleted, so RemainingNamedVolumes reports what
+// survives. Unlike the safe Remove, destructive delete also removes the app's
+// wdm-created Docker networks best-effort after `docker compose down` and
+// before the stack files are deleted: RemovedNetworks lists the networks
+// dropped, and RetainedNetworks lists any that could not be removed (each with
+// a reason). Network removal is best-effort and NEVER aborts the deletion —
+// the stack files are deleted regardless.
 type DeleteResult struct {
 	// AppID is the app that was deleted.
 	AppID string `json:"app_id"`
@@ -55,6 +60,16 @@ type DeleteResult struct {
 	// deletion — v1 never deletes them (§19:454-455).
 	RemainingNamedVolumes []string `json:"remaining_named_volumes,omitempty"`
 
-	// RemainingNetworks lists networks left in place after deletion.
-	RemainingNetworks []string `json:"remaining_networks,omitempty"`
+	// RemovedNetworks lists the wdm-created Docker networks removed
+	// best-effort during deletion. wdm pre-creates these networks at install
+	// and the rendered compose declares them external, so `docker compose
+	// down` never owns or removes them. A network already absent counts as
+	// removed (idempotent).
+	RemovedNetworks []string `json:"removed_networks,omitempty"`
+
+	// RetainedNetworks lists the wdm-created networks that could not be
+	// removed (each with a redacted reason). A retained network never aborts
+	// the deletion; the frontends surface the manual `docker network rm`
+	// command so the operator can finish the cleanup.
+	RetainedNetworks []RetainedNetwork `json:"retained_networks,omitempty"`
 }
