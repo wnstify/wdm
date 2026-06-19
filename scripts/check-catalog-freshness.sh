@@ -28,6 +28,11 @@ resolve_base_ref() {
 			printf '%s\n' "$base_ref"
 			return 0
 		fi
+		# Best-effort fetch: hosts only serve commits reachable from an
+		# advertised ref, so a bare SHA orphaned by a force-push usually
+		# stays unreachable and this fetch fails (fine; ref_exists below
+		# drives the fallback). It still helps when the configured base is
+		# a real but not-yet-fetched ref such as a branch name.
 		if git fetch --quiet origin "$base_ref" 2>/dev/null && ref_exists "$base_ref"; then
 			printf '%s\n' "$base_ref"
 			return 0
