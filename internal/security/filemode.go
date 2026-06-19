@@ -20,6 +20,12 @@ import (
 // non-secret-bearing permissions.
 const SecretFileMode os.FileMode = 0o600
 
+// chmodSecretFile is the seam for the post-create chmod in
+// [CreateSecretFile]. It defaults to the real method so production
+// behavior is unchanged; tests override it to exercise the
+// chmod-failure cleanup arm.
+var chmodSecretFile = (*os.File).Chmod
+
 // ValidateSecretFileMode returns a `*types.Error` with
 // [types.ErrCodePermissionDenied] when mode does not match
 // [SecretFileMode] exactly. The check is strict equality, not "no broader
@@ -110,7 +116,7 @@ func CreateSecretFile(path string) (*os.File, error) {
 			)
 		}
 	}
-	if chmodErr := f.Chmod(SecretFileMode); chmodErr != nil {
+	if chmodErr := chmodSecretFile(f, SecretFileMode); chmodErr != nil {
 		// The on-disk artifact may have broader-than-0o600 perms if
 		// open(2) applied `mode & ~umask` and Chmod could not narrow
 		// it. Close and remove best-effort before returning so the
