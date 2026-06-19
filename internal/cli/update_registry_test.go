@@ -307,6 +307,19 @@ func (c *crossoverCountingEngine) Restart(
 	return nil, nil
 }
 
+func (c *crossoverCountingEngine) ResourceSettings(context.Context, string) (*types.ResourceSettings, error) {
+	return nil, nil
+}
+
+func (c *crossoverCountingEngine) Reconfigure(
+	context.Context,
+	types.ReconfigureRequest,
+	engine.ProgressFn,
+	types.Confirmer,
+) (*types.ReconfigureResult, error) {
+	return nil, nil
+}
+
 func (c *crossoverCountingEngine) StopAll(
 	context.Context,
 	types.StopAllRequest,

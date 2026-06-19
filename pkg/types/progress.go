@@ -43,6 +43,25 @@ const (
 	// StepUpdateConfigRestore reports update-time config restore.
 	StepUpdateConfigRestore = "step_update_config_restore"
 
+	// StepReconfigurePlanning reports reconfigure planning.
+	StepReconfigurePlanning = "step_reconfigure_planning"
+	// StepReconfigureBackup reports pre-reconfigure backup creation.
+	StepReconfigureBackup = "step_reconfigure_backup"
+	// StepReconfigureRender reports reconfigure-time rendering.
+	StepReconfigureRender = "step_reconfigure_render"
+	// StepReconfigureComposeValidate reports compose validation for reconfigure.
+	StepReconfigureComposeValidate = "step_reconfigure_compose_validate"
+	// StepReconfigureConfirm reports reconfigure confirmation gating.
+	StepReconfigureConfirm = "step_reconfigure_confirm"
+	// StepReconfigureDeploy reports reconfigure deployment.
+	StepReconfigureDeploy = "step_reconfigure_deploy"
+	// StepReconfigureLockUpdate reports lock manifest update after deploy.
+	StepReconfigureLockUpdate = "step_reconfigure_lock_update"
+	// StepReconfigureStatus reports post-reconfigure status verification.
+	StepReconfigureStatus = "step_reconfigure_status"
+	// StepReconfigureConfigRestore reports reconfigure-time config restore.
+	StepReconfigureConfigRestore = "step_reconfigure_config_restore"
+
 	// StepRemovePlanning reports remove planning.
 	StepRemovePlanning = "step_remove_planning"
 	// StepRemoveConfirm reports remove confirmation gating.

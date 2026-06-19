@@ -84,6 +84,30 @@ type Engine interface {
 	// onProgress receives the step_restart_* events.
 	Restart(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
 
+	// ResourceSettings reports a managed app's per-service resource limits
+	// — the values currently in effect (read from the stack's .env) and
+	// the catalog's allowed bands (min/recommended/max) — for the
+	// read-only `wdm resources <app>` view (issue #28). Read-only: it
+	// never acquires the runtime.lock, mirroring Status's posture. It is
+	// the inspection companion to Reconfigure.
+	ResourceSettings(ctx context.Context, appID string) (*types.ResourceSettings, error)
+
+	// Reconfigure changes one managed service's resource limits (memory,
+	// CPUs, PIDs) after install (issue #28). It rewrites ONLY the resource
+	// vars in the stack's .env — every secret and unrelated value is
+	// preserved byte-for-byte — re-renders docker-compose.yml, validates
+	// via docker compose config, and recreates the container with
+	// docker compose up -d --force-recreate. Requested values are validated
+	// against the catalog's resource bands (min/max, allow_override): an
+	// out-of-band value or a service the catalog forbids overriding is
+	// refused fail-closed before any change. As a state-changing op it
+	// holds the global runtime.lock and the per-stack flock, backs up the
+	// config FIRST, and consults confirmer before the recreate (a brief
+	// downtime). A nil onProgress is tolerated; a nil confirmer refuses to
+	// proceed past the confirmation step. onProgress receives the
+	// step_reconfigure_* events.
+	Reconfigure(ctx context.Context, req types.ReconfigureRequest, onProgress ProgressFn, confirmer Confirmer) (*types.ReconfigureResult, error)
+
 	// StopAll stops every managed stack at once (issue #27): it runs
 	// docker compose stop against each stack, which stops the running
 	// containers without removing them, so containers, networks, and

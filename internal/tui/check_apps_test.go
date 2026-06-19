@@ -120,6 +120,7 @@ func TestModel_CheckMyAppsSelectionLoadsStatusAndNextActions(t *testing.T) {
 	for _, action := range []string{
 		"View details",
 		"Restart app",
+		"Manage resources",
 		"Remove app",
 		"Validate config",
 		"Return to dashboard",
@@ -161,7 +162,9 @@ func TestModel_CheckMyAppsRestartAndValidateUseEngine(t *testing.T) {
 	}
 	m := loadCheckAppsStatusScreen(t, fake)
 
-	m = updateModel(t, m, downKey())
+	for checkAppActions[m.actionCursor] != "Restart app" {
+		m = updateModel(t, m, downKey())
+	}
 	next, cmd := m.Update(enterKey())
 	m = assertModel(t, next)
 	require.NotNil(t, cmd)
@@ -171,8 +174,9 @@ func TestModel_CheckMyAppsRestartAndValidateUseEngine(t *testing.T) {
 	assert.Contains(t, m.View(), "Restart complete")
 	assert.Contains(t, m.View(), "running")
 
-	m = updateModel(t, m, downKey())
-	m = updateModel(t, m, downKey())
+	for checkAppActions[m.actionCursor] != "Validate config" {
+		m = updateModel(t, m, downKey())
+	}
 	next, cmd = m.Update(enterKey())
 	m = assertModel(t, next)
 	require.NotNil(t, cmd)

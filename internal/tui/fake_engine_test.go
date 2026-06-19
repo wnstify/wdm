@@ -66,6 +66,13 @@ type fakeEngine struct {
 	clearRuntimeLockErr    error
 	clearRuntimeLockCalls  int
 
+	resourceSettings      *types.ResourceSettings
+	resourceSettingsErr   error
+	resourceSettingsCalls []string
+	reconfigureResult     *types.ReconfigureResult
+	reconfigureErr        error
+	reconfigureRequests   []types.ReconfigureRequest
+
 	catalogUpdateStatus    *types.CatalogUpdateStatus
 	catalogUpdateStatusErr error
 	checkCatalogUpdateN    int
@@ -169,6 +176,25 @@ func (f *fakeEngine) StopAll(
 ) (*types.StopAllResult, error) {
 	f.stopAllCalls++
 	return f.stopAllResult, f.stopAllErr
+}
+
+// ResourceSettings and Reconfigure back the per-app resource-management
+// TUI surface (issue #28): ResourceSettings feeds the read-only current
+// values and bands, Reconfigure records the request the screen builds.
+
+func (f *fakeEngine) ResourceSettings(_ context.Context, appID string) (*types.ResourceSettings, error) {
+	f.resourceSettingsCalls = append(f.resourceSettingsCalls, appID)
+	return f.resourceSettings, f.resourceSettingsErr
+}
+
+func (f *fakeEngine) Reconfigure(
+	_ context.Context,
+	req types.ReconfigureRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.ReconfigureResult, error) {
+	f.reconfigureRequests = append(f.reconfigureRequests, req)
+	return f.reconfigureResult, f.reconfigureErr
 }
 
 func (f *fakeEngine) Uninstall(

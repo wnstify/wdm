@@ -288,8 +288,9 @@ func loadRemoveActionsScreenWithSender(t *testing.T, eng engine.Engine, send fun
 	m = assertModel(t, next)
 	require.NotNil(t, cmd)
 	m = updateModel(t, m, cmd())
-	m = updateModel(t, m, downKey())
-	m = updateModel(t, m, downKey())
+	for checkAppActions[m.actionCursor] != "Remove app" {
+		m = updateModel(t, m, downKey())
+	}
 	next, cmd = m.Update(enterKey())
 	m = assertModel(t, next)
 	require.Nil(t, cmd)

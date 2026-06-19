@@ -86,6 +86,8 @@ wdm apps backups list <app>   # list pre-change config backups
 wdm apps remove <app>         # stop a stack (volumes and networks preserved)
 wdm apps delete <app>         # permanently delete a stack's files (data kept, networks removed)
 
+wdm resources <app>           # view or change a stack's memory/CPU/PID limits
+
 wdm catalog check             # check for catalog updates
 wdm catalog update            # update the local catalog
 wdm self-update check         # check for a newer wdm release

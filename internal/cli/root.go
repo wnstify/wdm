@@ -72,5 +72,10 @@ a normal user who belongs to the docker group.`,
 	// at the root, not under `apps`, because it acts on wdm itself.
 	root.AddCommand(newUninstallCmd(newEngine))
 
+	// Top-level per-app resource management (issue #28): `resources` views
+	// or changes a managed app's resource limits. It sits at the root,
+	// alongside the other per-app verbs, and acts on one installed stack.
+	root.AddCommand(newResourcesCmd(newEngine))
+
 	return root
 }

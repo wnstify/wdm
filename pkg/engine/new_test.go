@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -132,6 +133,79 @@ func TestNew_WithCatalog(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, eng.Close())
 }
+
+// TestReconfigure_RoutesThroughFacadeToCore proves the Reconfigure
+// method is wired through the bridge to core: with no managed stack on
+// disk, the call reaches core's managed-stack resolution and returns the
+// typed usage-validation refusal (exit 2), confirming the facade routes
+// the request rather than dropping it. It carries a non-nil confirmer so
+// the refusal is the not-installed path, not the nil-confirmer one.
+func TestReconfigure_RoutesThroughFacadeToCore(t *testing.T) {
+	t.Parallel()
+	state, data, stackBase := testTmpDirs(t)
+
+	var catalogFS fs.FS = fstest.MapFS{
+		"stable/catalog.yaml": &fstest.MapFile{Data: []byte("schema_version: 1\nchannel: stable\ngenerated_at: 2026-05-29T00:00:00Z\napps: []\n")},
+	}
+	eng, err := engine.New(
+		engine.WithConfigPath(missingConfigPath(t)),
+		engine.WithStateDir(state),
+		engine.WithDataDir(data),
+		engine.WithStackBaseDir(stackBase),
+		engine.WithCatalog(catalogFS),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	memory := "1g"
+	res, err := eng.Reconfigure(t.Context(), types.ReconfigureRequest{
+		AppID:   "ghost",
+		Service: "app",
+		Memory:  &memory,
+	}, nil, stubConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, res)
+
+	var typed *types.Error
+	require.True(t, errors.As(err, &typed), "the refusal must be a typed *types.Error")
+	assert.Equal(t, types.ErrCodeUsageValidation, typed.Code,
+		"an uninstalled app must refuse with usage-validation through the facade")
+}
+
+// TestResourceSettings_RoutesThroughFacadeToCore proves the read-only
+// ResourceSettings method routes through the bridge to core: an
+// uninstalled app refuses with the typed usage-validation code.
+func TestResourceSettings_RoutesThroughFacadeToCore(t *testing.T) {
+	t.Parallel()
+	state, data, stackBase := testTmpDirs(t)
+
+	var catalogFS fs.FS = fstest.MapFS{
+		"stable/catalog.yaml": &fstest.MapFile{Data: []byte("schema_version: 1\nchannel: stable\ngenerated_at: 2026-05-29T00:00:00Z\napps: []\n")},
+	}
+	eng, err := engine.New(
+		engine.WithConfigPath(missingConfigPath(t)),
+		engine.WithStateDir(state),
+		engine.WithDataDir(data),
+		engine.WithStackBaseDir(stackBase),
+		engine.WithCatalog(catalogFS),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	res, err := eng.ResourceSettings(t.Context(), "ghost")
+	require.Error(t, err)
+	assert.Nil(t, res)
+
+	var typed *types.Error
+	require.True(t, errors.As(err, &typed))
+	assert.Equal(t, types.ErrCodeUsageValidation, typed.Code)
+}
+
+// stubConfirmer authorizes every prompt; used where a non-nil confirmer
+// must be supplied but no prompt is reached.
+type stubConfirmer struct{}
+
+func (stubConfirmer) Confirm(context.Context, types.Confirmation) (bool, error) { return true, nil }
 
 // TestNew_MalformedConfigWrapsErrConfigInvalid is the load-bearing
 // error-path test: a schema-invalid config.toml must propagate
