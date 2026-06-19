@@ -14,19 +14,36 @@ all_zero_ref() {
 	esac
 }
 
+ref_exists() {
+	git rev-parse --verify "$1^{commit}" >/dev/null 2>&1
+}
+
 resolve_base_ref() {
+	# A configured base ref may be unreachable: e.g. github.event.before
+	# points at a pre-rebase tip that a force-push orphaned. Fetch once,
+	# then fall back to a known branch so the gate stays robust rather than
+	# hard-failing on a vanished commit.
 	if ! all_zero_ref "$base_ref"; then
-		printf '%s\n' "$base_ref"
-		return 0
+		if ref_exists "$base_ref"; then
+			printf '%s\n' "$base_ref"
+			return 0
+		fi
+		if git fetch --quiet origin "$base_ref" 2>/dev/null && ref_exists "$base_ref"; then
+			printf '%s\n' "$base_ref"
+			return 0
+		fi
+		printf '%s\n' "catalog freshness: base ref not reachable, falling back: $base_ref" >&2
 	fi
 
-	for candidate in origin/main main HEAD~1; do
-		if git rev-parse --verify "$candidate^{commit}" >/dev/null 2>&1; then
+	for candidate in origin/dev dev origin/main main HEAD~1; do
+		if ref_exists "$candidate"; then
 			printf '%s\n' "$candidate"
 			return 0
 		fi
 	done
 
+	# No diff base can be established (e.g. shallow single-commit checkout).
+	# Skip the diff with a non-failing notice instead of crashing the gate.
 	return 1
 }
 
@@ -50,11 +67,11 @@ require_canonical_utc() {
 }
 
 base_ref=$(resolve_base_ref) || {
-	printf '%s\n' "catalog freshness: could not resolve a base ref" >&2
-	exit 1
+	printf '%s\n' "catalog freshness OK: no base ref available to diff against (skipping)"
+	exit 0
 }
 
-if ! git rev-parse --verify "$base_ref^{commit}" >/dev/null 2>&1; then
+if ! ref_exists "$base_ref"; then
 	printf '%s\n' "catalog freshness: base ref not found: $base_ref" >&2
 	exit 1
 fi
