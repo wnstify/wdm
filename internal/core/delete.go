@@ -61,8 +61,11 @@ type deletePlan struct {
 // (NEVER -v per §19:453) and then deletes everything wdm wrote for the app:
 // the rendered Compose file, the `.env`, the `.wdm.lock` manifest, the
 // `.wdm-backups/` config snapshots, and the stack directory itself. Named
-// volumes and catalog-declared networks are NEVER deleted (§19:453-455); the
-// result reports what survives.
+// volumes and on-disk data are NEVER deleted (§19:453-455); the app's
+// wdm-created networks ARE removed best-effort after `down` and before file
+// deletion (a network that cannot be removed is reported with the manual
+// `docker network rm` command and never aborts the deletion; reinstall
+// recreates them). The result reports what was removed and what survives.
 // Stronger-confirmation gating (§19:451): beyond the
 // [types.Confirmer] prompt, the engine re-verifies that req.ConfirmationName
 // equals req.AppID and refuses on mismatch BEFORE any lock, Docker call, or
@@ -577,8 +580,10 @@ func deleteConfirmation(plan *deletePlan) types.Confirmation {
 // before any file is removed (PRD §19:448, §19:453). [docker.ComposeDown] is
 // structurally free of -v: it stops and removes
 // the stack's containers and the default network Compose created for the
-// project, but never touches named volumes or the catalog-declared networks
-// the deletion preserves. Client errors propagate unchanged so
+// project, but never touches named volumes. The down step itself does not
+// remove the app's external wdm-created networks — a separate
+// network-removal step (after this `down`, before file deletion) handles
+// those best-effort. Client errors propagate unchanged so
 // internal/docker's typed error-code mapping stays authoritative; a down
 // failure leaves the files byte-identical because the file deletion is the
 // later step.

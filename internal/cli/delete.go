@@ -19,8 +19,11 @@ import (
 // §19:453), then deletes everything wdm wrote for the app — the rendered
 // Compose file, the `.env`, the `.wdm.lock` manifest, the `.wdm-backups/`
 // config snapshots, and the stack directory itself — and reports what
-// survives. Named Docker volumes and catalog-declared networks are NEVER
-// deleted (§19:453-455).
+// survives. Named Docker volumes and on-disk data are NEVER deleted
+// (§19:453-455); the app's wdm-created Docker networks ARE removed
+// best-effort (a network that cannot be removed is reported with the manual
+// `docker network rm` command and never aborts the deletion; reinstall
+// recreates them).
 // This leaf is thin: it collects the flags, maps them verbatim
 // onto [types.DeleteRequest], and renders [types.DeleteResult]. It carries ZERO
 // deletion business logic — the engine owns the typed-name equality
@@ -108,9 +111,12 @@ Compose file, the .env, the .wdm.lock manifest, the .wdm-backups
 snapshots, and the stack directory itself. This is NOT the safe remove
 and it cannot be undone (PRD §19).
 
-Named Docker volumes and catalog-declared networks are never deleted;
-the result reports what survives. There is intentionally no flag to
-delete volumes or data.
+Named Docker volumes and on-disk data are never deleted; the app's
+wdm-created Docker networks are removed best-effort (a network that
+cannot be removed is reported with the manual docker network rm command
+and never aborts the deletion; reinstall recreates them). The result
+reports what was removed and what survives. There is intentionally no
+flag to delete volumes or data.
 
 To confirm the deletion you must type the exact app id with
 --confirm-name (typing the app id is the stronger confirmation). The
