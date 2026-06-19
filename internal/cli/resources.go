@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -20,9 +21,10 @@ import (
 // read-only [engine.Engine.ResourceSettings].
 // With one or more of --memory / --cpus / --pids it calls
 // [engine.Engine.Reconfigure] to change the targeted service's limits:
-// the engine rewrites only the resource vars in the stack's .env,
-// re-renders, validates, and recreates the container. --service selects
-// the target; it defaults to "app", the conventional primary service.
+// the engine edits only the resource vars in the stack's .env in place,
+// validates the unchanged compose, and recreates the container.
+// --service selects the target; when omitted it resolves to the app's
+// primary (first catalog-overridable) service.
 // Output follows the root's --json persistent flag in both modes:
 //   - Plain mode: a line-oriented view / finish screen on stdout, with
 //     engine progress streamed to stderr.
@@ -48,13 +50,14 @@ With no limit flags it prints the limits currently in effect for each
 adjustable service alongside the catalog's allowed bands.
 
 With one or more of --memory, --cpus, or --pids it changes the selected
-service's limits: wdm rewrites only the resource values in the stack's
-.env, re-renders the Compose file, validates it, and recreates the
-container (a brief downtime). Secrets and every other value in your .env
-are preserved.
+service's limits: wdm edits only the resource values in the stack's .env
+in place, validates the Compose file, and recreates the container (a
+brief downtime). Secrets, derived values, and every other line in your
+.env are preserved byte-for-byte.
 
-Use --service to target a service other than the default "app". --yes
-accepts the recreate confirmation without prompting.`,
+Use --service to target a specific service; when omitted it defaults to
+the app's primary (first adjustable) service. --yes accepts the recreate
+confirmation without prompting.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -87,9 +90,23 @@ accepts the recreate confirmation without prompting.`,
 				return writeResourceSettings(cmd.OutOrStdout(), settings)
 			}
 
+			// With --service omitted, target the app's primary (first
+			// catalog-overridable) service, matching how the TUI screen
+			// auto-selects. The literal "app" is wrong for apps whose
+			// primary service is named otherwise (for example baserow's
+			// "baserow"), so resolve it from the read-only settings.
+			targetService := service
+			if !cmd.Flags().Changed("service") {
+				resolved, err := resolvePrimaryService(cmd.Context(), eng, appID)
+				if err != nil {
+					return err
+				}
+				targetService = resolved
+			}
+
 			req := types.ReconfigureRequest{
 				AppID:     appID,
-				Service:   service,
+				Service:   targetService,
 				StackPath: stackPath,
 			}
 			if cmd.Flags().Changed("memory") {
@@ -124,7 +141,7 @@ accepts the recreate confirmation without prompting.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&service, "service", "app", "service whose resource limits change")
+	cmd.Flags().StringVar(&service, "service", "", "service whose resource limits change (defaults to the app's primary service)")
 	cmd.Flags().StringVar(&memory, "memory", "", "new memory limit (for example 1g)")
 	cmd.Flags().StringVar(&cpus, "cpus", "", "new CPU quota (for example 1.5)")
 	cmd.Flags().IntVar(&pids, "pids", 0, "new pid limit")
@@ -132,6 +149,32 @@ accepts the recreate confirmation without prompting.`,
 	cmd.Flags().StringVar(&stackPath, "stack-path", "", "assert the managed stack path being reconfigured (verified against the app)")
 
 	return cmd
+}
+
+// resolvePrimaryService returns the service the reconfigure targets when
+// --service is omitted: the first catalog-overridable service the app
+// declares, matching the TUI screen's auto-selection. It reads the
+// read-only [engine.Engine.ResourceSettings] (no runtime lock, no Docker
+// call). An app that declares no adjustable service is refused with a
+// usage error rather than defaulting to a literal name that would fail
+// the band lookup downstream.
+func resolvePrimaryService(ctx context.Context, eng engine.Engine, appID string) (string, error) {
+	settings, err := eng.ResourceSettings(ctx, appID)
+	if err != nil {
+		return "", err
+	}
+	if settings != nil {
+		for _, svc := range settings.Services {
+			if svc.Adjustable {
+				return svc.Service, nil
+			}
+		}
+	}
+	return "", types.NewError(
+		types.ErrCodeUsageValidation,
+		"this app declares no adjustable resource limits",
+		"this app has no service whose resource limits can be changed",
+	)
 }
 
 // writeResourceSettings renders the read-only current-values view to w

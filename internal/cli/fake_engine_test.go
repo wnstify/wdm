@@ -278,7 +278,17 @@ func (f *fakeEngine) ResourceSettings(_ context.Context, appID string) (*types.R
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.resourceSettings, nil
+	if f.resourceSettings != nil {
+		return f.resourceSettings, nil
+	}
+	// The reconfigure path resolves an omitted --service through
+	// ResourceSettings, so a reconfigure-only fixture that wires only a
+	// reconfigureResult still needs a primary service to resolve. Default
+	// to a single adjustable "app" service when no settings are set.
+	return &types.ResourceSettings{
+		AppID:    appID,
+		Services: []types.ResourceServiceSettings{{Service: "app", Adjustable: true}},
+	}, nil
 }
 
 func (f *fakeEngine) Reconfigure(
