@@ -523,7 +523,7 @@
               "description": "Capabilities re-added on top of cap_drop: ALL. Each must be in the PRD §12.2 allow-list."
             }
           },
-          "description": "Linux capabilities to re-add. The renderer always applies cap_drop: ALL as the baseline; this lists only additions."
+          "description": "Linux capabilities to re-add. The cap_drop: ALL baseline is declared by the app compose template and enforced at install (a service adding capabilities without it is rejected); this lists only additions."
         },
         "sysctls": {
           "type": "array",
