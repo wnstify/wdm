@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.0.5 - 2026-06-20
+
+### Fixed
+- Corrected the capability-hardening documentation in the catalog schema and
+  type definitions: the `cap_drop: ALL` baseline is declared by each app's
+  Compose template and enforced at install (a service that adds capabilities
+  without it is rejected), not applied by the renderer, which injects only the
+  `wdm.managed` and `wdm.app` labels. Documentation only — no behavior change.
+
 ## v1.0.4 - 2026-06-20
 
 ### Added
