@@ -427,8 +427,9 @@ type AdditionalFile struct {
 // ServiceHardening is a single per-service container-privilege
 // declaration in [App.ServiceHardening] (PRD §12.2, schema version 2).
 // Every field above the cap_drop:ALL baseline is opt-in and validated
-// against wdm's closed allow-list; the renderer applies the baseline
-// regardless and layers only the additions declared here.
+// against wdm's closed allow-list. The app compose template declares
+// the baseline itself; internal/core enforces it at install, and this
+// layers only the additions declared here.
 type ServiceHardening struct {
 	// Service is the Compose service name this declaration hardens.
 	Service string `yaml:"service" json:"service"`
@@ -465,8 +466,10 @@ type ServiceHardening struct {
 }
 
 // Capabilities is the capability-addition set in
-// [ServiceHardening.Capabilities]. It carries only the additive set;
-// the cap_drop:ALL baseline is applied by the renderer independently.
+// [ServiceHardening.Capabilities]. It carries only the additive set.
+// The cap_drop:ALL baseline is declared by the app compose template
+// itself, and internal/core enforces it at install: a service that
+// adds capabilities without that baseline is rejected.
 type Capabilities struct {
 	// Add lists the capabilities re-added on top of cap_drop:ALL.
 	// Each value is a PRD §12.2 allow-list capability enforced by the
