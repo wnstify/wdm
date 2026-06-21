@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -33,11 +32,6 @@ const (
 	// and image indexes are a few KiB; 4 MiB is generous and stops a
 	// hostile or misbehaving registry from exhausting memory.
 	maxManifestBytes = 4 << 20
-
-	// maxTagListBytes bounds the tag-list JSON body. Repositories with
-	// thousands of tags can produce large lists; 8 MiB is a generous cap
-	// that still fails closed on an unbounded body.
-	maxTagListBytes = 8 << 20
 
 	// maxTokenBytes bounds the token-endpoint JSON body. Token responses
 	// are tiny; 1 MiB is far beyond any legitimate token document.
@@ -215,57 +209,6 @@ func (c *Client) resolveManifest(ctx context.Context, ref Reference) (Manifest, 
 	}
 
 	return Manifest{Digest: digest, MediaType: mediaType}, nil
-}
-
-// tagListResponse is the v2 tag-list JSON document shape. Only the tags
-// array is consumed; other fields (name) are ignored.
-type tagListResponse struct {
-	Tags []string `json:"tags"`
-}
-
-// ListTags returns the tags a repository exposes via the registry v2
-// tags/list endpoint, sorted lexically for deterministic output. The
-// reference's tag is irrelevant to a tag-list call, but ref is still parsed
-// and validated so the registry/repository identity is trustworthy and a
-// malformed reference is refused as a usage error. The anonymous token dance
-// applies on a 401 challenge.
-// Every transport, status, token, size-cap, or decode failure returns a typed
-// [types.ErrCodeNetworkFailure] (exit 8); a malformed ref returns
-// [types.ErrCodeUsageValidation] (exit 2). It honors ctx and performs no
-// verification. Large repositories may paginate tags via a Link header; this
-// v1 client returns the first page only to avoid unbounded paging against a
-// hostile endpoint.
-func (c *Client) ListTags(ctx context.Context, ref string) ([]string, error) {
-	parsed, err := ParseReference(ref)
-	if err != nil {
-		return nil, err
-	}
-
-	endpoint := c.tagsURL(parsed)
-
-	result, err := c.getWithToken(ctx, parsed, endpoint, "application/json", maxTagListBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	var decoded tagListResponse
-	if err := json.Unmarshal(result.body, &decoded); err != nil {
-		return nil, networkError(
-			"parsing the registry tag list failed",
-			"the registry returned an unexpected response shape",
-			err,
-		)
-	}
-
-	tags := make([]string, 0, len(decoded.Tags))
-	for _, tag := range decoded.Tags {
-		if strings.TrimSpace(tag) != "" {
-			tags = append(tags, tag)
-		}
-	}
-	sort.Strings(tags)
-
-	return tags, nil
 }
 
 // httpResult is the outcome of a single registry GET. It carries only the
@@ -485,12 +428,6 @@ func (c *Client) fetchAnonymousToken(ctx context.Context, ref Reference, challen
 func (c *Client) manifestURL(ref Reference) string {
 	return fmt.Sprintf("%s://%s/v2/%s/manifests/%s",
 		c.scheme, ref.Registry, escapeRepositoryPath(ref.Repository), url.PathEscape(ref.Tag))
-}
-
-// tagsURL builds the v2 tags/list endpoint for a reference's repository.
-func (c *Client) tagsURL(ref Reference) string {
-	return fmt.Sprintf("%s://%s/v2/%s/tags/list",
-		c.scheme, ref.Registry, escapeRepositoryPath(ref.Repository))
 }
 
 // escapeRepositoryPath path-escapes each repository component while
