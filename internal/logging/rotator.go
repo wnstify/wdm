@@ -1,12 +1,10 @@
 package logging
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -162,38 +160,4 @@ func prune(dir string, now time.Time) error {
 		}
 	}
 	return nil
-}
-
-// fileRotator is the concrete [Rotator] backing live file rotation under a
-// resolved log directory. It satisfies the retention.go contract for
-// callers that hold a Rotator and want to rotate mid-run; the engine's
-// startup path calls [OpenLogFile] directly and does not need it.
-type fileRotator struct {
-	dir string
-}
-
-// NewRotator returns a [Rotator] that archives and prunes latest.log under
-// dir per PRD §24. dir MUST be the absolute, engine-resolved log directory.
-func NewRotator(dir string) Rotator {
-	return fileRotator{dir: strings.TrimSpace(dir)}
-}
-
-// Rotate archives the current latest.log under a timestamped name and
-// prunes archives outside the retention intersection (PRD §24). It does not
-// open a new latest.log: the caller's existing handle keeps writing, and a
-// fresh file is opened on the next [OpenLogFile]. ctx cancellation is
-// honored before any filesystem mutation.
-func (r fileRotator) Rotate(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	resolved, err := safeLogDir(r.dir)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	if err := archiveLatest(resolved, now); err != nil {
-		return err
-	}
-	return prune(resolved, now)
 }

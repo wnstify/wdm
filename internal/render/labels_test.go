@@ -488,9 +488,6 @@ func TestRenderLabels_OnlyComposeBytesAndServiceLabelsPopulated(t *testing.T) {
 	if stack.AdditionalFiles != nil {
 		t.Errorf("AdditionalFiles = %v, want nil (input declares no sidecar files)", stack.AdditionalFiles)
 	}
-	if stack.LockManifest != nil {
-		t.Errorf("LockManifest = %v, want nil (later wiring populates this)", stack.LockManifest)
-	}
 }
 
 func TestRenderLabels_RendersAdditionalFilesAndVerifiesMounts(t *testing.T) {
