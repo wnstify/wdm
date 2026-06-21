@@ -25,7 +25,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/wnstify/wdm/internal/cli"
 	"github.com/wnstify/wdm/internal/system"
@@ -51,10 +52,20 @@ func main() {
 // debugRequested reports whether --debug appears in the raw args. The engine
 // is constructed before Cobra parses flags, so the debug level is sourced
 // from a pre-scan here rather than the parsed flag (PRD §24).
-// ponytail: a literal substring scan is enough — --debug takes no value and
+// Both the bare --debug and the --debug=<bool> spellings are detected here;
 // Cobra still validates the flag for --help and rejects typos.
 func debugRequested(args []string) bool {
-	return slices.Contains(args, "--debug")
+	for _, a := range args {
+		if a == "--debug" {
+			return true
+		}
+		if v, ok := strings.CutPrefix(a, "--debug="); ok {
+			if enabled, err := strconv.ParseBool(v); err == nil && enabled {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type runOptions struct {

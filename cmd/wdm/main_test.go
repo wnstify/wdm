@@ -121,6 +121,29 @@ func TestRunWithOptions_HelpAndVersionBypassEngineEvenWhenTTY(t *testing.T) {
 	}
 }
 
+func TestDebugRequested(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		expected bool
+	}{
+		{name: "bare flag", args: []string{"--debug"}, expected: true},
+		{name: "explicit true", args: []string{"--debug=true"}, expected: true},
+		{name: "explicit one", args: []string{"--debug=1"}, expected: true},
+		{name: "no args", args: []string{}, expected: false},
+		{name: "explicit false", args: []string{"--debug=false"}, expected: false},
+		{name: "explicit zero", args: []string{"--debug=0"}, expected: false},
+		{name: "typo", args: []string{"--debugx"}, expected: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, debugRequested(tt.args))
+		})
+	}
+}
+
 func TestRunWithOptions_RefusalRunsBeforeTTYAndEngine(t *testing.T) {
 	t.Parallel()
 
