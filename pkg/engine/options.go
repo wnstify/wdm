@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 )
@@ -18,6 +19,7 @@ type config struct {
 	stackBaseDir string
 	configPath   string
 	logger       *slog.Logger
+	fallbackLog  io.Writer
 	catalog      fs.FS
 	version      string
 }
@@ -75,6 +77,19 @@ func WithConfigPath(path string) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) error {
 		c.logger = l
+		return nil
+	}
+}
+
+// WithFallbackLogWriter sets the writer the default logger degrades to when
+// the PRD §24 file sink cannot be opened. It also encodes the calling
+// surface: cmd/wdm passes [os.Stderr] from a CLI invocation so a degraded
+// log stays visible, and [io.Discard] from the TUI so a logging fault never
+// corrupts the Bubble Tea display (PRD §24, §28). When unset, the engine
+// defaults to [os.Stderr]. Ignored when [WithLogger] supplies a logger.
+func WithFallbackLogWriter(w io.Writer) Option {
+	return func(c *config) error {
+		c.fallbackLog = w
 		return nil
 	}
 }

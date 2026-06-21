@@ -48,14 +48,23 @@ func main() {
 }
 
 type runOptions struct {
-	args            []string
-	stdin           io.Reader
-	stdout          io.Writer
-	stderr          io.Writer
-	refuse          func() error
-	stdinIsTTY      func() bool
-	stdoutIsTTY     func() bool
-	newEngine       func() (engine.Engine, error)
+	args        []string
+	stdin       io.Reader
+	stdout      io.Writer
+	stderr      io.Writer
+	refuse      func() error
+	stdinIsTTY  func() bool
+	stdoutIsTTY func() bool
+	// newEngine constructs the engine for the interactive TUI entry. Its
+	// production form routes the default-logger fallback to [io.Discard]
+	// so a log-sink failure never corrupts the Bubble Tea display
+	// (PRD §24, §28).
+	newEngine func() (engine.Engine, error)
+	// newCLIEngine constructs the engine for CLI leaf commands. Its
+	// production form routes the fallback to [os.Stderr] so a degraded log
+	// stays visible. When nil, [normalizeRunOptions] mirrors newEngine so
+	// existing tests that inject only newEngine keep working.
+	newCLIEngine    func() (engine.Engine, error)
 	runTUI          func(context.Context, engine.Engine) error
 	runStartupError func(context.Context, error) error
 }
@@ -74,7 +83,16 @@ func defaultRunOptions(args []string) runOptions {
 		stdinIsTTY:  func() bool { return fileIsTerminal(os.Stdin) },
 		stdoutIsTTY: func() bool { return fileIsTerminal(os.Stdout) },
 		newEngine: func() (engine.Engine, error) {
-			return engine.New(engine.WithVersion(version))
+			return engine.New(
+				engine.WithVersion(version),
+				engine.WithFallbackLogWriter(io.Discard),
+			)
+		},
+		newCLIEngine: func() (engine.Engine, error) {
+			return engine.New(
+				engine.WithVersion(version),
+				engine.WithFallbackLogWriter(os.Stderr),
+			)
 		},
 		runTUI:          runTUI,
 		runStartupError: runStartupError,
@@ -104,7 +122,7 @@ func runWithOptions(opts runOptions) error {
 		return opts.runTUI(context.Background(), eng)
 	}
 
-	root := cli.NewRootCmd(version, opts.newEngine)
+	root := cli.NewRootCmd(version, opts.newCLIEngine)
 	root.SetArgs(opts.args)
 	root.SetIn(opts.stdin)
 	root.SetOut(opts.stdout)
@@ -136,8 +154,17 @@ func normalizeRunOptions(opts runOptions) runOptions {
 	}
 	if opts.newEngine == nil {
 		opts.newEngine = func() (engine.Engine, error) {
-			return engine.New(engine.WithVersion(version))
+			return engine.New(
+				engine.WithVersion(version),
+				engine.WithFallbackLogWriter(io.Discard),
+			)
 		}
+	}
+	if opts.newCLIEngine == nil {
+		// Mirror newEngine so tests that inject only newEngine still drive
+		// the CLI path; production sets a distinct os.Stderr-fallback CLI
+		// factory in defaultRunOptions.
+		opts.newCLIEngine = opts.newEngine
 	}
 	if opts.runTUI == nil {
 		opts.runTUI = runTUI

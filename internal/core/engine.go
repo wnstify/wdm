@@ -90,6 +90,12 @@ type Engine struct {
 	// method's entry check.
 	closed atomic.Bool
 
+	// logFile is the open latest.log handle the default logger writes to
+	// when [New] opened the PRD §24 file sink. Nil when a logger was
+	// supplied via [WithLogger] or when the sink failed to open and the
+	// engine fell back to the surface writer. [Engine.Close] closes it.
+	logFile io.Closer
+
 	// detectHostResources probes host CPU/memory for install planning.
 	// Default is [system.DetectHostResources]; tests may replace it.
 	detectHostResources func() (system.HostResources, error)
@@ -267,23 +273,22 @@ func New(opts ...Option) (*Engine, error) {
 		}
 	}
 
-	if cfg.logger == nil {
-		base, err := logging.New(
-			logging.WithWriter(os.Stderr),
-			logging.WithLevel(slog.LevelInfo),
-			logging.WithRedactor(security.NewActiveRedactor(nil)),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("core.New: %w", err)
-		}
-		cfg.logger = base
-	}
 	if cfg.version == "" {
 		cfg.version = "dev"
 	}
 
 	if err := resolveDirs(cfg); err != nil {
 		return nil, fmt.Errorf("core.New: %w", err)
+	}
+
+	var logFile io.Closer
+	if cfg.logger == nil {
+		logger, closer, err := buildDefaultLogger(cfg.stateDir, cfg.fallbackLog)
+		if err != nil {
+			return nil, fmt.Errorf("core.New: %w", err)
+		}
+		cfg.logger = logger
+		logFile = closer
 	}
 
 	settings, err := loadConfigOrDefaults(cfg.configPath)
@@ -303,6 +308,7 @@ func New(opts ...Option) (*Engine, error) {
 		stateDir:                   cfg.stateDir,
 		dataDir:                    cfg.dataDir,
 		logger:                     cfg.logger,
+		logFile:                    logFile,
 		catalog:                    cfg.catalog,
 		version:                    cfg.version,
 		detectHostResources:        system.DetectHostResources,
@@ -314,6 +320,44 @@ func New(opts ...Option) (*Engine, error) {
 		selfUpdateDeps:             resolveSelfUpdateDeps(cfg.selfUpdateDeps),
 		newRegistryClient:          resolveRegistryClient(cfg.newRegistryClient),
 	}, nil
+}
+
+// buildDefaultLogger constructs the engine's default redaction-wrapped
+// logger when no [WithLogger] was supplied. The normal path is the PRD §24
+// file sink at <stateDir>/logs/latest.log: [logging.OpenLogFile] creates the
+// owner-only tree, archives the prior session, and prunes per the retention
+// policy, returning an open handle the engine owns and closes.
+// It fails soft: if the sink cannot be opened (permissions, a file where the
+// logs dir is expected, a tampered symlink), it degrades to fallback — the
+// surface writer from [WithFallbackLogWriter], defaulting to [os.Stderr] —
+// so a logging fault never blocks a wdm operation (PRD §24 "wdm must always
+// write a normal log"). The returned closer is nil on the fallback path,
+// since the engine does not own the fallback writer.
+func buildDefaultLogger(stateDir string, fallback io.Writer) (*slog.Logger, io.Closer, error) {
+	if fallback == nil {
+		fallback = os.Stderr
+	}
+
+	writer := fallback
+	var closer io.Closer
+	if f, err := logging.OpenLogFile(filepath.Join(stateDir, "logs")); err == nil {
+		writer = f
+		closer = f
+	}
+
+	logger, err := logging.New(
+		logging.WithWriter(writer),
+		logging.WithLevel(slog.LevelInfo),
+		logging.WithRedactor(security.NewActiveRedactor(nil)),
+	)
+	if err != nil {
+		if closer != nil {
+			//nolint:errcheck // unwinding a half-built logger; the construction error below is what the caller needs.
+			_ = closer.Close()
+		}
+		return nil, nil, err
+	}
+	return logger, closer, nil
 }
 
 // resolveRegistryClient picks the registry-client factory: the
@@ -581,16 +625,20 @@ func (e *Engine) Settings(ctx context.Context) (*types.Settings, error) {
 	return &s, nil
 }
 
-// Close releases the engine's held resources. The engine holds none
-// directly (the logger is caller-owned via WithLogger, no flock is held,
-// no FS roots are opened), so Close just marks the engine closed.
-// Close is idempotent: subsequent calls are no-ops. After Close, every
-// other [Engine] method returns [ErrClosed].
-// Once the engine owns a log file handle or a catalog FS root opened by
-// [New], Close will close them; the [ErrClosed] contract is in place so
-// callers honor the boundary today.
+// Close releases the engine's held resources. When [New] opened the
+// PRD §24 file sink (no [WithLogger] supplied and the sink opened), Close
+// closes the latest.log handle; a caller-supplied logger and the fallback
+// writer are not owned and so not closed.
+// Close is idempotent: subsequent calls are no-ops, and the file is closed
+// at most once. After Close, every other [Engine] method returns
+// [ErrClosed].
 func (e *Engine) Close() error {
-	e.closed.Store(true)
+	if e.closed.Swap(true) {
+		return nil
+	}
+	if e.logFile != nil {
+		return e.logFile.Close()
+	}
 	return nil
 }
 
