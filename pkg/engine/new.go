@@ -45,6 +45,9 @@ func New(opts ...Option) (Engine, error) {
 	if cfg.logger != nil {
 		coreOpts = append(coreOpts, core.WithLogger(cfg.logger))
 	}
+	if cfg.debug {
+		coreOpts = append(coreOpts, core.WithDebug(cfg.debug))
+	}
 	if cfg.fallbackLog != nil {
 		coreOpts = append(coreOpts, core.WithFallbackLogWriter(cfg.fallbackLog))
 	}
