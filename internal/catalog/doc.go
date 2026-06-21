@@ -31,12 +31,6 @@
 //     layout the engine reads — catalogs/stable/catalog.yaml and the
 //     shared catalogs/templates/ tree. On any failure it rolls back,
 //     leaving the prior active catalog byte-identical.
-//   - Embedded fallback ([EmbeddedFallback], [ResolveCatalogSource],
-//     [LocalCatalogPresent], [StoreEmbeddedFallback]) — the offline
-//     first-run mechanism. PRD §22 fixes precedence: a
-//     verified LOCAL catalog always wins; the embedded fallback is
-//     consulted only before any local catalog exists. embedded/fallback.json
-//     carries only minimal metadata unless a build embeds full bundle bytes.
 //
 // On-disk layout:
 //
@@ -73,7 +67,7 @@
 // pkg/types.ErrCodeVerificationFailed for exit code 3 (PRD §27); this package
 // exposes that sentinel and [ErrCatalogStorage].
 // Platform: catalog loading is portable (no syscalls). The
-// storage writer (storage.go / storage_fallback.go) depends on
+// storage writer (storage.go) depends on
 // internal/state's unix flock/atomic-write surface, so it is
 // build-tagged //go:build unix, matching PRD §2's Linux-amd64 target
 // (Darwin is also supported for local dev builds).

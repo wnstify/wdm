@@ -318,7 +318,8 @@ func TestStoreVerifiedCatalog_FirstStoreFailureLeavesNoActiveCatalog(t *testing.
 	assert.ErrorIs(t, err, sentinel)
 
 	// No active manifest, no active templates, no leftover snapshot/stash.
-	assert.False(t, LocalCatalogPresent(root, "stable"))
+	_, manifestErr := os.Lstat(filepath.Join(root, "stable", activeManifestName))
+	assert.True(t, errors.Is(manifestErr, os.ErrNotExist))
 	_, statErr := os.Lstat(filepath.Join(root, "templates"))
 	assert.True(t, errors.Is(statErr, os.ErrNotExist))
 	_, statErr = os.Lstat(filepath.Join(root, "stable", ".versions", "v1"))
@@ -385,7 +386,8 @@ func TestStoreVerifiedCatalog_RejectsInvalidManifestInBundle(t *testing.T) {
 	assert.ErrorIs(t, err, ErrCatalogInvalid)
 
 	// Nothing became active.
-	assert.False(t, LocalCatalogPresent(root, "stable"))
+	_, statErr := os.Lstat(filepath.Join(root, "stable", activeManifestName))
+	assert.True(t, errors.Is(statErr, os.ErrNotExist))
 }
 
 func TestStoreVerifiedCatalog_RejectsBundleMissingRootEntries(t *testing.T) {
