@@ -10,12 +10,7 @@ import (
 
 type progressMsg struct {
 	step    string
-	pct     float64
 	message string
-}
-
-type logLineMsg struct {
-	line types.LogLine
 }
 
 type confirmationRequestedMsg struct {
@@ -25,7 +20,6 @@ type confirmationRequestedMsg struct {
 
 type confirmationReply struct {
 	accepted bool
-	err      error
 }
 
 type engineBridge struct {
@@ -40,14 +34,8 @@ func newEngineBridge(send func(tea.Msg)) engineBridge {
 }
 
 func (b engineBridge) progressFn() types.ProgressFn {
-	return func(step string, pct float64, msg string) {
-		b.send(progressMsg{step: step, pct: pct, message: msg})
-	}
-}
-
-func (b engineBridge) logLineFn() types.LogLineFn {
-	return func(line types.LogLine) {
-		b.send(logLineMsg{line: line})
+	return func(step string, _ float64, msg string) {
+		b.send(progressMsg{step: step, message: msg})
 	}
 }
 
@@ -57,7 +45,7 @@ func (b engineBridge) Confirm(ctx context.Context, c types.Confirmation) (bool, 
 
 	select {
 	case result := <-reply:
-		return result.accepted, result.err
+		return result.accepted, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}

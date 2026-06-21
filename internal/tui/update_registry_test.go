@@ -91,7 +91,6 @@ func TestUpdateAppsView_BusySurfacesRegistryProgress(t *testing.T) {
 	m.busy = true
 	m.progress = progressMsg{
 		step:    types.StepUpdatePlanning,
-		pct:     8,
 		message: registryProgress,
 	}
 
