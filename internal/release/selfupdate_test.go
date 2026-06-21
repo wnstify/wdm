@@ -134,10 +134,10 @@ func (fr *fakeRelease) metadata() *release.Metadata {
 	return &release.Metadata{
 		Tag: testTag,
 		Assets: []release.ReleaseAsset{
-			{Name: release.ArtifactBinary, DownloadURL: url(release.ArtifactBinary), Size: int64(len(fr.binary))},
-			{Name: release.ArtifactChecksums, DownloadURL: url(release.ArtifactChecksums), Size: int64(len(fr.sums))},
-			{Name: release.ArtifactChecksumSignature, DownloadURL: url(release.ArtifactChecksumSignature), Size: int64(len(fr.sig))},
-			{Name: release.ArtifactAttestation, DownloadURL: url(release.ArtifactAttestation), Size: int64(len(fr.attestation))},
+			{Name: release.ArtifactBinary, DownloadURL: url(release.ArtifactBinary)},
+			{Name: release.ArtifactChecksums, DownloadURL: url(release.ArtifactChecksums)},
+			{Name: release.ArtifactChecksumSignature, DownloadURL: url(release.ArtifactChecksumSignature)},
+			{Name: release.ArtifactAttestation, DownloadURL: url(release.ArtifactAttestation)},
 		},
 	}
 }

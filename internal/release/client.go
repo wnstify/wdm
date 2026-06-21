@@ -82,11 +82,6 @@ type ReleaseAsset struct {
 	// DownloadURL is the asset's browser_download_url — the URL
 	// [Client.DownloadAsset] GETs to fetch the bytes.
 	DownloadURL string `json:"browser_download_url"`
-
-	// Size is the asset size in bytes as GitHub reports it. It is advisory
-	// metadata; the download enforces its own caller-supplied cap rather
-	// than trust this value.
-	Size int64 `json:"size"`
 }
 
 // Metadata is the parsed subset of a GitHub release object: its tag and
