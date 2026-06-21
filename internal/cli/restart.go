@@ -115,25 +115,14 @@ mismatch.`,
 			// Restart never produces a database-risk confirmation, so
 			// acceptDBRisk is wired false; "restart_safe" is a safe
 			// confirmation that --yes accepts.
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), assumeYes, false)
-
-			// JSON mode suppresses progress so the single envelope is the only
-			// thing on stdout (PRD §32). Plain mode sends progress to stderr so
-			// stdout carries just the finish screen.
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, assumeYes, false, useJSON)
 
 			result, err := eng.Restart(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), result)
-			}
-			return writeRestartFinish(cmd.OutOrStdout(), result)
+			return emitResult(cmd, useJSON, result, writeRestartFinish)
 		},
 	}
 

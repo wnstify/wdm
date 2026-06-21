@@ -68,10 +68,7 @@ verdict.`,
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), result)
-			}
-			return writeValidation(cmd.OutOrStdout(), result)
+			return emitResult(cmd, useJSON, result, writeValidation)
 		},
 	}
 

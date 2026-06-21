@@ -105,18 +105,7 @@ database-risk warning is never accepted by --yes; it requires
 				DryRun:                dryRun,
 			}
 
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), assumeYes, acceptDBRisk)
-
-			// JSON mode suppresses progress so the single envelope is the
-			// only thing on stdout (PRD §32). Plain mode sends progress to
-			// stderr — for --dry-run the StepUpdatePlanning stream with the
-			// per-service old → new image references (PRD §20 wants tag
-			// changes on the check screen), for apply the full deploy stream
-			// — so stdout carries just the check block plus finish line.
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, assumeYes, acceptDBRisk, useJSON)
 
 			result, err := eng.Update(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {

@@ -154,25 +154,14 @@ resolved stack and refuses on a mismatch.`,
 			// never be auto-accepted, and acceptDBRisk is false because delete
 			// produces no database-risk warning. The shared confirmer prompts
 			// y/N on a TTY and declines fail-closed without one.
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), false, false)
-
-			// JSON mode suppresses progress so the single envelope is the only
-			// thing on stdout (PRD §32). Plain mode sends progress to stderr so
-			// stdout carries just the finish screen.
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, false, false, useJSON)
 
 			result, err := eng.DeleteApp(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), result)
-			}
-			return writeDeleteFinish(cmd.OutOrStdout(), result)
+			return emitResult(cmd, useJSON, result, writeDeleteFinish)
 		},
 	}
 
