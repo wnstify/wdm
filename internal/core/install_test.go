@@ -3368,7 +3368,7 @@ func (f *fakeConfirmer) Confirm(ctx context.Context, c types.Confirmation) (bool
 }
 
 // missingNetworkResult mimics `docker network inspect` output for an
-// absent network so EnsureNetwork takes its create path.
+// absent network so EnsureNetworkReport takes its create path.
 func missingNetworkResult(name string) (docker.CommandResult, error) {
 	return docker.CommandResult{
 		Stderr:   "Error: No such network: " + name,

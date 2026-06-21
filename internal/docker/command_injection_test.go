@@ -49,7 +49,7 @@ var owaspCommandInjectionPayloads = []struct {
 // input is a name-shaped token — project names (ComposeUp / ComposeDown
 // / ComposePull / ComposeRestart / InspectProjectContainers /
 // ListProjectNamedVolumes),
-// network names (EnsureNetwork / RemoveNetwork), named volume removal
+// network names (EnsureNetworkReport / RemoveNetwork), named volume removal
 // (RemoveNamedVolume), image references (InspectImageDigest),
 // and service names (ComposeLogs). Each payload must be refused as a
 // typed ErrCodeUsageValidation, and the injected command executor must
@@ -129,7 +129,8 @@ func TestCommandInjection_NameShapedInputsRefuseOWASPPayloads(t *testing.T) {
 		{
 			name: "network name",
 			call: func(ctx context.Context, client Client, payload string) error {
-				return EnsureNetwork(ctx, client, NetworkSpec{Name: payload})
+				_, err := EnsureNetworkReport(ctx, client, NetworkSpec{Name: payload})
+				return err
 			},
 		},
 		{

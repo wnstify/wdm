@@ -13,7 +13,7 @@
 //	-: [ComposeProject], [ComposePull], [ComposeUp],
 //	  [ComposeDown], and [ComposeUpOptions] wrap compose deployment
 //	  (down is always run without -v).
-//	-: [NetworkSpec] and [EnsureNetwork] wrap network
+//	-: [NetworkSpec] and [EnsureNetworkReport] wrap network
 //	  management with create-if-missing and internal-flag handling.
 //	  A spec carrying an app id stamps the PRD §10 ownership labels
 //	  (wdm.managed=true, wdm.app=<app>) on newly-created networks;

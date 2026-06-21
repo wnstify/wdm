@@ -397,7 +397,7 @@ func buildNetworkInspectCommand(name string) (commandSpec, error) {
 
 // networkSubnetInspectFormat reads the first configured subnet from a network's
 // IPAM config. Networks wdm creates pin a single subnet, so the first entry is
-// the one [EnsureNetwork] reconciles against the requested spec.
+// the one [EnsureNetworkReport] reconciles against the requested spec.
 const networkSubnetInspectFormat = `{{range .IPAM.Config}}{{.Subnet}}{{end}}`
 
 func buildNetworkSubnetCommand(name string) (commandSpec, error) {
