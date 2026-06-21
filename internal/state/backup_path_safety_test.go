@@ -8,26 +8,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// validatePruneBackupStackPath and validateRestoreStackPath guard the
+// validateBackupStackPath and validateRestoreStackPath guard the
 // stack-directory argument before either touches the backup tree, enforcing
 // the no-write-outside-stack invariant (PRD §29). These tests drive the
 // non-absolute and not-a-directory reject arms.
 
-func TestValidatePruneBackupStackPath_RejectsRelativePath(t *testing.T) {
+func TestValidateBackupStackPath_RejectsRelativePath(t *testing.T) {
 	t.Parallel()
 
-	err := validatePruneBackupStackPath("relative/stack")
+	err := validateBackupStackPath("state.PruneConfigBackups", "relative/stack")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "absolute path")
 }
 
-func TestValidatePruneBackupStackPath_RejectsNonDirectory(t *testing.T) {
+func TestValidateBackupStackPath_RejectsNonDirectory(t *testing.T) {
 	t.Parallel()
 
 	file := filepath.Join(t.TempDir(), "not-a-dir")
 	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
 
-	err := validatePruneBackupStackPath(file)
+	err := validateBackupStackPath("state.PruneConfigBackups", file)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "is not a directory")
 }
