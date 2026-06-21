@@ -107,8 +107,8 @@ func archiveLatest(dir string, now time.Time) error {
 	// Guard against a same-second collision (two opens within one
 	// second): suffix with a counter rather than clobbering an archive.
 	for i := 1; ; i++ {
-		if _, err := os.Lstat(archive); os.IsNotExist(err) {
-			break
+		if _, err := os.Lstat(archive); err != nil {
+			break // free name, or a stat fault Rename will surface; never spin
 		}
 		archive = filepath.Join(dir, fmt.Sprintf("%s%s-%d%s", archivePrefix, now.Format(archiveTimeLayout), i, archiveSuffix))
 	}

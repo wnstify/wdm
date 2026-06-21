@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -258,4 +259,80 @@ func TestRedactionPlaceholderNotSubstringOfSecrets(t *testing.T) {
 	for _, s := range []string{"hunter2-super-secret", "ghp_aaaa", "GENERATEDSECRETVALUE1234567890"} {
 		assert.False(t, strings.Contains(s, security.RedactedPlaceholder))
 	}
+}
+
+// TestOpenLogFile_StatFaultDoesNotHang proves the archive collision probe
+// fails soft instead of spinning forever when Lstat returns a non-IsNotExist
+// error. Removing the dir's search bit makes Lstat of an entry inside return
+// EACCES; the probe must break on that fault and surface a Rename error
+// promptly rather than looping (Fix 1, PRD §24).
+func TestOpenLogFile_StatFaultDoesNotHang(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("EACCES via search-bit removal is not forceable on windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "logs")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, logging.LatestLogName), []byte("prior\n"), 0o600))
+
+	// Drop the search/exec bit so Lstat of any entry inside the dir faults
+	// with EACCES (not IsNotExist), exercising the non-IsNotExist break.
+	require.NoError(t, os.Chmod(dir, 0o600))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	done := make(chan error, 1)
+	go func() {
+		f, err := logging.OpenLogFile(dir)
+		if f != nil {
+			_ = f.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "stat fault must surface an error, not be ignored")
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenLogFile hung on the archive collision probe")
+	}
+}
+
+// TestOpenLogFile_SameSecondCollisionBumpsCounter covers the archive
+// collision-counter branch (Fix 1): when the base wdm-<ts>.log name for the
+// current second already exists, archiveLatest must not clobber it but suffix
+// a -N counter. OpenLogFile uses time.Now() internally, so the base archive
+// names for the current second and the next second are both pre-seeded; the
+// rename therefore collides regardless of which second it lands in and must
+// produce a -1 counter-suffixed archive.
+func TestOpenLogFile_SameSecondCollisionBumpsCounter(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "logs")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, logging.LatestLogName), []byte("prior\n"), 0o600))
+
+	// Occupy the base archive name for the current and next second so the
+	// rename target is taken whichever boundary time.Now() falls on.
+	const layout = "2006-01-02-150405"
+	now := time.Now()
+	for _, ts := range []string{now.Format(layout), now.Add(time.Second).Format(layout)} {
+		base := filepath.Join(dir, "wdm-"+ts+".log")
+		require.NoError(t, os.WriteFile(base, []byte("existing archive\n"), 0o600))
+	}
+
+	f, err := logging.OpenLogFile(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	// The prior latest.log must have landed in a -1 counter-suffixed archive,
+	// proving the base name was not clobbered.
+	counter, err := filepath.Glob(filepath.Join(dir, "wdm-*-1.log"))
+	require.NoError(t, err)
+	require.Len(t, counter, 1, "collision must route the prior latest.log to a -1 archive")
+
+	body, err := os.ReadFile(counter[0])
+	require.NoError(t, err)
+	assert.Equal(t, "prior\n", string(body), "counter archive must hold the prior session, not clobber an existing archive")
 }
