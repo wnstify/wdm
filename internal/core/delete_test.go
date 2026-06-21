@@ -453,8 +453,6 @@ func TestDeleteApp_ValidateFirstRefusalsEmitNoEvents(t *testing.T) {
 			}, &fakeConfirmer{})
 			require.Error(t, err)
 			assert.Nil(t, res)
-			assert.NotErrorIs(t, err, types.ErrNotImplemented,
-				"a validate-first refusal must precede the execution boundary")
 			assertUsageValidation(t, err)
 			assert.ErrorContains(t, err, tt.wantContains)
 			assert.Zero(t, events, "request validation must refuse before the first progress event")

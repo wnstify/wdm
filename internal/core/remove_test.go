@@ -405,8 +405,6 @@ func TestRemove_RefusesUnmanagedMissingAndEmptyAppIDs(t *testing.T) {
 
 			res, err := eng.Remove(t.Context(), types.RemoveRequest{AppID: tt.appID}, onProgress, &fakeConfirmer{})
 			require.Error(t, err)
-			assert.NotErrorIs(t, err, types.ErrNotImplemented,
-				"a managed-only refusal must precede the execution boundary")
 			assert.Nil(t, res)
 			assertUsageValidation(t, err)
 			assert.ErrorContains(t, err, tt.wantContains)
@@ -555,8 +553,6 @@ func TestRemove_DaemonUnavailableDuringVolumeListPropagates(t *testing.T) {
 
 	res, err := fx.eng.Remove(t.Context(), types.RemoveRequest{AppID: fx.appID}, nil, &fakeConfirmer{})
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented,
-		"a dead daemon must surface as a typed error, not the execution boundary")
 	assert.Nil(t, res)
 	var typed *types.Error
 	require.ErrorAs(t, err, &typed)
@@ -581,7 +577,6 @@ func TestRemove_ContextCanceledDuringVolumeListPropagates(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled,
 		"a cancellation during the volume listing must propagate")
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 	assert.Nil(t, res)
 }
 
@@ -611,8 +606,6 @@ func TestRemove_ContextCanceledDuringNetworkPlanningPropagates(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled,
 		"a cancellation during network planning must propagate")
-	assert.NotErrorIs(t, err, types.ErrNotImplemented,
-		"a canceled network read must not reach the execution boundary")
 	assert.Nil(t, res)
 	assert.Equal(t, 1, fx.fake.calls,
 		"only the volume listing runs before the cancellation surfaces")
@@ -636,8 +629,6 @@ func TestRemove_MismatchedStackPathRefusesBeforeDocker(t *testing.T) {
 	}, nil, &fakeConfirmer{})
 	require.Error(t, err)
 	assert.Nil(t, res)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented,
-		"a stack-path mismatch must refuse before the execution boundary")
 	assertUsageValidation(t, err)
 	assert.ErrorContains(t, err, "stack path does not match the managed stack")
 	assert.Zero(t, fx.fake.calls,

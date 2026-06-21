@@ -44,7 +44,6 @@ func TestPortConflict_RenderTimeRefusalWritesNoFiles(t *testing.T) {
 	res, err := eng.Install(t.Context(), types.InstallRequest{AppID: app.AppID}, nil, confirmer)
 	require.Error(t, err)
 	assert.Nil(t, res)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 
 	var typedErr *types.Error
 	require.ErrorAs(t, err, &typedErr)
@@ -102,7 +101,6 @@ func TestPortConflict_PreDeployCheckpointNamesPortAndCleansUp(t *testing.T) {
 	res, err := eng.Install(t.Context(), types.InstallRequest{AppID: app.AppID}, nil, confirmer)
 	require.Error(t, err)
 	assert.Nil(t, res)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 
 	var typedErr *types.Error
 	require.ErrorAs(t, err, &typedErr)

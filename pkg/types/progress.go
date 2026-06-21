@@ -152,23 +152,3 @@ const (
 	// StepSelfUpdateRollback reports restoration of the previous binary.
 	StepSelfUpdateRollback = "step_self_update_rollback"
 )
-
-// Progress is the JSON-serializable equivalent of the three arguments
-// passed to ProgressFn (PRD §37) — the on-the-wire shape used when the
-// future GUI streams progress events over IPC. The in-process callback
-// in pkg/engine instead takes the three values directly, matching the
-// locked load-bearing signature in the invariant:
-// func(step string, pct float64, msg string).
-type Progress struct {
-	// Step is a short identifier for the current pipeline stage —
-	// e.g. "render_compose" or "pull_images". Stable across releases
-	// so logs and dashboards can group by Step safely.
-	Step string `json:"step"`
-
-	// Percent is a coarse completion estimate in [0.0, 100.0]. May be
-	// approximate; the engine sets it to 100 only on terminal events.
-	Percent float64 `json:"percent"`
-
-	// Message is the human-readable status line shown alongside Step.
-	Message string `json:"message"`
-}

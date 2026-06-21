@@ -495,8 +495,6 @@ func TestRestoreBackup_RefusesUnmanagedMissingAndEmptyInputs(t *testing.T) {
 			}, func(string, float64, string) { events++ }, &fakeConfirmer{})
 
 			require.Error(t, err)
-			assert.NotErrorIs(t, err, types.ErrNotImplemented,
-				"a refusal must not surface the retired stub boundary")
 			assert.Nil(t, res)
 			assertUsageValidation(t, err)
 			assert.ErrorContains(t, err, tt.wantContains)
