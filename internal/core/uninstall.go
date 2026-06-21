@@ -62,8 +62,10 @@ func (e *Engine) Uninstall(
 		return nil, ErrClosed
 	}
 	// Uniform §24 start/result lines. Uninstall acts on wdm itself, not one
-	// app, so the app field stays empty. The success line is emitted before
-	// removeFootprint deletes the log sink's state dir.
+	// app, so the app field stays empty. The result line is emitted after
+	// removeFootprint resolves: a failure record on its error path (the only
+	// case where the log sink survives to be read) and a best-effort,
+	// self-deleting success record once removal removed the sink's state dir.
 	lg := e.newOpLogger(e.logger, "uninstall")
 	lg.start(ctx, "")
 
@@ -113,6 +115,8 @@ func (e *Engine) Uninstall(
 	// Fail-closed: any teardown failure aborts before any footprint removal.
 	// wdm stays installed; the result lists what failed.
 	if len(failed) > 0 {
+		lg.failure(ctx, "", "", "teardown_stacks",
+			fmt.Errorf("uninstall aborted: %d managed stack(s) failed teardown; footprint kept", len(failed)))
 		return &types.UninstallResult{
 			TornDown:      tornDown,
 			Failed:        failed,
@@ -139,13 +143,19 @@ func (e *Engine) Uninstall(
 		onProgress,
 	)
 
-	// Emit the result line before removeFootprint deletes the log sink's
-	// state dir, so the success record lands while the sink still exists.
-	lg.success(ctx, "", "")
 	removed, err := e.removeFootprint(ctx, handle, onProgress)
 	if err != nil {
+		// Best-effort failure record. removeFootprint targets the state dir
+		// that holds the log sink, but on Linux the open fd survives an early
+		// unlink, so when removal aborts before the logs are gone this lands —
+		// the only case where an uninstall log survives to be read.
+		lg.failure(ctx, "", "", "remove_footprint", err)
 		return nil, err
 	}
+	// On success removeFootprint has removed the sink's state dir, so this
+	// result line is best-effort and self-deleting; it keeps §24 result-line
+	// parity for the rare case removal leaves the sink momentarily readable.
+	lg.success(ctx, "", "")
 
 	return &types.UninstallResult{
 		TornDown:         tornDown,

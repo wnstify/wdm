@@ -1,9 +1,13 @@
 package core_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -131,7 +135,7 @@ func tornDownAppIDs(apps []types.TornDownApp) []string {
 // per-test temp tree (via newTestEngine) and whose running-binary seam points
 // at a fake binary inside a temp dir, never the test runner. It returns the
 // engine, its state dir, and the fake binary path so tests can assert removal.
-func newUninstallTestEngine(t *testing.T) (eng *core.Engine, stateDir, binaryPath string) {
+func newUninstallTestEngine(t *testing.T, extra ...core.Option) (eng *core.Engine, stateDir, binaryPath string) {
 	t.Helper()
 
 	binDir := t.TempDir()
@@ -143,7 +147,7 @@ func newUninstallTestEngine(t *testing.T) (eng *core.Engine, stateDir, binaryPat
 	// ~/.config/wdm/config.toml dedicated directory.
 	configPath := filepath.Join(t.TempDir(), "wdm", "config.toml")
 
-	eng, stateDir = newTestEngine(t,
+	opts := append([]core.Option{
 		core.WithConfigPath(configPath),
 		core.WithSelfUpdateDeps(
 			func() (string, error) { return binaryPath, nil },
@@ -151,7 +155,9 @@ func newUninstallTestEngine(t *testing.T) (eng *core.Engine, stateDir, binaryPat
 			nil,
 			nil,
 		),
-	)
+	}, extra...)
+
+	eng, stateDir = newTestEngine(t, opts...)
 	return eng, stateDir, binaryPath
 }
 
@@ -281,12 +287,15 @@ func TestUninstall_DeclinedConfirmationCancelsWithNoSideEffects(t *testing.T) {
 }
 
 // One stack failing aborts the whole operation BEFORE any footprint removal:
-// wdm stays installed, the state dir survives, and the result lists the
-// failed stack.
+// wdm stays installed, the state dir survives, the result lists the failed
+// stack, and the partial-teardown path still emits a §24 result line naming
+// failure_point=teardown_stacks rather than orphaning the op-start line.
 func TestUninstall_OneTeardownFailureAbortsAndKeepsWDMInstalled(t *testing.T) {
 	t.Parallel()
 
-	eng, stateDir, binaryPath := newUninstallTestEngine(t)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	eng, stateDir, binaryPath := newUninstallTestEngine(t, core.WithLogger(logger))
 	base := stopAllStackBase(stateDir)
 	require.NoError(t, os.MkdirAll(base, 0o755))
 	client := newUninstallDockerClient(t)
@@ -302,11 +311,40 @@ func TestUninstall_OneTeardownFailureAbortsAndKeepsWDMInstalled(t *testing.T) {
 	require.Len(t, result.Failed, 1)
 	assert.Equal(t, "freshrss", result.Failed[0].AppID)
 	assert.Contains(t, result.Failed[0].Error, "daemon unreachable")
+	// The result's failed entry carries no whole-operation error (nil error;
+	// the per-stack reason lives in Error).
+	assert.NoError(t, err)
+
+	// §24: the partial-teardown path emits an "operation failed" result line
+	// pointing at teardown_stacks, not an orphaned op-start line.
+	rec := findOpFailureRecord(t, logs.Bytes(), "teardown_stacks")
+	require.NotNil(t, rec, "partial teardown must emit a teardown_stacks failure record")
+	assert.Equal(t, "uninstall", rec["action"])
 
 	// Fail-closed: NO footprint removed, wdm still installed.
 	assert.Empty(t, result.RemovedPaths)
 	assert.FileExists(t, binaryPath)
 	assert.DirExists(t, stateDir)
+}
+
+// findOpFailureRecord scans newline-delimited slog JSON for a
+// "core: operation failed" record whose failure_point matches, returning the
+// decoded record or nil.
+func findOpFailureRecord(t *testing.T, raw []byte, failurePoint string) map[string]any {
+	t.Helper()
+
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		var rec map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			continue
+		}
+		if rec["msg"] == "core: operation failed" && rec["failure_point"] == failurePoint {
+			return rec
+		}
+	}
+	require.NoError(t, scanner.Err())
+	return nil
 }
 
 // Pre-flight validates EVERY footprint removal target before any teardown, so
