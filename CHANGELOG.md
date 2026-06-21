@@ -3,6 +3,30 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.0.6 - 2026-06-21
+
+### Added
+- Implemented the on-disk diagnostic log sink (PRD §24). `wdm` now writes a
+  redacted JSON log to `~/.local/state/wdm/logs/latest.log` (file mode 0600,
+  dir 0700). On each start the prior `latest.log` is archived as
+  `wdm-YYYY-MM-DD-HHMMSS.log`, and archives are pruned to the retention
+  intersection — kept only when both within 30 days and among the 50 newest
+  files, with `latest.log` always kept. The sink fails soft: if it cannot be
+  opened, the CLI falls back to stderr and the TUI discards (so the display is
+  never corrupted), and a logging fault never blocks an operation.
+- State-changing operations now emit PRD §24 normal-log content. Install logs
+  the full field set (wdm version, OS and architecture, action, app, stack
+  path, checks performed, command names, and the failing step on failure);
+  update, reconfigure, and uninstall log start and result lines. Generated
+  secrets are never logged — only the fact that a secret was minted for a
+  named placeholder — and the per-install records pass through a redactor that
+  also scrubs that run's generated values as defense-in-depth.
+- Added the global `--debug` flag (PRD §24): it raises the log file to debug
+  level with source attribution, surfacing command summaries and validation
+  detail. Secrets stay redacted in debug mode.
+- On operation failure, `wdm` now prints the log file path and reminds you to
+  review the log before sharing it publicly (PRD §24).
+
 ## v1.0.5 - 2026-06-20
 
 ### Fixed

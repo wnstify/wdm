@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/wnstify/wdm/internal/cli"
 	"github.com/wnstify/wdm/internal/system"
@@ -47,15 +49,43 @@ func main() {
 	}
 }
 
+// debugRequested reports whether --debug appears in the raw args. The engine
+// is constructed before Cobra parses flags, so the debug level is sourced
+// from a pre-scan here rather than the parsed flag (PRD §24).
+// Both the bare --debug and the --debug=<bool> spellings are detected here;
+// Cobra still validates the flag for --help and rejects typos.
+func debugRequested(args []string) bool {
+	for _, a := range args {
+		if a == "--debug" {
+			return true
+		}
+		if v, ok := strings.CutPrefix(a, "--debug="); ok {
+			if enabled, err := strconv.ParseBool(v); err == nil && enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type runOptions struct {
-	args            []string
-	stdin           io.Reader
-	stdout          io.Writer
-	stderr          io.Writer
-	refuse          func() error
-	stdinIsTTY      func() bool
-	stdoutIsTTY     func() bool
-	newEngine       func() (engine.Engine, error)
+	args        []string
+	stdin       io.Reader
+	stdout      io.Writer
+	stderr      io.Writer
+	refuse      func() error
+	stdinIsTTY  func() bool
+	stdoutIsTTY func() bool
+	// newEngine constructs the engine for the interactive TUI entry. Its
+	// production form routes the default-logger fallback to [io.Discard]
+	// so a log-sink failure never corrupts the Bubble Tea display
+	// (PRD §24, §28).
+	newEngine func() (engine.Engine, error)
+	// newCLIEngine constructs the engine for CLI leaf commands. Its
+	// production form routes the fallback to [os.Stderr] so a degraded log
+	// stays visible. When nil, [normalizeRunOptions] mirrors newEngine so
+	// existing tests that inject only newEngine keep working.
+	newCLIEngine    func() (engine.Engine, error)
 	runTUI          func(context.Context, engine.Engine) error
 	runStartupError func(context.Context, error) error
 }
@@ -65,6 +95,7 @@ func run(args []string) error {
 }
 
 func defaultRunOptions(args []string) runOptions {
+	debug := debugRequested(args)
 	return runOptions{
 		args:        args,
 		stdin:       os.Stdin,
@@ -74,7 +105,18 @@ func defaultRunOptions(args []string) runOptions {
 		stdinIsTTY:  func() bool { return fileIsTerminal(os.Stdin) },
 		stdoutIsTTY: func() bool { return fileIsTerminal(os.Stdout) },
 		newEngine: func() (engine.Engine, error) {
-			return engine.New(engine.WithVersion(version))
+			return engine.New(
+				engine.WithVersion(version),
+				engine.WithFallbackLogWriter(io.Discard),
+				engine.WithDebug(debug),
+			)
+		},
+		newCLIEngine: func() (engine.Engine, error) {
+			return engine.New(
+				engine.WithVersion(version),
+				engine.WithFallbackLogWriter(os.Stderr),
+				engine.WithDebug(debug),
+			)
 		},
 		runTUI:          runTUI,
 		runStartupError: runStartupError,
@@ -96,15 +138,47 @@ func runWithOptions(opts runOptions) error {
 		return err
 	}
 
+	// Record the engine each factory builds so a failure can show its log
+	// path (PRD §24 failure UX) without re-deriving the path and risking
+	// drift from the sink the engine actually opened.
+	var built engine.Engine
+	record := func(factory func() (engine.Engine, error)) func() (engine.Engine, error) {
+		return func() (engine.Engine, error) {
+			eng, err := factory()
+			if eng != nil {
+				built = eng
+			}
+			return eng, err
+		}
+	}
+
+	err := dispatchRun(opts, record(opts.newEngine), record(opts.newCLIEngine))
+	if err != nil && built != nil {
+		if path := built.LogPath(); path != "" {
+			//nolint:errcheck // best-effort failure hint to stderr; the returned err drives the exit code regardless.
+			fmt.Fprintf(opts.stderr, "wdm: see %s; review the log before sharing it publicly (e.g. on GitHub)\n", path)
+		}
+	}
+	return err
+}
+
+// dispatchRun routes a normalized invocation to the TUI entry or the Cobra
+// root, taking the (engine-recording) factories so the caller can surface
+// the log path on failure.
+func dispatchRun(
+	opts runOptions,
+	newEngine func() (engine.Engine, error),
+	newCLIEngine func() (engine.Engine, error),
+) error {
 	if len(opts.args) == 0 && opts.stdinIsTTY() && opts.stdoutIsTTY() {
-		eng, err := opts.newEngine()
+		eng, err := newEngine()
 		if err != nil {
 			return opts.runStartupError(context.Background(), err)
 		}
 		return opts.runTUI(context.Background(), eng)
 	}
 
-	root := cli.NewRootCmd(version, opts.newEngine)
+	root := cli.NewRootCmd(version, newCLIEngine)
 	root.SetArgs(opts.args)
 	root.SetIn(opts.stdin)
 	root.SetOut(opts.stdout)
@@ -136,8 +210,17 @@ func normalizeRunOptions(opts runOptions) runOptions {
 	}
 	if opts.newEngine == nil {
 		opts.newEngine = func() (engine.Engine, error) {
-			return engine.New(engine.WithVersion(version))
+			return engine.New(
+				engine.WithVersion(version),
+				engine.WithFallbackLogWriter(io.Discard),
+			)
 		}
+	}
+	if opts.newCLIEngine == nil {
+		// Mirror newEngine so tests that inject only newEngine still drive
+		// the CLI path; production sets a distinct os.Stderr-fallback CLI
+		// factory in defaultRunOptions.
+		opts.newCLIEngine = opts.newEngine
 	}
 	if opts.runTUI == nil {
 		opts.runTUI = runTUI
