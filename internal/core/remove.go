@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -125,12 +124,8 @@ func (e *Engine) planRemove(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if req.AppID == "" {
-		return nil, usageValidationError(
-			"app id is required",
-			"pass the app id of an installed stack",
-			nil,
-		)
+	if err := requireAppID(req.AppID); err != nil {
+		return nil, err
 	}
 	if onProgress != nil {
 		onProgress(types.StepRemovePlanning, 5, "planning safe removal")
@@ -141,31 +136,11 @@ func (e *Engine) planRemove(
 		return nil, err
 	}
 
-	// Resolution is AppID-driven (mirroring Status and the update check), so
-	// a supplied req.StackPath is a fail-closed cross-check, not an alternate
-	// resolution path: it must name the stack AppID already resolved to. A
-	// mismatch refuses before any Docker call so a stale or wrong
-	// --stack-path can never act on a different managed stack.
-	if req.StackPath != "" && filepath.Clean(req.StackPath) != stackPath {
-		return nil, usageValidationError(
-			"stack path does not match the managed stack for this app",
-			fmt.Sprintf("the managed stack for %q is at %s", req.AppID, stackPath),
-			nil,
-		)
+	if err := stackPathCrossCheck(req.StackPath, req.AppID, stackPath); err != nil {
+		return nil, err
 	}
-
-	// A managed stack always records its Compose project at install time
-	// (PRD §9, §30), so an empty value is a corrupt manifest. Refuse here —
-	// before the named-volume listing and the execution slice's down — so the
-	// failure names the corrupt manifest rather than
-	// degrading to a WARN-skipped empty volume list and a generic late
-	// refusal from [docker.ComposeDown].
-	if lock.ComposeProject == "" {
-		return nil, usageValidationError(
-			"stack manifest is missing its compose project",
-			"the .wdm.lock is corrupt; reinstall the app to restore managed state",
-			fmt.Errorf("stack lock for %q records no compose project", req.AppID),
-		)
+	if err := requireComposeProject(lock.ComposeProject, req.AppID); err != nil {
+		return nil, err
 	}
 
 	volumes, err := e.listRemoveNamedVolumes(ctx, lock.ComposeProject)
@@ -419,32 +394,16 @@ func confirmRemove(
 	plan *removePlan,
 	onProgress types.ProgressFn,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if confirmer == nil {
-		return types.NewError(
-			types.ErrCodeUsageValidation,
-			"confirmer is required before removal",
-			"pass a confirmer that can authorize docker compose down",
-		)
-	}
-	if onProgress != nil {
-		onProgress(types.StepRemoveConfirm, 30, "confirming safe removal")
-	}
-
-	confirmed, err := confirmer.Confirm(ctx, removeConfirmation(plan))
-	if err != nil {
-		return fmt.Errorf("core.remove: confirming removal: %w", err)
-	}
-	if !confirmed {
-		return types.NewError(
-			types.ErrCodeUserCanceled,
-			"removal canceled before docker compose down",
-			"re-run the removal and confirm the prompt",
-		)
-	}
-	return nil
+	return confirmLifecycleOp(ctx, confirmer, removeConfirmation(plan), confirmStrings{
+		stepID:         types.StepRemoveConfirm,
+		stepPct:        30,
+		stepMessage:    "confirming safe removal",
+		nilMessage:     "confirmer is required before removal",
+		nilHint:        "pass a confirmer that can authorize docker compose down",
+		confirmErrWrap: "core.remove: confirming removal",
+		declineMessage: "removal canceled before docker compose down",
+		declineHint:    "re-run the removal and confirm the prompt",
+	}, onProgress)
 }
 
 // removeConfirmation assembles the safe-removal consequence payload (PRD §19
@@ -500,41 +459,11 @@ func runRemoveComposeDown(
 		onProgress(types.StepRemoveComposeDown, 55, "stopping and removing containers")
 	}
 
-	project, err := removeComposeProject(plan)
+	project, err := logsComposeProject(plan.stackPath, plan.composeProject)
 	if err != nil {
 		return err
 	}
 	return docker.ComposeDown(ctx, client, project)
-}
-
-// removeComposeProject builds the validated [docker.ComposeProject] for
-// the down invocation from the managed stack path and the manifest's
-// Compose project name. The compose and env file paths are resolved
-// under the stack path via [security.SafeJoin] (PRD §12, §13), and the
-// project name is the manifest's recorded `wdm-<app>` value (already
-// proven non-empty by planRemove's corrupt-manifest guard).
-func removeComposeProject(plan *removePlan) (docker.ComposeProject, error) {
-	composePath, err := security.SafeJoin(plan.stackPath, installComposeFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	envPath, err := security.SafeJoin(plan.stackPath, installEnvFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	return docker.ComposeProject{
-		ComposeFile: composePath,
-		EnvFile:     envPath,
-		ProjectName: plan.composeProject,
-	}, nil
 }
 
 // writeRemoveLockManifest persists the removed-state manifest through the
@@ -679,9 +608,22 @@ func (e *Engine) verifyRemoveStatus(
 	}
 
 	for _, container := range managed {
-		status.Services = append(status.Services, removeLingeringServiceStatus(container))
+		// A container that survived `docker compose down` should not exist
+		// after a successful removal, so every lingering container is flagged
+		// needs-attention regardless of its runtime state.
+		status.Services = append(status.Services, types.ServiceStatus{
+			Service:        container.Service,
+			ContainerName:  container.Name,
+			State:          container.State.Status,
+			Health:         container.State.Health,
+			PublishedPorts: publishedPortBindings(container),
+			NeedsAttention: true,
+			Message:        "container still present after removal",
+		})
 	}
-	sortServiceStatuses(status.Services)
+	sort.Slice(status.Services, func(i, j int) bool {
+		return status.Services[i].Service < status.Services[j].Service
+	})
 	status.State = statusStateNeedsAttention
 	status.NeedsAttention = true
 	status.AttentionReasons = []string{statusReasonStatusCheckFailed}
@@ -709,28 +651,4 @@ func managedContainersForApp(appID string, containers []docker.ContainerInfo) []
 		managed = append(managed, container)
 	}
 	return managed
-}
-
-// removeLingeringServiceStatus projects one container that survived
-// `docker compose down` into a needs-attention [types.ServiceStatus]: it
-// should not exist after a successful removal, so every lingering
-// container is flagged regardless of its runtime state.
-func removeLingeringServiceStatus(container docker.ContainerInfo) types.ServiceStatus {
-	return types.ServiceStatus{
-		Service:        container.Service,
-		ContainerName:  container.Name,
-		State:          container.State.Status,
-		Health:         container.State.Health,
-		PublishedPorts: publishedPortBindings(container),
-		NeedsAttention: true,
-		Message:        "container still present after removal",
-	}
-}
-
-// sortServiceStatuses orders service statuses by service name for
-// deterministic result output.
-func sortServiceStatuses(services []types.ServiceStatus) {
-	sort.Slice(services, func(i, j int) bool {
-		return services[i].Service < services[j].Service
-	})
 }

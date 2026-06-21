@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -117,12 +116,8 @@ func (e *Engine) planRestart(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if req.AppID == "" {
-		return nil, usageValidationError(
-			"app id is required",
-			"pass the app id of an installed stack",
-			nil,
-		)
+	if err := requireAppID(req.AppID); err != nil {
+		return nil, err
 	}
 	if onProgress != nil {
 		onProgress(types.StepRestartPlanning, 5, "planning restart")
@@ -133,29 +128,11 @@ func (e *Engine) planRestart(
 		return nil, err
 	}
 
-	// Resolution is AppID-driven (mirroring Remove), so a supplied
-	// req.StackPath is a fail-closed cross-check, not an alternate
-	// resolution path: it must name the stack AppID already resolved to. A
-	// mismatch refuses before any Docker call, so a stale or wrong
-	// --stack-path can never restart a different managed stack.
-	if req.StackPath != "" && filepath.Clean(req.StackPath) != stackPath {
-		return nil, usageValidationError(
-			"stack path does not match the managed stack for this app",
-			fmt.Sprintf("the managed stack for %q is at %s", req.AppID, stackPath),
-			nil,
-		)
+	if err := stackPathCrossCheck(req.StackPath, req.AppID, stackPath); err != nil {
+		return nil, err
 	}
-
-	// A managed stack always records its Compose project at install time
-	// (PRD §9, §30), so an empty value is a corrupt manifest. Refuse here so
-	// the failure names the corrupt manifest rather than degrading to a
-	// generic late refusal from [docker.ComposeRestart].
-	if lock.ComposeProject == "" {
-		return nil, usageValidationError(
-			"stack manifest is missing its compose project",
-			"the .wdm.lock is corrupt; reinstall the app to restore managed state",
-			fmt.Errorf("stack lock for %q records no compose project", req.AppID),
-		)
+	if err := requireComposeProject(lock.ComposeProject, req.AppID); err != nil {
+		return nil, err
 	}
 
 	plan := &restartPlan{
@@ -260,32 +237,16 @@ func confirmRestart(
 	plan *restartPlan,
 	onProgress types.ProgressFn,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if confirmer == nil {
-		return types.NewError(
-			types.ErrCodeUsageValidation,
-			"confirmer is required before restart",
-			"pass a confirmer that can authorize docker compose restart",
-		)
-	}
-	if onProgress != nil {
-		onProgress(types.StepRestartConfirm, 30, "confirming restart")
-	}
-
-	confirmed, err := confirmer.Confirm(ctx, restartConfirmation(plan))
-	if err != nil {
-		return fmt.Errorf("core.restart: confirming restart: %w", err)
-	}
-	if !confirmed {
-		return types.NewError(
-			types.ErrCodeUserCanceled,
-			"restart canceled before docker compose restart",
-			"re-run the restart and confirm the prompt",
-		)
-	}
-	return nil
+	return confirmLifecycleOp(ctx, confirmer, restartConfirmation(plan), confirmStrings{
+		stepID:         types.StepRestartConfirm,
+		stepPct:        30,
+		stepMessage:    "confirming restart",
+		nilMessage:     "confirmer is required before restart",
+		nilHint:        "pass a confirmer that can authorize docker compose restart",
+		confirmErrWrap: "core.restart: confirming restart",
+		declineMessage: "restart canceled before docker compose restart",
+		declineHint:    "re-run the restart and confirm the prompt",
+	}, onProgress)
 }
 
 // restartConfirmation assembles the restart consequence payload: the app
@@ -334,41 +295,11 @@ func runRestartComposeRestart(
 		onProgress(types.StepRestartExecute, 60, "restarting containers")
 	}
 
-	project, err := restartComposeProject(plan)
+	project, err := logsComposeProject(plan.stackPath, plan.composeProject)
 	if err != nil {
 		return err
 	}
 	return docker.ComposeRestart(ctx, client, project)
-}
-
-// restartComposeProject builds the validated [docker.ComposeProject] for
-// the restart from the managed stack path and the manifest's Compose
-// project name. The compose and env file paths are resolved under the
-// stack path via [security.SafeJoin] (PRD §12, §13), and the project name
-// is the manifest's recorded `wdm-<app>` value (already proven non-empty
-// by planRestart's corrupt-manifest guard).
-func restartComposeProject(plan *restartPlan) (docker.ComposeProject, error) {
-	composePath, err := security.SafeJoin(plan.stackPath, installComposeFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	envPath, err := security.SafeJoin(plan.stackPath, installEnvFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	return docker.ComposeProject{
-		ComposeFile: composePath,
-		EnvFile:     envPath,
-		ProjectName: plan.composeProject,
-	}, nil
 }
 
 // verifyRestartStatus inspects the restarted containers by Compose
