@@ -77,10 +77,10 @@ func (e *Engine) Reconfigure(
 	}
 	res, err := e.applyReconfigure(ctx, plan, onProgress, confirmer)
 	if err != nil {
-		lg.failure(ctx, req.AppID, "", "apply_reconfigure", err)
+		lg.failure(ctx, req.AppID, plan.stackPath, "apply_reconfigure", err)
 		return nil, err
 	}
-	lg.success(ctx, req.AppID, "")
+	lg.success(ctx, req.AppID, plan.stackPath)
 	return res, nil
 }
 
