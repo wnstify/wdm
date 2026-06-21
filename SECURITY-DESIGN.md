@@ -117,6 +117,6 @@ Escalated access is removed when it is no longer needed. Release signing secrets
 
 ## Two-Maintainer Review Posture
 
-The project has two human maintainers with Write access (the `webnestify-dev` team). Independent human approval is required: classic branch protection on `dev` and `main` mandates one approving review, and self-approval does not count, so the non-author maintainer reviews every pull request. `enforce_admins` applies the gate to the owner's own pull requests. The project does not use alternate accounts to simulate independent review.
+The project has two human maintainers with Write access (the `webnestify-dev` team). Independent human approval is required: branch-protection rules on `dev` and `main` require one approving review from the `webnestify-dev` team, and self-approval does not count, so the non-author maintainer reviews every pull request. The latest reviewable push must be approved by someone other than the person who pushed it. The same rules apply to the owner's own pull requests, and merges into `dev` and `main` are restricted to the repository owner. The project does not use alternate accounts to simulate independent review.
 
 Controls are independent two-person review, public pull requests, signed commits, DCO signoff, required CI (`test`, `lint`, `govulncheck`), CodeQL, govulncheck, protected `main`, protected `dev`, protected release tags, signed release artifacts, and public issue/security reporting.
