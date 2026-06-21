@@ -14,10 +14,10 @@ import (
 // human-readable form with writeText. This is the shared tail of every leaf
 // that produces one result object — the byte-for-byte JSON-or-text dispatch —
 // so the per-leaf body keeps only its engine call and its own text writer.
-// result is a typed pointer (the engine's *Result) so the envelope payload and
-// the text writer agree on the concrete type with no per-leaf casts. Both
-// branches write to cmd.OutOrStdout, so writeText is the leaf's existing
-// io.Writer-based renderer passed by reference.
+// result is the engine's typed result value (in practice always a *Result
+// pointer) so the envelope payload and the text writer agree on the concrete
+// type with no per-leaf casts. Both branches write to cmd.OutOrStdout, so
+// writeText is the leaf's existing io.Writer-based renderer.
 func emitResult[T any](cmd *cobra.Command, useJSON bool, result T, writeText func(io.Writer, T) error) error {
 	out := cmd.OutOrStdout()
 	if useJSON {
