@@ -68,10 +68,7 @@ app is healthy. Read the state field (or attention_reasons under
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), status)
-			}
-			return writeStatus(cmd.OutOrStdout(), status)
+			return emitResult(cmd, useJSON, status, writeStatus)
 		},
 	}
 

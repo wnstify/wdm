@@ -115,10 +115,7 @@ A stale lock can be cleared with 'wdm lock clear'.`,
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), status)
-			}
-			return writeLockStatus(cmd.OutOrStdout(), status)
+			return emitResult(cmd, useJSON, status, writeLockStatus)
 		},
 	}
 
@@ -230,10 +227,7 @@ tidied without a recovery prompt — nothing is wedged.
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), status)
-			}
-			return writeLockClearFinish(cmd.OutOrStdout(), status)
+			return emitResult(cmd, useJSON, status, writeLockClearFinish)
 		},
 	}
 

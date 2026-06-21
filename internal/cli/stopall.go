@@ -90,26 +90,14 @@ exits nonzero when any app failed.
 			// Stop never produces a database-risk confirmation, so
 			// acceptDBRisk is wired false; "stop_all_safe" is a safe
 			// confirmation that --yes accepts.
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), assumeYes, false)
-
-			// JSON mode suppresses progress so the single envelope is the only
-			// thing on stdout (PRD §32). Plain mode sends progress to stderr so
-			// stdout carries just the finish screen.
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, assumeYes, false, useJSON)
 
 			result, err := eng.StopAll(cmd.Context(), types.StopAllRequest{}, onProgress, confirmer)
 			if err != nil {
 				return err
 			}
 
-			if useJSON {
-				if err := EmitJSON(cmd.OutOrStdout(), result); err != nil {
-					return err
-				}
-			} else if err := writeStopAllFinish(cmd.OutOrStdout(), result); err != nil {
+			if err := emitResult(cmd, useJSON, result, writeStopAllFinish); err != nil {
 				return err
 			}
 
