@@ -38,7 +38,6 @@ func sampleCatalogApp() types.CatalogApp {
 		TemplateName:    "Uptime Kuma",
 		TemplateVersion: "2026-06-11",
 		Channel:         "stable",
-		CatalogVersion:  "2026-06-11T00:00:00Z",
 		Placeholders: []types.CatalogPlaceholder{
 			{Key: "DOMAIN", Type: "domain", Required: true},
 			{Key: "DB_PASSWORD", Type: "secret", Required: true, Secret: true},

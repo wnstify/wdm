@@ -277,7 +277,6 @@ func TestCatalogApp_JSONContract_PopulatedFields(t *testing.T) {
 		TemplateName:    "uptime-kuma",
 		TemplateVersion: "2026-06-11",
 		Channel:         "stable",
-		CatalogVersion:  "2026.06.01",
 		Placeholders: []types.CatalogPlaceholder{
 			{
 				Key:         "DB_PASSWORD",
@@ -318,7 +317,6 @@ func TestCatalogApp_JSONContract_PopulatedFields(t *testing.T) {
 		"template_name":"uptime-kuma",
 		"template_version":"2026-06-11",
 		"channel":"stable",
-		"catalog_version":"2026.06.01",
 		"placeholders":[
 			{"key":"DB_PASSWORD","type":"secret","required":true,"secret":true,"description":"database password"},
 			{"key":"DOMAIN","type":"domain","required":true,"secret":false,"description":"public domain","default":"example.com","pattern":"^[a-z0-9.-]+$"}
@@ -340,7 +338,6 @@ func TestCatalogApp_JSONContract_OmitsEmptyOptionalFields(t *testing.T) {
 		TemplateName:    "uptime-kuma",
 		TemplateVersion: "2026-06-11",
 		Channel:         "stable",
-		CatalogVersion:  "2026.06.01",
 	})
 
 	assert.JSONEq(t, `{
@@ -349,8 +346,7 @@ func TestCatalogApp_JSONContract_OmitsEmptyOptionalFields(t *testing.T) {
 		"summary":"Self-hosted monitoring tool",
 		"template_name":"uptime-kuma",
 		"template_version":"2026-06-11",
-		"channel":"stable",
-		"catalog_version":"2026.06.01"
+		"channel":"stable"
 	}`, got)
 }
 
