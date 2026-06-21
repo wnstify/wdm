@@ -28,6 +28,8 @@ Use the project's Make targets:
 
 GitHub Actions run the required unit, lint, vulnerability, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
 
+Pull requests are merged by a maintainer after required checks pass and a maintainer other than the author approves the change.
+
 ## Seed a catalog for local testing
 
 The signed catalog normally arrives through `wdm catalog update`. For local development against a from-source build, stage the in-repo catalog directly:
