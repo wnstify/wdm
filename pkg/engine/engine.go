@@ -327,4 +327,11 @@ type Engine interface {
 	// catalog file systems). After Close, every other method on the
 	// receiver must return an error promptly.
 	Close() error
+
+	// LogPath returns the resolved latest.log path of the default file
+	// sink, or the empty string when the sink fell back to stderr/discard
+	// or a logger was supplied via [WithLogger]. It is a pure read with no
+	// side effects, so a surface can show it on failure and remind users to
+	// review logs before sharing them publicly (PRD §24 failure UX).
+	LogPath() string
 }

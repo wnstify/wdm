@@ -137,6 +137,26 @@ func TestNew_WithFallbackLogWriter(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "latest.log must be owner-only")
 }
 
+// TestNew_WithDebug exercises the WithDebug setter and the bridge's
+// translation to core.WithDebug, and confirms LogPath reports the opened
+// file sink (PRD §24). The default sink under the temp state dir is active
+// since no WithLogger is supplied.
+func TestNew_WithDebug(t *testing.T) {
+	t.Parallel()
+	state, data, _ := testTmpDirs(t)
+
+	eng, err := engine.New(
+		engine.WithConfigPath(missingConfigPath(t)),
+		engine.WithStateDir(state),
+		engine.WithDataDir(data),
+		engine.WithDebug(true),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	assert.Equal(t, filepath.Join(state, "logs", "latest.log"), eng.LogPath())
+}
+
 // TestNew_WithCatalog verifies WithCatalog forwards through the
 // bridge into core.WithCatalog. does not read the catalog
 // from disk, so the test confirms only that construction succeeds

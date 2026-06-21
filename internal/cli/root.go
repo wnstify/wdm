@@ -54,6 +54,13 @@ a normal user who belongs to the docker group.`,
 	root.PersistentFlags().Bool("json", false,
 		"emit machine-readable JSON via the wdm.v1 envelope (PRD §32)")
 
+	// --debug raises the file log to debug level (PRD §24). It is consumed
+	// by cmd/wdm before Cobra parses, since the engine is constructed there;
+	// registering it here keeps Cobra from rejecting the flag and surfaces it
+	// in --help.
+	root.PersistentFlags().Bool("debug", false,
+		"write verbose debug logs to the wdm log file (still redacts secrets, PRD §24)")
+
 	root.AddCommand(newAppsCmd(newEngine))
 
 	// registration toucher): `catalog` (, the the confirmation rules

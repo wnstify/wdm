@@ -61,8 +61,17 @@ func (e *Engine) Uninstall(
 	if e.isClosed() {
 		return nil, ErrClosed
 	}
+	// Uniform §24 start/result lines. Uninstall acts on wdm itself, not one
+	// app, so the app field stays empty. The result line is emitted after
+	// removeFootprint resolves: a failure record on its error path (the only
+	// case where the log sink survives to be read) and a best-effort,
+	// self-deleting success record once removal removed the sink's state dir.
+	lg := e.newOpLogger(e.logger, "uninstall")
+	lg.start(ctx, "")
+
 	handle, err := e.acquireRuntimeLock(ctx, "uninstall")
 	if err != nil {
+		lg.failure(ctx, "", "", "acquire_runtime_lock", err)
 		return nil, err
 	}
 	// The runtime lock is released explicitly during footprint removal (the
@@ -74,15 +83,18 @@ func (e *Engine) Uninstall(
 	// carries the structural redactor only (mirrors the delete path).
 	client, err := e.buildDockerClient(security.NewActiveRedactor(nil))
 	if err != nil {
+		lg.failure(ctx, "", "", "build_docker_client", err)
 		return nil, err
 	}
 
 	apps, err := e.planUninstall(ctx, onProgress)
 	if err != nil {
+		lg.failure(ctx, "", "", "plan_uninstall", err)
 		return nil, err
 	}
 
 	if err := confirmUninstall(ctx, confirmer, apps, e.footprintPaths(), onProgress); err != nil {
+		lg.failure(ctx, "", "", "confirm_uninstall", err)
 		return nil, err
 	}
 
@@ -92,6 +104,7 @@ func (e *Engine) Uninstall(
 	// already torn down and earlier footprint dirs already removed — a partial
 	// footprint. The per-dir guards in removeFootprint stay as defense-in-depth.
 	if err := e.preflightFootprint(); err != nil {
+		lg.failure(ctx, "", "", "preflight_footprint", err)
 		return nil, err
 	}
 
@@ -102,6 +115,8 @@ func (e *Engine) Uninstall(
 	// Fail-closed: any teardown failure aborts before any footprint removal.
 	// wdm stays installed; the result lists what failed.
 	if len(failed) > 0 {
+		lg.failure(ctx, "", "", "teardown_stacks",
+			fmt.Errorf("uninstall aborted: %d managed stack(s) failed teardown; footprint kept", len(failed)))
 		return &types.UninstallResult{
 			TornDown:      tornDown,
 			Failed:        failed,
@@ -130,8 +145,17 @@ func (e *Engine) Uninstall(
 
 	removed, err := e.removeFootprint(ctx, handle, onProgress)
 	if err != nil {
+		// Best-effort failure record. removeFootprint targets the state dir
+		// that holds the log sink, but on Linux the open fd survives an early
+		// unlink, so when removal aborts before the logs are gone this lands —
+		// the only case where an uninstall log survives to be read.
+		lg.failure(ctx, "", "", "remove_footprint", err)
 		return nil, err
 	}
+	// On success removeFootprint has removed the sink's state dir, so this
+	// result line is best-effort and self-deleting; it keeps §24 result-line
+	// parity for the rare case removal leaves the sink momentarily readable.
+	lg.success(ctx, "", "")
 
 	return &types.UninstallResult{
 		TornDown:         tornDown,

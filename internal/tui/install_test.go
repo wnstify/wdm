@@ -254,6 +254,39 @@ func TestModel_InstallFormKeyNavigationAndEditing(t *testing.T) {
 	assert.Equal(t, "a ", m.installFields[0].value)
 }
 
+// TestModel_InstallFailureShowsLogPathNotice covers the PRD §24 failure UX in
+// the TUI: a failed install surfaces the engine log path and the
+// review-before-sharing reminder, and stays silent when no engine-owned file
+// sink exists (LogPath empty).
+func TestModel_InstallFailureShowsLogPathNotice(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with file sink", func(t *testing.T) {
+		t.Parallel()
+		m := model{
+			eng:    &fakeEngine{logPath: "/home/user/.local/state/wdm/logs/latest.log"},
+			screen: screenInstallForm,
+			err:    assert.AnError,
+		}
+		view := m.installFormView()
+		assert.Contains(t, view, "Install failed:")
+		assert.Contains(t, view, "/home/user/.local/state/wdm/logs/latest.log")
+		assert.Contains(t, view, "review the log before sharing it publicly")
+	})
+
+	t.Run("without file sink", func(t *testing.T) {
+		t.Parallel()
+		m := model{
+			eng:    &fakeEngine{logPath: ""},
+			screen: screenInstallForm,
+			err:    assert.AnError,
+		}
+		view := m.installFormView()
+		assert.Contains(t, view, "Install failed:")
+		assert.NotContains(t, view, "review the log before sharing it publicly")
+	})
+}
+
 func loadInstallForm(t *testing.T, eng *fakeEngine) model {
 	t.Helper()
 

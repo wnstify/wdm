@@ -19,6 +19,7 @@ type config struct {
 	stackBaseDir string
 	configPath   string
 	logger       *slog.Logger
+	debug        bool
 	fallbackLog  io.Writer
 	catalog      fs.FS
 	version      string
@@ -77,6 +78,17 @@ func WithConfigPath(path string) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) error {
 		c.logger = l
+		return nil
+	}
+}
+
+// WithDebug raises the default file sink to debug level with source
+// attribution (PRD §24 "wdm --debug"). Secrets are still redacted. It has
+// no effect when [WithLogger] supplies a logger, since the caller then owns
+// the level and handler chain.
+func WithDebug(debug bool) Option {
+	return func(c *config) error {
+		c.debug = debug
 		return nil
 	}
 }

@@ -9,6 +9,7 @@ import (
 )
 
 type fakeEngine struct {
+	logPath                string
 	listApps               []types.AppInfo
 	listErr                error
 	listCalls              int
@@ -332,6 +333,8 @@ func (f *fakeEngine) Close() error {
 	f.closeN++
 	return f.closeErr
 }
+
+func (f *fakeEngine) LogPath() string { return f.logPath }
 
 func (f *fakeEngine) closeCount() int {
 	f.closeMu.Lock()

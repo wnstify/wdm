@@ -269,7 +269,9 @@ func (m model) installFormView() string {
 	if m.err != nil {
 		b.WriteString("Install failed: ")
 		b.WriteString(m.err.Error())
-		b.WriteString("\n\n")
+		b.WriteString("\n")
+		m.writeLogPathNotice(&b)
+		b.WriteString("\n")
 	}
 
 	if m.catalogDetail != nil {

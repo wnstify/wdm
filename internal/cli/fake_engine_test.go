@@ -393,6 +393,8 @@ func (f *fakeEngine) RecordDailyLaunchCheck(_ context.Context) error { return f.
 
 func (f *fakeEngine) Close() error { return nil }
 
+func (f *fakeEngine) LogPath() string { return "" }
+
 // runLeaf drives one CLI invocation through [NewRootCmd] — the honest
 // end-to-end path, since the persistent --json flag only resolves
 // through the root — wiring fake as the lazy engine the factory returns.

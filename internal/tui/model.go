@@ -1140,7 +1140,9 @@ func (m model) appActionsView() string {
 	if m.err != nil {
 		b.WriteString("Action failed: ")
 		b.WriteString(m.err.Error())
-		b.WriteString("\n\n")
+		b.WriteString("\n")
+		m.writeLogPathNotice(&b)
+		b.WriteByte('\n')
 	}
 
 	m.writeStatusSummary(&b)
@@ -1179,6 +1181,25 @@ func (m model) appActionsView() string {
 	b.WriteString("\n")
 	b.WriteString(m.helpLine())
 	return b.String()
+}
+
+// writeLogPathNotice surfaces the §24 failure UX inside the TUI: on a failed
+// operation it points the operator at the log file and reminds them to review
+// it before sharing publicly. Most TUI failures are handled in-screen, so the
+// cmd/wdm stderr notice never fires for them; this keeps the notice visible.
+// It is a no-op when no engine-owned file sink exists (WithLogger callers own
+// their sink and LogPath reports the empty string).
+func (m model) writeLogPathNotice(b *strings.Builder) {
+	if m.eng == nil {
+		return
+	}
+	path := m.eng.LogPath()
+	if path == "" {
+		return
+	}
+	b.WriteString("See ")
+	b.WriteString(path)
+	b.WriteString("; review the log before sharing it publicly (e.g. on GitHub).\n")
 }
 
 func (m model) writeStatusSummary(b *strings.Builder) {
