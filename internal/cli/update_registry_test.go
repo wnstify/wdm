@@ -391,3 +391,5 @@ func (c *crossoverCountingEngine) Settings(context.Context) (*types.Settings, er
 func (c *crossoverCountingEngine) UpdateSettings(context.Context, types.Settings) error { return nil }
 
 func (c *crossoverCountingEngine) Close() error { return nil }
+
+func (c *crossoverCountingEngine) LogPath() string { return "" }

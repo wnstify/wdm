@@ -58,17 +58,30 @@ func (e *Engine) Reconfigure(
 	if e.isClosed() {
 		return nil, ErrClosed
 	}
+	// Uniform §24 start/result lines; deep per-step instrumentation is
+	// deferred to install. Structural redaction guards the sink.
+	lg := e.newOpLogger(e.logger, "reconfigure")
+	lg.start(ctx, req.AppID)
+
 	handle, err := e.acquireRuntimeLock(ctx, "reconfigure")
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "acquire_runtime_lock", err)
 		return nil, err
 	}
 	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
 
 	plan, err := e.planReconfigure(ctx, req, onProgress)
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "plan_reconfigure", err)
 		return nil, err
 	}
-	return e.applyReconfigure(ctx, plan, onProgress, confirmer)
+	res, err := e.applyReconfigure(ctx, plan, onProgress, confirmer)
+	if err != nil {
+		lg.failure(ctx, req.AppID, plan.stackPath, "apply_reconfigure", err)
+		return nil, err
+	}
+	lg.success(ctx, req.AppID, plan.stackPath)
+	return res, nil
 }
 
 // planReconfigure runs the non-mutating reconfigure planning under the

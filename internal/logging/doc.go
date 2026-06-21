@@ -2,8 +2,15 @@
 // handler over a caller-supplied [io.Writer] wrapped by a redacting
 // handler that consults [internal/security.Redactor] before any
 // record reaches disk (PRD §11, §24).
-// The caller supplies the concrete redaction pattern set. [NoopRotator]
-// is available for callers that do not want file rotation.
+// The caller supplies the concrete redaction pattern set.
+// The on-disk sink is the concrete PRD §24 retention implementation:
+// [OpenLogFile] prepares <stateDir>/logs, archives any prior latest.log
+// under a timestamped wdm-YYYY-MM-DD-HHMMSS.log name, opens a fresh
+// owner-only latest.log (dir 0700, file 0600), and prunes archives to the
+// retention intersection — kept only when BOTH within [RetentionMaxAge]
+// AND among the [RetentionMaxFiles] newest, with latest.log always kept.
+// [NewRotator] exposes the same archive+prune step behind the [Rotator]
+// interface for mid-run rotation; [NoopRotator] is the passthrough.
 // Import boundary: internal/logging may
 // import other internal/* siblings (notably internal/security for
 // [security.Redactor]) but must not depend on pkg/engine, cmd/wdm,
@@ -15,7 +22,10 @@
 //   - [Option], [WithWriter], [WithLevel], [WithRedactor], [WithAddSource]
 //   - [ErrNoWriter] — sentinel returned when no writer was supplied
 //   - [NewRedactingHandler] — wrap any [slog.Handler] with redaction
+//   - [OpenLogFile] — open the PRD §24 file sink (archive + prune) and
+//     return the owner-only latest.log handle the caller owns and closes
 //   - [Rotator] — interface for log file rotation + retention pruning
+//   - [NewRotator] — concrete Rotator over a resolved log directory
 //   - [NoopRotator] — passthrough Rotator wired by callers
 //   - [RetentionMaxAge], [RetentionMaxFiles], [LatestLogName] — the
 //     PRD §24 retention policy as code-level constants

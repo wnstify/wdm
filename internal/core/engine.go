@@ -90,6 +90,30 @@ type Engine struct {
 	// method's entry check.
 	closed atomic.Bool
 
+	// logFile is the open latest.log handle the default logger writes to
+	// when [New] opened the PRD §24 file sink. Nil when a logger was
+	// supplied via [WithLogger] or when the sink failed to open and the
+	// engine fell back to the surface writer. [Engine.Close] closes it.
+	logFile io.Closer
+
+	// logBase is the un-redacted JSON handler the default logger writes
+	// through. It is retained so an operation that mints per-run secrets
+	// (install) can derive a child logger sharing this exact sink but
+	// wrapped with a redactor that knows those secret literals, scrubbing
+	// any accidental bare-value log line (PRD §11, §24 defense-in-depth).
+	// Wrappers share logBase's writer mutex, so concurrent records stay
+	// serialized. Nil when a logger was supplied via [WithLogger]: that
+	// caller owns its own handler chain, so operations log through
+	// [Engine.logger] unchanged.
+	logBase slog.Handler
+
+	// logPath is the resolved latest.log path the default file sink
+	// writes to, surfaced read-only via [Engine.LogPath] so a failed
+	// operation can point the user at the log without re-deriving the
+	// path. Empty when the sink fell back to stderr/discard or a logger
+	// was supplied via [WithLogger] (PRD §24 failure UX).
+	logPath string
+
 	// detectHostResources probes host CPU/memory for install planning.
 	// Default is [system.DetectHostResources]; tests may replace it.
 	detectHostResources func() (system.HostResources, error)
@@ -267,17 +291,6 @@ func New(opts ...Option) (*Engine, error) {
 		}
 	}
 
-	if cfg.logger == nil {
-		base, err := logging.New(
-			logging.WithWriter(os.Stderr),
-			logging.WithLevel(slog.LevelInfo),
-			logging.WithRedactor(security.NewActiveRedactor(nil)),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("core.New: %w", err)
-		}
-		cfg.logger = base
-	}
 	if cfg.version == "" {
 		cfg.version = "dev"
 	}
@@ -285,6 +298,25 @@ func New(opts ...Option) (*Engine, error) {
 	if err := resolveDirs(cfg); err != nil {
 		return nil, fmt.Errorf("core.New: %w", err)
 	}
+
+	var logFile io.Closer
+	var logBase slog.Handler
+	var logPath string
+	if cfg.logger == nil {
+		built := buildDefaultLogger(cfg.stateDir, cfg.fallbackLog, cfg.debug)
+		cfg.logger = built.logger
+		logFile = built.closer
+		logBase = built.base
+		logPath = built.path
+	}
+
+	// Release the log handle if construction fails before the Engine owns it.
+	constructed := false
+	defer func() {
+		if !constructed && logFile != nil {
+			_ = logFile.Close() //nolint:errcheck // best-effort unwind on a failure path; the construction error is what the caller needs.
+		}
+	}()
 
 	settings, err := loadConfigOrDefaults(cfg.configPath)
 	if err != nil {
@@ -296,6 +328,7 @@ func New(opts ...Option) (*Engine, error) {
 		return nil, fmt.Errorf("core.New: %w", err)
 	}
 
+	constructed = true
 	return &Engine{
 		settings:                   settings,
 		configPath:                 cfg.configPath,
@@ -303,6 +336,9 @@ func New(opts ...Option) (*Engine, error) {
 		stateDir:                   cfg.stateDir,
 		dataDir:                    cfg.dataDir,
 		logger:                     cfg.logger,
+		logFile:                    logFile,
+		logBase:                    logBase,
+		logPath:                    logPath,
 		catalog:                    cfg.catalog,
 		version:                    cfg.version,
 		detectHostResources:        system.DetectHostResources,
@@ -314,6 +350,60 @@ func New(opts ...Option) (*Engine, error) {
 		selfUpdateDeps:             resolveSelfUpdateDeps(cfg.selfUpdateDeps),
 		newRegistryClient:          resolveRegistryClient(cfg.newRegistryClient),
 	}, nil
+}
+
+// defaultLogger is the result of [buildDefaultLogger]: the engine-facing
+// redaction-wrapped logger, the un-redacted base handler it writes
+// through (retained for per-operation secret-aware child loggers), the
+// owned sink closer (nil on the fallback path), and the resolved
+// latest.log path (empty on the fallback path).
+type defaultLogger struct {
+	logger *slog.Logger
+	base   slog.Handler
+	closer io.Closer
+	path   string
+}
+
+// buildDefaultLogger constructs the engine's default redaction-wrapped
+// logger when no [WithLogger] was supplied. The normal path is the PRD §24
+// file sink at <stateDir>/logs/latest.log: [logging.OpenLogFile] creates the
+// owner-only tree, archives the prior session, and prunes per the retention
+// policy, returning an open handle the engine owns and closes.
+// It fails soft: if the sink cannot be opened (permissions, a file where the
+// logs dir is expected, a tampered symlink), it degrades to fallback — the
+// surface writer from [WithFallbackLogWriter], defaulting to [os.Stderr] —
+// so a logging fault never blocks a wdm operation (PRD §24 "wdm must always
+// write a normal log"). The returned closer is nil on the fallback path,
+// since the engine does not own the fallback writer, and so is the path.
+// debug raises the sink to [slog.LevelDebug] and turns on source attribution
+// (PRD §24 "wdm --debug"); the active redactor stays in place so debug output
+// is still scrubbed. The base JSON handler is returned alongside the wrapped
+// logger so [Engine.installLogger] can re-wrap it with a secret-aware redactor
+// over the SAME sink (shared writer mutex keeps records serialized).
+func buildDefaultLogger(stateDir string, fallback io.Writer, debug bool) defaultLogger {
+	if fallback == nil {
+		fallback = os.Stderr
+	}
+
+	writer := fallback
+	var closer io.Closer
+	var path string
+	if f, err := logging.OpenLogFile(filepath.Join(stateDir, "logs")); err == nil {
+		writer = f
+		closer = f
+		path = filepath.Join(stateDir, "logs", logging.LatestLogName)
+	}
+
+	level := slog.LevelInfo
+	if debug {
+		level = slog.LevelDebug
+	}
+	base := slog.NewJSONHandler(writer, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: debug,
+	})
+	logger := slog.New(logging.NewRedactingHandler(base, security.NewActiveRedactor(nil)))
+	return defaultLogger{logger: logger, base: base, closer: closer, path: path}
 }
 
 // resolveRegistryClient picks the registry-client factory: the
@@ -581,16 +671,20 @@ func (e *Engine) Settings(ctx context.Context) (*types.Settings, error) {
 	return &s, nil
 }
 
-// Close releases the engine's held resources. The engine holds none
-// directly (the logger is caller-owned via WithLogger, no flock is held,
-// no FS roots are opened), so Close just marks the engine closed.
-// Close is idempotent: subsequent calls are no-ops. After Close, every
-// other [Engine] method returns [ErrClosed].
-// Once the engine owns a log file handle or a catalog FS root opened by
-// [New], Close will close them; the [ErrClosed] contract is in place so
-// callers honor the boundary today.
+// Close releases the engine's held resources. When [New] opened the
+// PRD §24 file sink (no [WithLogger] supplied and the sink opened), Close
+// closes the latest.log handle; a caller-supplied logger and the fallback
+// writer are not owned and so not closed.
+// Close is idempotent: subsequent calls are no-ops, and the file is closed
+// at most once. After Close, every other [Engine] method returns
+// [ErrClosed].
 func (e *Engine) Close() error {
-	e.closed.Store(true)
+	if e.closed.Swap(true) {
+		return nil
+	}
+	if e.logFile != nil {
+		return e.logFile.Close()
+	}
 	return nil
 }
 
@@ -599,4 +693,30 @@ func (e *Engine) Close() error {
 // keeps it lock-free.
 func (e *Engine) isClosed() bool {
 	return e.closed.Load()
+}
+
+// LogPath returns the resolved latest.log path of the engine's default
+// file sink, or the empty string when the sink fell back to stderr/discard
+// or a logger was supplied via [WithLogger]. It is a pure read of the
+// path resolved at construction time (no derivation, no fmt.Print), so
+// cmd/wdm can show it on failure and remind users to review logs before
+// sharing them publicly (PRD §24 failure UX) without re-deriving the path
+// and risking drift from the sink.
+func (e *Engine) LogPath() string {
+	return e.logPath
+}
+
+// installLogger returns the logger install logs through: the default
+// logger re-wrapped with a redactor that also scrubs this run's generated
+// secret literals (PRD §11, §24 defense-in-depth), so even an accidental
+// bare-value log line is redacted before reaching latest.log. The child
+// handler shares the un-redacted base handler's writer mutex, so its
+// records stay serialized with any other engine record. When the engine
+// was built with a caller-supplied logger (logBase nil), it returns the
+// engine logger unchanged: that caller owns its own redaction chain.
+func (e *Engine) installLogger(secrets []string) *slog.Logger {
+	if e.logBase == nil {
+		return e.logger
+	}
+	return slog.New(logging.NewRedactingHandler(e.logBase, security.NewActiveRedactor(secrets)))
 }

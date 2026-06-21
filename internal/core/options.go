@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -24,6 +25,8 @@ type config struct {
 	stackBaseDir string // overrides Settings.BaseStackPath when set
 	configPath   string
 	logger       *slog.Logger
+	debug        bool        // populated by WithDebug; raises the default file sink to slog.LevelDebug with source attribution
+	fallbackLog  io.Writer   // populated by WithFallbackLogWriter; surface-specific sink used when the file log fails to open
 	catalog      fs.FS       // populated by WithCatalog
 	version      string      // populated by WithVersion; defaulted to "dev" in New
 	releaseDeps  releaseDeps // populated by WithReleaseDeps; defaulted in New
@@ -117,6 +120,32 @@ func WithCatalog(catalogFS fs.FS) Option {
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) error {
 		c.logger = l
+		return nil
+	}
+}
+
+// WithDebug raises the default file sink to [slog.LevelDebug] and turns
+// on source attribution (PRD §24 "wdm --debug"). The active redactor stays
+// wired, so debug output is still scrubbed of secrets. It has no effect
+// when [WithLogger] supplies a logger, since the caller then owns the
+// level and handler chain.
+func WithDebug(debug bool) Option {
+	return func(c *config) error {
+		c.debug = debug
+		return nil
+	}
+}
+
+// WithFallbackLogWriter sets the writer the default logger falls back to
+// when the PRD §24 file sink under the state dir cannot be opened. It also
+// encodes the calling surface: the CLI passes [os.Stderr] so a degraded log
+// is still visible, while the TUI passes [io.Discard] because writing to the
+// terminal would corrupt the Bubble Tea display (PRD §24, §28). When unset,
+// [New] defaults to [os.Stderr]. It has no effect when [WithLogger] supplies
+// a logger, since the caller then owns the sink.
+func WithFallbackLogWriter(w io.Writer) Option {
+	return func(c *config) error {
+		c.fallbackLog = w
 		return nil
 	}
 }

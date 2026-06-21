@@ -164,23 +164,39 @@ func (e *Engine) Update(ctx context.Context, req types.UpdateRequest, onProgress
 	if e.isClosed() {
 		return nil, ErrClosed
 	}
+	// Uniform §24 start/result lines; deep per-step instrumentation is
+	// deferred to install. The engine default logger's structural redactor
+	// scrubs any secret-shaped string before the sink.
+	lg := e.newOpLogger(e.logger, "update")
+	lg.start(ctx, req.AppID)
+
 	handle, err := e.acquireRuntimeLock(ctx, "update")
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "acquire_runtime_lock", err)
 		return nil, err
 	}
 	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
 
 	plan, err := e.planUpdateCheck(ctx, req, onProgress)
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "plan_update_check", err)
 		return nil, err
 	}
 	if req.DryRun {
+		lg.success(ctx, req.AppID, plan.stackPath)
 		return buildUpdateCheckResult(plan), nil
 	}
 	if err := confirmDatabaseRiskUpdate(ctx, confirmer, plan, onProgress); err != nil {
+		lg.failure(ctx, req.AppID, plan.stackPath, "confirm_update", err)
 		return nil, err
 	}
-	return e.applyUpdate(ctx, plan, onProgress, confirmer)
+	res, err := e.applyUpdate(ctx, plan, onProgress, confirmer)
+	if err != nil {
+		lg.failure(ctx, req.AppID, plan.stackPath, "apply_update", err)
+		return nil, err
+	}
+	lg.success(ctx, req.AppID, plan.stackPath)
+	return res, nil
 }
 
 // planUpdateCheck runs the non-mutating update check under the held
