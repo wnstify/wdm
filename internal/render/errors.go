@@ -56,7 +56,7 @@ var (
 	ErrEnvTemplateExecute = errors.New("render: env template execute failed")
 
 	// ErrComposeTemplateParse is returned (wrapped via %w) by
-	// [RenderCompose] when text/template fails to parse
+	// [RenderLabels] when text/template fails to parse
 	// [Input.ComposeTemplate]. The wrapped cause carries text/
 	// template's "template: <name>:<line>:<col>: <msg>" syntax
 	// diagnostic, which names line/column from the template body and
@@ -64,7 +64,7 @@ var (
 	ErrComposeTemplateParse = errors.New("render: compose template parse failed")
 
 	// ErrComposeTemplateExecute is returned (wrapped via %w) by
-	// [RenderCompose] when text/template Execute fails against
+	// [RenderLabels] when text/template Execute fails against
 	// [Input.Values], most often a reference to a key absent from
 	// Values: Option("missingkey=error") surfaces missing keys as
 	// execute errors naming the key. The wrapped diagnostic names the
