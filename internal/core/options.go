@@ -103,16 +103,16 @@ func WithCatalog(catalogFS fs.FS) Option {
 }
 
 // WithLogger supplies a configured [*slog.Logger]. When unset, the engine
-// builds a redaction-wrapped logger over [os.Stderr] via
-// [internal/logging.New] and [internal/security.NewActiveRedactor] so
-// every record passes through the active redactor before reaching the
-// sink (PRD §11, §24). Tests SHOULD pass an
+// builds a redaction-wrapped logger via buildDefaultLogger, which wraps a
+// [slog.NewJSONHandler] in [internal/logging.NewRedactingHandler] over
+// [internal/security.NewActiveRedactor] so every record passes through the
+// active redactor before reaching the sink (PRD §11, §24). Tests SHOULD pass an
 // explicit no-op logger via slog.New(slog.NewTextHandler(io.Discard,
 // nil)) to keep test output clean.
 // A caller-supplied logger is used as-is — the engine does not re-wrap it
 // in the redacting handler, since the caller already chose the handler
 // chain. Callers that need redaction with a custom sink must assemble the
-// chain themselves via [internal/logging.New] with a
+// chain themselves via [internal/logging.NewRedactingHandler] with a
 // [internal/security.Redactor].
 // [Engine.List] uses the logger to surface scan warnings as WARN-level
 // entries (PRD §26 "Detect stale locks where practical and show a safe

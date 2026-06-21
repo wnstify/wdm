@@ -1,7 +1,6 @@
 package logging_test
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -158,12 +157,10 @@ func TestOpenLogFile_RedactionHoldsForFileSink(t *testing.T) {
 	// Model the production wiring: generated secrets (incl. minted private
 	// keys) are registered with the redactor so its literal scrub catches
 	// them in any string an attr carries, on top of the structural patterns.
+	// The logger is built the same way buildDefaultLogger wires the engine's
+	// sink so the file-sink redaction stays covered through the prod chain.
 	redactor := security.NewActiveRedactor([]string{password, token, secret, privKey, envBody})
-	logger, err := logging.New(
-		logging.WithWriter(f),
-		logging.WithRedactor(redactor),
-	)
-	require.NoError(t, err)
+	logger := newJSONLogger(f, slog.LevelInfo, false, redactor)
 
 	logger.Info("install secrets minted",
 		slog.String("password", password),
@@ -204,50 +201,6 @@ func TestOpenLogFile_RejectsRelativeDir(t *testing.T) {
 	f, err := logging.OpenLogFile("relative/logs")
 	require.Error(t, err)
 	assert.Nil(t, f)
-}
-
-func TestRotator_RotateArchivesWithoutOpening(t *testing.T) {
-	t.Parallel()
-
-	dir := filepath.Join(t.TempDir(), "logs")
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, logging.LatestLogName), []byte("live\n"), 0o600))
-
-	r := logging.NewRotator(dir)
-	require.NoError(t, r.Rotate(context.Background()))
-
-	assert.NoFileExists(t, filepath.Join(dir, logging.LatestLogName), "Rotate archives latest.log without reopening it")
-	assert.Len(t, listArchives(t, dir), 1)
-}
-
-func TestRotator_RotateHonorsContextCancellation(t *testing.T) {
-	t.Parallel()
-
-	dir := filepath.Join(t.TempDir(), "logs")
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := logging.NewRotator(dir).Rotate(ctx)
-	require.ErrorIs(t, err, context.Canceled)
-}
-
-func TestRotator_RotateRejectsArchiveWhenLatestMissing(t *testing.T) {
-	t.Parallel()
-
-	dir := filepath.Join(t.TempDir(), "logs")
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-
-	// No latest.log: Rotate is a no-op archive step, then prune runs clean.
-	require.NoError(t, logging.NewRotator(dir).Rotate(context.Background()))
-	assert.Empty(t, listArchives(t, dir))
-}
-
-func TestNoopRotator_DoesNothing(t *testing.T) {
-	t.Parallel()
-
-	require.NoError(t, logging.NoopRotator.Rotate(context.Background()))
 }
 
 // guardSecretShape keeps the redaction test honest: if the placeholder ever
