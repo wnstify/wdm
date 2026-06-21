@@ -61,8 +61,15 @@ func (e *Engine) Uninstall(
 	if e.isClosed() {
 		return nil, ErrClosed
 	}
+	// Uniform §24 start/result lines. Uninstall acts on wdm itself, not one
+	// app, so the app field stays empty. The success line is emitted before
+	// removeFootprint deletes the log sink's state dir.
+	lg := e.newOpLogger(e.logger, "uninstall")
+	lg.start(ctx, "")
+
 	handle, err := e.acquireRuntimeLock(ctx, "uninstall")
 	if err != nil {
+		lg.failure(ctx, "", "", "acquire_runtime_lock", err)
 		return nil, err
 	}
 	// The runtime lock is released explicitly during footprint removal (the
@@ -74,15 +81,18 @@ func (e *Engine) Uninstall(
 	// carries the structural redactor only (mirrors the delete path).
 	client, err := e.buildDockerClient(security.NewActiveRedactor(nil))
 	if err != nil {
+		lg.failure(ctx, "", "", "build_docker_client", err)
 		return nil, err
 	}
 
 	apps, err := e.planUninstall(ctx, onProgress)
 	if err != nil {
+		lg.failure(ctx, "", "", "plan_uninstall", err)
 		return nil, err
 	}
 
 	if err := confirmUninstall(ctx, confirmer, apps, e.footprintPaths(), onProgress); err != nil {
+		lg.failure(ctx, "", "", "confirm_uninstall", err)
 		return nil, err
 	}
 
@@ -92,6 +102,7 @@ func (e *Engine) Uninstall(
 	// already torn down and earlier footprint dirs already removed — a partial
 	// footprint. The per-dir guards in removeFootprint stay as defense-in-depth.
 	if err := e.preflightFootprint(); err != nil {
+		lg.failure(ctx, "", "", "preflight_footprint", err)
 		return nil, err
 	}
 
@@ -128,6 +139,9 @@ func (e *Engine) Uninstall(
 		onProgress,
 	)
 
+	// Emit the result line before removeFootprint deletes the log sink's
+	// state dir, so the success record lands while the sink still exists.
+	lg.success(ctx, "", "")
 	removed, err := e.removeFootprint(ctx, handle, onProgress)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"math"
 	"net"
 	"net/netip"
@@ -137,11 +138,20 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 	if e.isClosed() {
 		return nil, ErrClosed
 	}
+	// Start with structural-only redaction; once secrets are minted in
+	// renderInstall the logger is rebound to also scrub those literals
+	// (PRD §24 defense-in-depth). The op-start line and every failure
+	// point below log NON-secret facts only — never a secret value.
+	lg := e.newOpLogger(e.installLogger(nil), "install")
+	lg.start(ctx, req.AppID)
+
 	handle, err := e.acquireRuntimeLock(ctx, "install")
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "acquire_runtime_lock", err)
 		return nil, err
 	}
 	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
+	lg.step(ctx, "runtime lock acquired")
 
 	probe := e.detectHostResources
 	if probe == nil {
@@ -153,51 +163,89 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 	}
 	host, err := probe()
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "detect_host_resources", err)
 		return nil, err
 	}
+	lg.step(ctx, "host resources detected",
+		slog.Int("cpu_cores", host.CPUCores),
+		slog.Uint64("total_memory_bytes", host.TotalMemoryBytes),
+	)
 
 	plan, err := e.planInstall(ctx, req, host, onProgress, defaultTimezoneLookupDeps)
 	if err != nil {
+		lg.failure(ctx, req.AppID, "", "plan_install", err)
 		return nil, err
 	}
+	lg.step(ctx, "install planned",
+		slog.String("app", plan.app.AppID),
+		slog.String("stack_path", plan.stackPath),
+		slog.String("compose_project", plan.composeProject),
+	)
 	if err := e.renderInstall(ctx, plan, onProgress); err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "render_install", err)
 		return nil, err
 	}
+	// Rebind to a secret-aware logger now that generated values exist, so
+	// any later line is scrubbed of those literals too (PRD §24 rule 2).
+	// Register every generated secret: the persisted generatedValues plus the
+	// argon2id one-time plaintexts, which live only in shownCredentials.
+	// generated_secret_fields logs the placeholder NAMES, never values.
+	lg = e.newOpLogger(e.installLogger(installRedactionSecrets(plan)), "install")
+	lg.step(ctx, "stack rendered",
+		slog.Any("generated_secret_fields", plan.generatedFields),
+	)
 	dockerClient, err := e.installDockerClient(plan)
 	if err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "build_docker_client", err)
 		return nil, err
 	}
+	lg.debug(ctx, "compose config validate",
+		slog.String("command", "docker compose config --quiet"),
+	)
 	if err := validateInstallComposeConfig(ctx, dockerClient, plan, onProgress); err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "validate_compose_config", err)
 		return nil, err
 	}
+	lg.step(ctx, "compose config validated")
 
 	stackHandle, err := writeInstallFiles(ctx, plan, onProgress)
 	if err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "write_install_files", err)
 		return nil, err
 	}
+	lg.step(ctx, "stack files written")
 	composeProject, err := installComposeProject(plan)
 	if err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "resolve_compose_project", err)
 		return nil, err
 	}
 	cleanup := &freshInstallDockerCleanup{client: dockerClient, project: composeProject}
+	lg.debug(ctx, "deploy stack",
+		slog.String("command", "docker compose up -d"),
+		slog.String("compose_project", plan.composeProject),
+	)
 	if err := e.commitInstall(ctx, dockerClient, plan, stackHandle, confirmer, cleanup, onProgress); err != nil {
 		// Pre-commit fault: the manifest is not durable yet, so the
 		// protocol step 7 sad path removes the partial fresh-install
 		// files while the per-stack flock is held, after rolling back
 		// only the Docker resources this install created.
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "commit_install", err)
 		return nil, failFreshInstall(ctx, err, plan, stackHandle, cleanup)
 	}
+	lg.step(ctx, "stack deployed and manifest committed")
 
 	status, err := verifyInstallStatus(ctx, dockerClient, plan, onProgress)
 	if err != nil {
 		// Post-commit cancellation: the manifest is durable, files
 		// stay in place, only the flock is released.
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "verify_install_status", err)
 		if releaseErr := stackHandle.Release(); releaseErr != nil {
 			return nil, errors.Join(err, releaseErr)
 		}
 		return nil, err
 	}
 	if err := stackHandle.Release(); err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "release_stack_lock", err)
 		return nil, types.WrapError(
 			types.ErrCodeGeneric,
 			"stack lock could not be released",
@@ -205,6 +253,7 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 			err,
 		)
 	}
+	lg.success(ctx, plan.app.AppID, plan.stackPath)
 	return buildInstallResult(plan, status), nil
 }
 
@@ -1945,6 +1994,20 @@ func (p *installPlan) generateArgon2idSecret(
 		Note:  generatedCredentialNote,
 	})
 	return nil
+}
+
+// installRedactionSecrets is the full secret-aware redaction set for an
+// install's logger: the persisted generated values plus every argon2id
+// one-time plaintext (which lives only in shownCredentials, never in
+// generatedValues). Clones rather than mutating generatedValues so the
+// plan's persisted secret set stays unchanged (PRD §24 rule 2).
+func installRedactionSecrets(plan *installPlan) []string {
+	secrets := make([]string, 0, len(plan.generatedValues)+len(plan.shownCredentials))
+	secrets = append(secrets, plan.generatedValues...)
+	for _, cred := range plan.shownCredentials {
+		secrets = append(secrets, cred.Value)
+	}
+	return secrets
 }
 
 // installEnvEscapeDollar doubles every `$` so a value survives Docker
