@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
-## Unreleased
+## v1.0.6 - 2026-06-21
 
 ### Added
 - Implemented the on-disk diagnostic log sink (PRD §24). `wdm` now writes a
