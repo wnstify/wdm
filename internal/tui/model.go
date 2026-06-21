@@ -34,7 +34,6 @@ type screen int
 
 const (
 	screenDashboard screen = iota
-	screenPlaceholder
 	screenCheckApps
 	screenStopAll
 	screenStopAllResult
@@ -665,7 +664,7 @@ func (m *model) back() {
 	case screenInstallForm:
 		m.screen = screenInstallCatalog
 		m.err = nil
-	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenPlaceholder, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
+	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
 		m.screen = screenDashboard
 		m.firstRun = false
 		m.err = nil
@@ -747,11 +746,6 @@ func (m model) selectDashboardAction() (tea.Model, tea.Cmd) {
 		m.uninstallResult = nil
 		m.progress = progressMsg{}
 		return m, m.uninstallCmd()
-	}
-
-	if dashboardActions[m.cursor] != "Check my apps" {
-		m.screen = screenPlaceholder
-		return m, nil
 	}
 
 	m.screen = screenCheckApps
@@ -956,8 +950,6 @@ func (m model) screenView() string {
 		return m.settingsView()
 	case screenRuntimeLock:
 		return m.runtimeLockView()
-	case screenPlaceholder:
-		return m.placeholderView()
 	default:
 		if view, ok := m.distributionScreenView(); ok {
 			return view
@@ -1073,15 +1065,6 @@ func (m model) resizeView() string {
 		m.width,
 		m.height,
 	)
-}
-
-func (m model) placeholderView() string {
-	var b strings.Builder
-	b.WriteString(titleStyle().Render(dashboardActions[m.cursor]))
-	b.WriteString("\n\n")
-	b.WriteString("This screen lands later in Wave H.\n\n")
-	b.WriteString(m.helpLine())
-	return b.String()
 }
 
 func (m model) checkAppsView() string {

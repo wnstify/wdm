@@ -683,7 +683,7 @@ func happyInstallRunFn(t *testing.T, app catalog.App, hostPort int) func(int, do
 	return func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
 		switch fmt.Sprintf("%T", inv) {
 		case "docker.networkInspectInvocation":
-			// Report the network absent so EnsureNetwork takes its create
+			// Report the network absent so EnsureNetworkReport takes its create
 			// path (the created network's internal flag is whatever the
 			// catalog declares; create always succeeds below).
 			return missingNetworkResult("wdm-net")

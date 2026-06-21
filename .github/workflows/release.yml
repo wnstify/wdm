@@ -23,16 +23,16 @@
 # `attestations: write`, and `contents: write`, and it alone is gated to the
 # public repository and the tag ref below.
 #
-# SPDX SBOM (PRD §22, §23). The build job generates wdm-linux-amd64.spdx.json
-# (ArtifactSBOM): an SPDX 2.3 JSON Software Bill of Materials describing the
+# SPDX SBOM (PRD §22, §23). The build job generates wdm-linux-amd64.spdx.json:
+# an SPDX 2.3 JSON Software Bill of Materials describing the
 # built binary's Go module dependencies, produced by anchore/sbom-action
 # (syft, format spdx-json -> "spdxVersion": "SPDX-2.3"). The SBOM is an
 # UNSIGNED manifest with NO identity binding — it is not keyless, mints no
 # OIDC token, and writes no transparency-log entry — so it is produced in
 # the identity-agnostic build job and runs in the dry-run. It needs NO
 # `wnstify/wdm` gate and NO new write permission, unlike the keyless
-# attestation and cosign bundle. The SBOM is a RolePayload file in
-# internal/release.ChecksummedArtifactNames(), so it is a SHA256SUMS payload
+# attestation and cosign bundle. The SBOM is one of the files listed in
+# SHA256SUMS, so it is a SHA256SUMS payload
 # in BOTH jobs (added to the dry-run set in the build job, and to the
 # authoritative full set — binary + catalog bundle + attestation + SBOM — in
 # the gated job). Its integrity is provided by SHA256SUMS, which the detached
@@ -75,7 +75,7 @@
 # (PRD §23): LoadAttestationBundle fails closed on empty bytes.
 #
 # SHA256SUMS RECONCILIATION (PRD §22, §23). attestation.json is itself a
-# SHA256SUMS payload file (RolePayload in ChecksummedArtifactNames), but it
+# SHA256SUMS payload file (one of the names listed in SHA256SUMS), but it
 # is keyless and only exists on the gated public path, while the detached
 # sig + cosign bundle SIGN SHA256SUMS. The two jobs therefore produce two
 # distinct SHA256SUMS, and only the second is authoritative:
@@ -134,8 +134,8 @@
 # (ArtifactChecksums) lists the payload files only — never itself and never a
 # signature file — the SLSA attestation is `attestation.json`
 # (ArtifactAttestation), and the two signatures over SHA256SUMS are
-# SHA256SUMS.sig (ArtifactChecksumSignature) and SHA256SUMS.cosign.bundle
-# (ArtifactCosignBundle).
+# SHA256SUMS.sig (ArtifactChecksumSignature) and
+# SHA256SUMS.cosign.bundle.
 name: release
 
 on:
@@ -218,9 +218,8 @@ jobs:
         # "spdxVersion": "SPDX-2.3"). The SBOM is an UNSIGNED manifest with no
         # identity binding, so it runs in the identity-agnostic build job
         # (no `wnstify/wdm` gate, no write permission). `output-file` writes
-        # the contract name internal/release.ArtifactSBOM
-        # (wdm-linux-amd64.spdx.json) directly into dist/ before the SHA256SUMS
-        # step hashes it. `upload-artifact: false` disables the action's own
+        # the contract name wdm-linux-amd64.spdx.json directly into dist/
+        # before the SHA256SUMS step hashes it. `upload-artifact: false` disables the action's own
         # auto-upload so the SBOM rides only the explicit upload steps below.
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -267,9 +266,8 @@ jobs:
           set -euo pipefail
           # The gzip-tar archive root must hold exactly two top-level entries,
           # `stable/` and `templates/`, mirroring the engine's catalogs-root
-          # subtree, with the manifest at `stable/catalog.yaml`. This matches
-          # internal/release.ExpectedCatalogBundleRootEntries() and
-          # internal/release.CatalogBundleManifestPath.
+          # subtree, with the manifest at `stable/catalog.yaml`. The manifest
+          # path matches internal/release.CatalogBundleManifestPath.
           stage="$(mktemp -d)"
           mkdir -p "$stage/stable" "$stage/templates"
           cp catalog/stable/catalog.yaml "$stage/stable/catalog.yaml"
@@ -319,10 +317,10 @@ jobs:
           set -euo pipefail
           # DRY-RUN SHA256SUMS over the payloads AVAILABLE in this job: the
           # binary, the catalog bundle, and the SBOM. The SBOM
-          # (wdm-linux-amd64.spdx.json) is a RolePayload file in
-          # internal/release.ChecksummedArtifactNames() that has no identity
-          # binding, so it is produced here in the build job and is covered by
-          # this SHA256SUMS. attestation.json is also a RolePayload file, but
+          # (wdm-linux-amd64.spdx.json) is a SHA256SUMS payload file that has no
+          # identity binding, so it is produced here in the build job and is
+          # covered by this SHA256SUMS. attestation.json is also a SHA256SUMS
+          # payload file, but
           # it is keyless and produced only by the gated signed-release job, so
           # this build-job SHA256SUMS legitimately covers fewer payloads (no
           # attestation). The AUTHORITATIVE SHA256SUMS — the one product/human
@@ -461,8 +459,8 @@ jobs:
           # it, so remove the dry-run trust files first to avoid uploading a
           # stale, fewer-payload SHA256SUMS in the authoritative set. The
           # binary, catalog bundle, AND the SBOM (wdm-linux-amd64.spdx.json)
-          # are kept: they are RolePayload files the authoritative SHA256SUMS
-          # re-hashes. Only the dry-run trust trio (the checksum file and its
+          # are kept: they are SHA256SUMS payload files the authoritative
+          # SHA256SUMS re-hashes. Only the dry-run trust trio (the checksum file and its
           # two signature/key files) is removed — do NOT add any payload here.
           rm -f \
             dist/SHA256SUMS \
@@ -518,7 +516,7 @@ jobs:
         run: |
           set -euo pipefail
           # AUTHORITATIVE SHA256SUMS over the FULL release payload set
-          # (RolePayload in internal/release.ChecksummedArtifactNames()): the
+          # (the files listed in SHA256SUMS): the
           # binary, the catalog bundle, attestation.json, AND the SBOM
           # (wdm-linux-amd64.spdx.json). This is the SHA256SUMS the
           # product/human verifiers consume; it covers attestation.json and the
@@ -583,8 +581,8 @@ jobs:
           # requests a short-lived GitHub Actions OIDC token, mints a Fulcio
           # certificate bound to this workflow's identity, and records a Rekor
           # transparency-log entry. Everything a `cosign verify-blob` needs is
-          # written into the bundle file -> SHA256SUMS.cosign.bundle
-          # (ArtifactCosignBundle). `--yes` skips the interactive
+          # written into the bundle file -> SHA256SUMS.cosign.bundle.
+          # `--yes` skips the interactive
           # transparency-log consent prompt (non-destructive).
           cosign sign-blob \
             --yes \

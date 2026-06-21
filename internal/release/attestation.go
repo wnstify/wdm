@@ -10,42 +10,15 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
-// VerifiedSubject is one in-toto subject the attestation cryptographically
-// covers: the artifact name and its verified digests keyed by algorithm
-// (such as "sha256" -> "<hex>"). A later apply step binds these to the
-// artifact it is about to install, so coverage is not merely "valid" but
-// "valid for exactly this artifact" (PRD §22 step 7).
-type VerifiedSubject struct {
-	// Name is the in-toto subject name (the release artifact filename in
-	// practice; the verifier treats it as an opaque label).
-	Name string
-
-	// Digests maps a digest algorithm ("sha256", "sha512",...) to the hex
-	// digest the attestation binds for this subject, copied verbatim from
-	// the in-toto statement (lowercase hex by convention, but not normalized
-	// here; a consumer comparing against a locally computed digest should
-	// compare case-insensitively).
-	Digests map[string]string
-}
-
 // AttestationResult is the verified outcome of [VerifyAttestation]: the
-// signer identity that passed the trust policy and the in-toto subjects
-// the attestation covers. It is returned only after the signature,
-// certificate-identity, OIDC-issuer, transparency-log, and timestamp
-// checks all pass.
+// signer identity that passed the trust policy. It is returned only after
+// the signature, certificate-identity, OIDC-issuer, transparency-log, and
+// timestamp checks all pass.
 type AttestationResult struct {
-	// VerifiedIssuer is the OIDC issuer required by the policy and matched
-	// against the signing certificate.
-	VerifiedIssuer string
-
 	// VerifiedSAN is the certificate Subject Alternative Name (the workflow
 	// identity) required by the policy for this tag and matched against the
 	// signing certificate.
 	VerifiedSAN string
-
-	// Subjects are the in-toto subjects the attestation cryptographically
-	// covers.
-	Subjects []VerifiedSubject
 }
 
 // LoadAttestationBundle parses a Sigstore attestation bundle from raw JSON
@@ -174,20 +147,7 @@ func VerifyAttestation(
 		return nil, verificationError("attestation carries no in-toto statement", "", nil)
 	}
 
-	subjects := make([]VerifiedSubject, 0, len(result.Statement.Subject))
-	for _, s := range result.Statement.Subject {
-		digests := map[string]string{}
-		for alg, val := range s.GetDigest() {
-			digests[alg] = val
-		}
-		subjects = append(subjects, VerifiedSubject{Name: s.GetName(), Digests: digests})
-	}
-
-	return &AttestationResult{
-		VerifiedIssuer: policy.OIDCIssuer,
-		VerifiedSAN:    expectedSAN,
-		Subjects:       subjects,
-	}, nil
+	return &AttestationResult{VerifiedSAN: expectedSAN}, nil
 }
 
 // HexDigest returns the lowercase hex SHA-256 of data, the form digests

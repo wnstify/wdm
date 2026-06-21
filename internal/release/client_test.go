@@ -163,7 +163,6 @@ func TestLatestRelease_ParsesTagAndAssets(t *testing.T) {
 	require.Len(t, meta.Assets, 2)
 	assert.Equal(t, "wdm-linux-amd64", meta.Assets[0].Name)
 	assert.Equal(t, "https://example.test/download/wdm-linux-amd64", meta.Assets[0].DownloadURL)
-	assert.Equal(t, int64(1234), meta.Assets[0].Size)
 
 	// Outbound request shape: path, User-Agent (GitHub requires one), and
 	// the GitHub media-type Accept header.
@@ -326,7 +325,6 @@ func TestDownloadAsset_ReturnsExactBytes(t *testing.T) {
 	asset := release.ReleaseAsset{
 		Name:        "wdm-linux-amd64",
 		DownloadURL: srv.URL + "/download/wdm-linux-amd64",
-		Size:        int64(len(payload)),
 	}
 
 	got, err := c.DownloadAsset(context.Background(), asset, 1<<20)

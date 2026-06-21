@@ -43,7 +43,7 @@
 //     and networks the deployment will touch (PRD §17 step 11; a nil
 //     confirmer refuses past the confirmation step, a decline maps to
 //     types.ErrCodeUserCanceled), pre-creates catalog-declared Docker
-//     networks via internal/docker.EnsureNetwork with internal-flag drift
+//     networks via internal/docker.EnsureNetworkReport with internal-flag drift
 //     rejected, re-checks localhost ports
 //     immediately before deploy, deploys
 //     via `docker compose up -d`, captures image digests opportunistically

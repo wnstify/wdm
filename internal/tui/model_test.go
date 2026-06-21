@@ -165,7 +165,6 @@ func TestEngineBridge_ProgressAndConfirmationCallbacksUseMessages(t *testing.T) 
 
 	sender := newRecordingSender()
 	bridge := newEngineBridge(sender.Send)
-	logLine := types.LogLine{Service: "web", Stream: "stdout", Text: "ready"}
 	confirmation := types.Confirmation{
 		Kind:    "update_deploy",
 		Title:   "Recreate containers",
@@ -191,12 +190,8 @@ func TestEngineBridge_ProgressAndConfirmationCallbacksUseMessages(t *testing.T) 
 		resultC <- cmd()
 	}()
 
-	bridge.logLineFn()(logLine)
-	assert.Equal(t, logLine, sender.waitLogLine(t).line)
-
 	progress := sender.waitProgress(t)
 	assert.Equal(t, types.StepRestartExecute, progress.step)
-	assert.Equal(t, 0.50, progress.pct)
 	assert.Equal(t, "Stopping containers", progress.message)
 
 	request := sender.waitConfirmation(t)
@@ -235,7 +230,6 @@ func TestModel_ConfirmationPromptAnswersThroughReplyChannel(t *testing.T) {
 	select {
 	case got := <-reply:
 		assert.True(t, got.accepted)
-		require.NoError(t, got.err)
 	case <-time.After(time.Second):
 		t.Fatal("confirmation reply was not sent")
 	}
@@ -265,7 +259,6 @@ func TestModel_ConfirmationDeclineAbortsWithoutAccepting(t *testing.T) {
 	select {
 	case got := <-reply:
 		assert.False(t, got.accepted, "decline must report the destructive action as not accepted")
-		require.NoError(t, got.err)
 	case <-time.After(time.Second):
 		t.Fatal("decline reply was not sent")
 	}
@@ -299,7 +292,6 @@ func TestModel_ConfirmationQuitDeclinesAndQuits(t *testing.T) {
 	select {
 	case got := <-reply:
 		assert.False(t, got.accepted, "quitting must report the destructive action as not accepted")
-		require.NoError(t, got.err)
 	case <-time.After(time.Second):
 		t.Fatal("quit reply was not sent")
 	}
@@ -310,14 +302,12 @@ func TestModel_ConfirmationQuitDeclinesAndQuits(t *testing.T) {
 
 type recordingSender struct {
 	progress     chan progressMsg
-	logLine      chan logLineMsg
 	confirmation chan confirmationRequestedMsg
 }
 
 func newRecordingSender() *recordingSender {
 	return &recordingSender{
 		progress:     make(chan progressMsg, 1),
-		logLine:      make(chan logLineMsg, 1),
 		confirmation: make(chan confirmationRequestedMsg, 1),
 	}
 }
@@ -326,8 +316,6 @@ func (s *recordingSender) Send(msg tea.Msg) {
 	switch msg := msg.(type) {
 	case progressMsg:
 		s.progress <- msg
-	case logLineMsg:
-		s.logLine <- msg
 	case confirmationRequestedMsg:
 		s.confirmation <- msg
 	}
@@ -342,18 +330,6 @@ func (s *recordingSender) waitProgress(t *testing.T) progressMsg {
 	case <-time.After(time.Second):
 		t.Fatal("progress message was not sent")
 		return progressMsg{}
-	}
-}
-
-func (s *recordingSender) waitLogLine(t *testing.T) logLineMsg {
-	t.Helper()
-
-	select {
-	case msg := <-s.logLine:
-		return msg
-	case <-time.After(time.Second):
-		t.Fatal("log-line message was not sent")
-		return logLineMsg{}
 	}
 }
 

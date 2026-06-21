@@ -82,7 +82,7 @@ func (e *Engine) acquireRuntimeLock(ctx context.Context, command string) (*state
 // internal/docker/network.go's networkNamePattern and to the catalog
 // network-name schema (catalog/schema.json) — lowercase ASCII, leading
 // letter, then lowercase letters/digits/underscore/hyphen, length 1-63.
-// internal/docker exposes no name-only validator (only EnsureNetwork,
+// internal/docker exposes no name-only validator (only EnsureNetworkReport,
 // which performs Docker calls), so 's regex is compiled locally
 // rather than reaching across the package boundary for a Docker
 // round-trip just to validate a string. This is STRICTER than

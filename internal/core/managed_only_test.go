@@ -114,8 +114,6 @@ func TestManagedOnlyProtection_RefusesHandRolledStack(t *testing.T) {
 			require.Error(t, err)
 			assertUsageValidation(t, err)
 			assert.ErrorContains(t, err, "not managed by wdm")
-			assert.NotErrorIs(t, err, types.ErrNotImplemented,
-				"a managed-only refusal must precede any execution boundary")
 			assert.Zero(t, fx.fake.calls,
 				"the managed-only refusal must run zero docker commands")
 			assert.Zero(t, fx.fake.streamCalls,
@@ -208,8 +206,6 @@ func TestManagedOnlyProtection_RefusesMismatchedAppID(t *testing.T) {
 			err := tt.call(t, fx)
 			require.Error(t, err)
 			assertUsageValidation(t, err)
-			assert.NotErrorIs(t, err, types.ErrNotImplemented,
-				"an app_id-mismatch refusal must precede any execution boundary")
 			assert.Zero(t, fx.fake.calls,
 				"the app_id-mismatch refusal must run zero docker commands")
 			assert.Zero(t, fx.fake.streamCalls,

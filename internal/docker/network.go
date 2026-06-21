@@ -36,7 +36,7 @@ type NetworkSpec struct {
 	// newly-created network: `--label wdm.managed=true --label wdm.app=<AppID>`.
 	// It must be the app's canonical catalog ID. Empty leaves the create
 	// command label-free. Labels are applied only to networks wdm creates here;
-	// a network reached through the EnsureNetwork "already exists" path is NOT
+	// a network reached through the EnsureNetworkReport "already exists" path is NOT
 	// re-labeled (an accepted limitation — re-stamping existing networks is the
 	// deferred label-sweep's job, out of scope for the create path).
 	AppID string
@@ -63,25 +63,18 @@ const (
 	managedNetworkListFormat  = "{{.Name}}"
 )
 
-// EnsureNetwork ensures one network exists before compose deployment.
+// EnsureNetworkReport ensures one network exists before compose deployment.
 // If it already exists, the internal flag must match exactly and, when the spec
 // pins a subnet (PRD §9), the existing subnet must match too; either mismatch is
 // a fail-closed usage-validation error. A missing network is created with the
 // requested --internal/--subnet/--gateway flags.
 //
-// EnsureNetwork is the compatibility wrapper over [EnsureNetworkReport] for
-// callers that do not need to know whether the network was newly created.
-func EnsureNetwork(ctx context.Context, client Client, network NetworkSpec) error {
-	_, err := EnsureNetworkReport(ctx, client, network)
-	return err
-}
-
-// EnsureNetworkReport behaves like [EnsureNetwork] but also reports whether the
-// network was newly created. created is true only when a missing network was
-// created on this call; it is false when the network already existed and was
-// reconciled, and false on every error path — so created is meaningful only when
-// err is nil. The created bool exists so install rollback can distinguish the
-// networks it created from pre-existing ones and clean up only its own (PRD §9).
+// It also reports whether the network was newly created. created is true only
+// when a missing network was created on this call; it is false when the network
+// already existed and was reconciled, and false on every error path — so created
+// is meaningful only when err is nil. The created bool exists so install
+// rollback can distinguish the networks it created from pre-existing ones and
+// clean up only its own (PRD §9).
 func EnsureNetworkReport(ctx context.Context, client Client, network NetworkSpec) (created bool, err error) {
 	if client == nil {
 		return false, types.NewError(
@@ -279,7 +272,7 @@ type networkInspectInvocation struct {
 func (networkInspectInvocation) isDockerInvocation() {}
 
 // networkSubnetInvocation reads an existing network's first configured subnet so
-// [EnsureNetwork] can reconcile it against the requested spec on the exists path.
+// [EnsureNetworkReport] can reconcile it against the requested spec on the exists path.
 type networkSubnetInvocation struct {
 	name string
 }
@@ -458,7 +451,7 @@ func parseNetworkInternalFlag(stdout, networkName string) (bool, error) {
 }
 
 // isMissingNetworkError reports whether an inspect failure means the
-// network is absent (so [EnsureNetwork] should create it) rather than
+// network is absent (so [EnsureNetworkReport] should create it) rather than
 // another fault that must propagate unchanged. It recognizes two daemon
 // phrasings: the classic "no such network" form and the modern
 // "network <name> not found" form from Docker 29.x (observed on the dev

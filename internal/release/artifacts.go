@@ -37,17 +37,9 @@ const (
 	// over the exact SHA256SUMS bytes.
 	ArtifactChecksumSignature = "SHA256SUMS.sig"
 
-	// ArtifactCosignBundle is the keyless cosign bundle (signature, Fulcio
-	// cert, Rekor entry) over ArtifactChecksums, for human/CI
-	// `cosign verify-blob`.
-	ArtifactCosignBundle = "SHA256SUMS.cosign.bundle"
-
 	// ArtifactAttestation is the SLSA provenance attestation
 	// (in-toto/DSSE), verified in-product.
 	ArtifactAttestation = "attestation.json"
-
-	// ArtifactSBOM is the SPDX 2.3 JSON SBOM for the binary.
-	ArtifactSBOM = "wdm-linux-amd64.spdx.json"
 )
 
 // Catalog-bundle layout. The bundle (ArtifactCatalogBundle) is a
@@ -86,87 +78,3 @@ const (
 	// trailing slash marks a directory entry.
 	CatalogBundleTemplatesDir = "templates/"
 )
-
-// AssetRole names the role a release asset plays in the trust contract.
-// Roles are data, not prose:
-// the workflow producing assets and the verifier consuming them agree on
-// roles through these values rather than filename heuristics.
-type AssetRole string
-
-// The closed set of release asset roles.
-const (
-	// RolePayload is a release payload file whose digest appears in
-	// SHA256SUMS (binary, catalog bundle, attestation, SBOM).
-	RolePayload AssetRole = "payload"
-
-	// RoleChecksumFile is the SHA256SUMS file itself: it lists the payload
-	// digests and is therefore never listed in itself.
-	RoleChecksumFile AssetRole = "checksum_file"
-
-	// RoleDetachedSignature is the product-verifiable detached signature
-	// over SHA256SUMS.
-	RoleDetachedSignature AssetRole = "detached_signature"
-
-	// RoleCosignBundle is the keyless cosign bundle over SHA256SUMS, for
-	// human/CI verification.
-	RoleCosignBundle AssetRole = "cosign_bundle"
-)
-
-// Asset is one named release asset and its trust role. It is data only:
-// the workflow emits exactly this set of names and the verifier resolves
-// against them.
-type Asset struct {
-	// Name is the release asset file name (one of the Artifact* constants).
-	Name string
-
-	// Role is the part the asset plays in the trust contract.
-	Role AssetRole
-}
-
-// AssetSet returns the full, ordered release asset set the workflow
-// produces and the verifier consumes. A fresh slice is returned
-// on every call so callers cannot mutate the canonical set.
-// The ordering — payload files, then the checksum file, then the
-// signatures over it — mirrors the producer/consumer flow: payloads are
-// hashed into SHA256SUMS, then SHA256SUMS is signed.
-func AssetSet() []Asset {
-	return []Asset{
-		{Name: ArtifactBinary, Role: RolePayload},
-		{Name: ArtifactCatalogBundle, Role: RolePayload},
-		{Name: ArtifactAttestation, Role: RolePayload},
-		{Name: ArtifactSBOM, Role: RolePayload},
-		{Name: ArtifactChecksums, Role: RoleChecksumFile},
-		{Name: ArtifactChecksumSignature, Role: RoleDetachedSignature},
-		{Name: ArtifactCosignBundle, Role: RoleCosignBundle},
-	}
-}
-
-// ChecksummedArtifactNames returns the asset names whose digests must
-// appear in SHA256SUMS: the release payload files only (binary, catalog
-// bundle, attestation, SBOM).
-// SHA256SUMS lists neither itself nor its own signatures (SHA256SUMS.sig,
-// SHA256SUMS.cosign.bundle): those sign SHA256SUMS, so they cannot be
-// inside it. The set is derived from [AssetSet] by role ([RolePayload]) so
-// the coverage rule cannot drift from the asset set. A fresh slice is
-// returned on every call.
-func ChecksummedArtifactNames() []string {
-	var names []string
-	for _, asset := range AssetSet() {
-		if asset.Role == RolePayload {
-			names = append(names, asset.Name)
-		}
-	}
-	return names
-}
-
-// ExpectedCatalogBundleRootEntries returns the required archive-root entry
-// names inside ArtifactCatalogBundle: the channel directory (stable/) and
-// the shared templates directory (templates/), mirroring the engine's
-// catalogs-root subtree so extraction reproduces the catalog filesystem
-// layout. The channel manifest lives one level deeper at
-// CatalogBundleManifestPath (stable/catalog.yaml), not at the archive root.
-// This is the layout *contract*, not a parser. A fresh slice is returned on
-// every call.
-func ExpectedCatalogBundleRootEntries() []string {
-	return []string{CatalogBundleChannelDir, CatalogBundleTemplatesDir}
-}

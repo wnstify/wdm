@@ -1361,7 +1361,6 @@ func TestInstall_ComposeValidationFailureStopsBeforeFileWrites(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, res)
 	require.ErrorIs(t, err, composeErr)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 
 	assert.Equal(t, 1, fake.calls)
 	assert.Empty(t, confirmer.calls)
@@ -1392,7 +1391,6 @@ func TestInstall_NilConfirmerRefusesPastConfirmationStep(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, res)
 	assertUsageValidation(t, err)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 
 	// Refusal happens at the confirmation step after exposure, no
 	// deployment-shaped Docker work runs, and the protocol step 7
@@ -1503,7 +1501,6 @@ func TestInstall_NetworkInternalFlagDriftFailsClosed(t *testing.T) {
 	res, err := eng.Install(t.Context(), types.InstallRequest{AppID: app.AppID}, nil, &fakeConfirmer{})
 	require.Error(t, err)
 	assert.Nil(t, res)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 
 	var typedErr *types.Error
 	require.ErrorAs(t, err, &typedErr)
@@ -1539,7 +1536,6 @@ func TestInstall_NetworkCreationFailurePropagates(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, res)
 	require.ErrorIs(t, err, createErr)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 	assert.Equal(t, 3, fake.calls)
 
 	// Network creation failed before any network was created and before
@@ -1575,7 +1571,6 @@ func TestInstall_PortRecheckConflictBeforeDeploymentFailsClosed(t *testing.T) {
 	res, err := eng.Install(t.Context(), types.InstallRequest{AppID: app.AppID}, nil, confirmer)
 	require.Error(t, err)
 	assert.Nil(t, res)
-	assert.NotErrorIs(t, err, types.ErrNotImplemented)
 
 	var typedErr *types.Error
 	require.ErrorAs(t, err, &typedErr)
@@ -3368,7 +3363,7 @@ func (f *fakeConfirmer) Confirm(ctx context.Context, c types.Confirmation) (bool
 }
 
 // missingNetworkResult mimics `docker network inspect` output for an
-// absent network so EnsureNetwork takes its create path.
+// absent network so EnsureNetworkReport takes its create path.
 func missingNetworkResult(name string) (docker.CommandResult, error) {
 	return docker.CommandResult{
 		Stderr:   "Error: No such network: " + name,

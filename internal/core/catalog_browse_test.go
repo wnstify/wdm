@@ -135,7 +135,6 @@ func TestAvailableApps_ProjectsEveryFieldFromSyntheticCatalog(t *testing.T) {
 	assert.Equal(t, "template-alpha", got.TemplateName)
 	assert.Equal(t, "2026.05.29", got.TemplateVersion)
 	assert.Equal(t, "stable", got.Channel)
-	assert.Equal(t, generatedAt.UTC().Format(time.RFC3339), got.CatalogVersion)
 	assert.Equal(t, []string{"safe"}, got.RiskClassification)
 
 	require.Len(t, got.Placeholders, 3)
@@ -379,7 +378,6 @@ func TestAvailableApp_ReturnsSingleProjection(t *testing.T) {
 	require.NotNil(t, app)
 	assert.Equal(t, "beta", app.AppID)
 	assert.Equal(t, "stable", app.Channel)
-	assert.Equal(t, generatedAt.UTC().Format(time.RFC3339), app.CatalogVersion)
 	require.Len(t, app.Placeholders, 3)
 	assert.True(t, app.Placeholders[2].Secret)
 }
@@ -525,7 +523,6 @@ func TestAvailableApps_RealStableCatalog(t *testing.T) {
 	for _, a := range apps {
 		ids = append(ids, a.AppID)
 		assert.Equal(t, "stable", a.Channel)
-		assert.Equal(t, cat.GeneratedAt.UTC().Format(time.RFC3339), a.CatalogVersion)
 		assert.NotEmpty(t, a.Name)
 		assert.NotEmpty(t, a.ImagePins, "curated app %s must project image pins", a.AppID)
 	}

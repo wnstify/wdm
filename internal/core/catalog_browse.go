@@ -8,7 +8,6 @@ import (
 	"path"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/wnstify/wdm/internal/catalog"
 	"github.com/wnstify/wdm/internal/render"
@@ -103,7 +102,7 @@ func (e *Engine) AvailableApp(ctx context.Context, query types.CatalogAppQuery) 
 		return nil, err
 	}
 
-	projected := projectCatalogApp(app, cat.Channel, catalogVersionOf(cat))
+	projected := projectCatalogApp(app, cat.Channel)
 	return &projected, nil
 }
 
@@ -185,10 +184,9 @@ func validCatalogChannel(channel string) bool {
 // fixed catalog either way.
 func projectCatalogApps(cat *catalog.Catalog) []types.CatalogApp {
 	channel := cat.Channel
-	catalogVersion := catalogVersionOf(cat)
 	apps := make([]types.CatalogApp, 0, len(cat.Apps))
 	for _, app := range cat.Apps {
-		apps = append(apps, projectCatalogApp(app, channel, catalogVersion))
+		apps = append(apps, projectCatalogApp(app, channel))
 	}
 	slices.SortFunc(apps, func(a, b types.CatalogApp) int {
 		return cmp.Compare(a.AppID, b.AppID)
@@ -196,23 +194,12 @@ func projectCatalogApps(cat *catalog.Catalog) []types.CatalogApp {
 	return apps
 }
 
-// catalogVersionOf renders the catalog manifest's version string the
-// same way the install path records it in.wdm.lock — GeneratedAt
-// formatted as UTC RFC 3339 (install.go's catalogVersion).
-// internal/catalog has no string version field, so this timestamp is the
-// catalog version; deriving it identically keeps the browse detail view
-// consistent with the version the install path pins.
-func catalogVersionOf(cat *catalog.Catalog) string {
-	return cat.GeneratedAt.UTC().Format(time.RFC3339)
-}
-
 // projectCatalogApp projects one catalog app into a [types.CatalogApp].
-// The channel and catalog version are passed in because they are
-// catalog-level fields internal/catalog.App does not carry, so the
-// caller reads them off the loaded manifest. Every nested slice is a
-// fresh copy (see the per-shape helpers) so the result aliases no
-// catalog-loader memory.
-func projectCatalogApp(app catalog.App, channel, catalogVersion string) types.CatalogApp {
+// The channel is passed in because it is a catalog-level field
+// internal/catalog.App does not carry, so the caller reads it off the
+// loaded manifest. Every nested slice is a fresh copy (see the per-shape
+// helpers) so the result aliases no catalog-loader memory.
+func projectCatalogApp(app catalog.App, channel string) types.CatalogApp {
 	return types.CatalogApp{
 		AppID:              app.AppID,
 		Name:               app.Name,
@@ -221,7 +208,6 @@ func projectCatalogApp(app catalog.App, channel, catalogVersion string) types.Ca
 		TemplateName:       app.TemplateName,
 		TemplateVersion:    app.TemplateVersion,
 		Channel:            channel,
-		CatalogVersion:     catalogVersion,
 		Placeholders:       projectCatalogPlaceholders(app.Placeholders),
 		Ports:              projectCatalogPorts(app.Ports),
 		ImagePins:          projectCatalogImagePins(app.ImagePins),

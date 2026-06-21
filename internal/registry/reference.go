@@ -28,13 +28,6 @@ type Reference struct {
 	Tag string
 }
 
-// Image returns the registry-qualified repository reference without the tag,
-// e.g. "registry-1.docker.io/library/nginx". It feeds the
-// [types.ImageUpdateCandidate.Image] projection.
-func (r Reference) Image() string {
-	return r.Registry + "/" + r.Repository
-}
-
 const (
 	// defaultRegistry is the registry Docker Hub shorthand resolves to. It
 	// is the v2 API host (registry-1.docker.io), NOT the docker.io web

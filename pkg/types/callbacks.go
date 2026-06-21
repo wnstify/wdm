@@ -3,9 +3,8 @@ package types
 import "context"
 
 // ProgressFn reports progress for long-running operations. PRD §37
-// mandates this exact signature; the matching IPC payload shape is
-// [Progress]. Callers may pass nil to engine write methods that need no
-// progress events; implementations must tolerate nil.
+// mandates this exact signature. Callers may pass nil to engine write
+// methods that need no progress events; implementations must tolerate nil.
 // Originally declared in pkg/engine; relocated to pkg/types at the
 // acyclic. internal/core needs the callback shape but must not import
 // pkg/engine after the bridge wires pkg/engine.New through to core.New.
