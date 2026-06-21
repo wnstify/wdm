@@ -72,7 +72,7 @@ The TUI is the guided entry point: browse the catalog, install and update stacks
 
 ## CLI
 
-Every action is scriptable. The CLI prints human-readable text by default, and machine-readable JSON with `--json`.
+Every action is scriptable. The CLI prints human-readable text by default, and machine-readable JSON with `--json`. Each run writes a redacted diagnostic log to `~/.local/state/wdm/logs/latest.log`; add `--debug` for verbose detail, and on failure `wdm` points you at the log (review it before sharing publicly).
 
 ```sh
 wdm apps list                 # list managed stacks with live runtime state

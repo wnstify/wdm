@@ -9,6 +9,7 @@ Run `wdm` with no arguments in an interactive terminal to launch the TUI. When r
 Every command accepts these flags:
 
 - `--json` — emit machine-readable output via the `wdm.v1` JSON envelope instead of human-readable text.
+- `--debug` — write verbose debug logs (command summaries, validation detail) to the `wdm` log file. Secrets are still redacted.
 - `--version` — print the `wdm` version and exit.
 - `--help` — print help for `wdm` or any subcommand.
 
@@ -260,15 +261,22 @@ wdm uninstall --yes
 ## Diagnostic logs
 
 `wdm` writes a redacted diagnostic log of its own runs to
-`~/.local/state/wdm/logs/latest.log`. Each run starts a fresh `latest.log` and
-archives the previous one as `wdm-YYYY-MM-DD-HHMMSS.log`. Archives are pruned to
-the stricter of 30 days or 50 files; `latest.log` is always kept. Files are
-owner-only (directory `0700`, files `0600`).
+`~/.local/state/wdm/logs/latest.log`. Each state-changing operation (install,
+update, reconfigure, uninstall) records what it did: the `wdm` version, OS and
+architecture, the action, the selected app and stack path, the checks
+performed, the command names invoked, and — on failure — the step that failed.
+Pass `--debug` to add command summaries and validation detail. Each run starts
+a fresh `latest.log` and archives the previous one as
+`wdm-YYYY-MM-DD-HHMMSS.log`. Archives are pruned to the stricter of 30 days or
+50 files; `latest.log` is always kept. Files are owner-only (directory `0700`,
+files `0600`).
 
 Secrets — passwords, tokens, generated secrets, private keys, and `.env`
-contents — are redacted before anything reaches the log. Even so, **review
-`latest.log` before sharing it on GitHub or anywhere public**, in case it
-contains paths or app names you would rather not disclose.
+contents — are redacted before anything reaches the log, in both normal and
+`--debug` mode. Even so, **review `latest.log` before sharing it on GitHub or
+anywhere public**, in case it contains paths or app names you would rather not
+disclose. When an operation fails, `wdm` prints the log path with this same
+reminder.
 
 These logs are separate from `wdm apps logs <app-id>`, which streams a stack's
 own container logs.
