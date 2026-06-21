@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## Unreleased
+
+### Added
+- Implemented the on-disk diagnostic log sink (PRD §24). `wdm` now writes a
+  redacted JSON log to `~/.local/state/wdm/logs/latest.log` (file mode 0600,
+  dir 0700). On each start the prior `latest.log` is archived as
+  `wdm-YYYY-MM-DD-HHMMSS.log`, and archives are pruned to the retention
+  intersection — kept only when both within 30 days and among the 50 newest
+  files, with `latest.log` always kept. The sink fails soft: if it cannot be
+  opened, the CLI falls back to stderr and the TUI discards (so the display is
+  never corrupted), and a logging fault never blocks an operation.
+
 ## v1.0.5 - 2026-06-20
 
 ### Fixed

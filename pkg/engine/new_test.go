@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -110,6 +111,30 @@ func TestNew_WithLogger(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NoError(t, eng.Close())
+}
+
+// TestNew_WithFallbackLogWriter exercises the WithFallbackLogWriter
+// setter and the bridge's translation to core.WithFallbackLogWriter.
+// With no WithLogger, core opens the PRD §24 file sink under the temp
+// state dir, so the fallback writer is not consulted on the happy path;
+// the test confirms the option is accepted and the resulting latest.log
+// is created with owner-only mode.
+func TestNew_WithFallbackLogWriter(t *testing.T) {
+	t.Parallel()
+	state, data, _ := testTmpDirs(t)
+
+	eng, err := engine.New(
+		engine.WithConfigPath(missingConfigPath(t)),
+		engine.WithStateDir(state),
+		engine.WithDataDir(data),
+		engine.WithFallbackLogWriter(io.Discard),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	info, err := os.Stat(filepath.Join(state, "logs", "latest.log"))
+	require.NoError(t, err, "default sink must open latest.log under the state dir")
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "latest.log must be owner-only")
 }
 
 // TestNew_WithCatalog verifies WithCatalog forwards through the
