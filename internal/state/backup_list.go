@@ -80,7 +80,7 @@ type ConfigBackupSnapshot struct {
 // the per-stack flock would stall the read behind any in-flight writer, which
 // PRD §26's read-only clause forbids.
 func ListConfigBackups(stackPath string) ([]ConfigBackupSnapshot, error) {
-	if err := validateListBackupStackPath(stackPath); err != nil {
+	if err := validateBackupStackPath("state.ListConfigBackups", stackPath); err != nil {
 		return nil, err
 	}
 
@@ -117,25 +117,6 @@ func ListConfigBackups(stackPath string) ([]ConfigBackupSnapshot, error) {
 
 	sortConfigBackupSnapshotsNewestFirst(snapshots)
 	return snapshots, nil
-}
-
-func validateListBackupStackPath(stackPath string) error {
-	if stackPath == "" || !filepath.IsAbs(stackPath) {
-		return fmt.Errorf(
-			"state.ListConfigBackups: stackPath must be a non-empty absolute path, got %q",
-			stackPath,
-		)
-	}
-
-	stackInfo, err := os.Stat(stackPath)
-	if err != nil {
-		return fmt.Errorf("state.ListConfigBackups: stating stackPath %q: %w", stackPath, err)
-	}
-	if !stackInfo.IsDir() {
-		return fmt.Errorf("state.ListConfigBackups: stackPath %q is not a directory", stackPath)
-	}
-
-	return nil
 }
 
 // collectListSnapshot inspects one backup-root entry. It reports ok=false
