@@ -120,18 +120,7 @@ func (m model) removeActionsView() string {
 		return b.String()
 	}
 
-	for i, action := range removeActions {
-		prefix := "  "
-		suffix := ""
-		if i == m.removeActionCursor {
-			prefix = "> "
-			suffix = " [selected]"
-		}
-		b.WriteString(prefix)
-		b.WriteString(action)
-		b.WriteString(suffix)
-		b.WriteByte('\n')
-	}
+	writeMenu(&b, removeActions, m.removeActionCursor)
 
 	b.WriteString("\n")
 	b.WriteString(m.helpLine())

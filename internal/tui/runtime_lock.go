@@ -106,18 +106,7 @@ func (m model) runtimeLockView() string {
 	}
 
 	b.WriteString("\nActions\n\n")
-	for i, action := range m.runtimeLockActions() {
-		prefix := "  "
-		suffix := ""
-		if i == m.runtimeLockCursor {
-			prefix = "> "
-			suffix = " [selected]"
-		}
-		b.WriteString(prefix)
-		b.WriteString(action)
-		b.WriteString(suffix)
-		b.WriteByte('\n')
-	}
+	writeMenu(&b, m.runtimeLockActions(), m.runtimeLockCursor)
 
 	b.WriteString("\n")
 	b.WriteString(m.helpLine())
