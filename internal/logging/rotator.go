@@ -139,7 +139,7 @@ func prune(dir string, now time.Time) error {
 		if filepath.Base(path) == LatestLogName {
 			continue
 		}
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if err != nil {
 			continue
 		}

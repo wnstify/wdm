@@ -336,3 +336,38 @@ func TestOpenLogFile_SameSecondCollisionBumpsCounter(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "prior\n", string(body), "counter archive must hold the prior session, not clobber an existing archive")
 }
+
+// TestOpenLogFile_PruneUsesLstatNotTarget covers Fix 2: prune must decide
+// retention from each entry's own metadata via Lstat, never by following a
+// symlink to its target. The wdm-*.log archive is a symlink whose own mod time
+// is fresh but whose target is aged well past RetentionMaxAge. The old os.Stat
+// would follow the link and prune it on the target's age; os.Lstat reads the
+// link's own fresh mod time, so the link must survive.
+func TestOpenLogFile_PruneUsesLstatNotTarget(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privilege on windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "logs")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+
+	// Aged target outside retention; the symlink's own mod time stays fresh.
+	target := filepath.Join(dir, "target.log")
+	require.NoError(t, os.WriteFile(target, []byte("aged\n"), 0o600))
+	aged := time.Now().Add(-(logging.RetentionMaxAge + 48*time.Hour))
+	require.NoError(t, os.Chtimes(target, aged, aged))
+
+	link := filepath.Join(dir, "wdm-2020-01-01-000000.log")
+	require.NoError(t, os.Symlink(target, link))
+
+	f, err := logging.OpenLogFile(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	// Lstat saw the link's fresh mod time, not the aged target, so the
+	// symlink archive survives pruning.
+	_, statErr := os.Lstat(link)
+	require.NoError(t, statErr, "prune must keep the symlink by its own (fresh) mod time, not follow it to the aged target")
+}
