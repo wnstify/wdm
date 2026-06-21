@@ -138,14 +138,28 @@ func tornDownAppIDs(apps []types.TornDownApp) []string {
 func newUninstallTestEngine(t *testing.T, extra ...core.Option) (eng *core.Engine, stateDir, binaryPath string) {
 	t.Helper()
 
+	eng, stateDir, binaryPath, _ = newUninstallTestEngineWithConfigDir(t, extra...)
+	return eng, stateDir, binaryPath
+}
+
+// newUninstallTestEngineWithConfigDir is newUninstallTestEngine plus the
+// dedicated config dir path, so a test can make the config dir un-removable
+// and exercise the removeFootprint failure path (the config dir is the FIRST
+// footprint removed, before the state/logs dir holding the log sink).
+func newUninstallTestEngineWithConfigDir(t *testing.T, extra ...core.Option) (eng *core.Engine, stateDir, binaryPath, configDir string) {
+	t.Helper()
+
 	binDir := t.TempDir()
 	binaryPath = filepath.Join(binDir, "wdm")
 	require.NoError(t, os.WriteFile(binaryPath, []byte("fake binary"), 0o755))
 
 	// A dedicated config dir so footprint removal of the config dir does not
 	// take the temp root the stacks live under, matching production's
-	// ~/.config/wdm/config.toml dedicated directory.
-	configPath := filepath.Join(t.TempDir(), "wdm", "config.toml")
+	// ~/.config/wdm/config.toml dedicated directory. It is rooted under $HOME
+	// (via coreTestTempDir) so a test that materializes it still passes the
+	// footprint home-containment guard and reaches removeFootprint.
+	configDir = filepath.Join(coreTestTempDir(t), "wdm")
+	configPath := filepath.Join(configDir, "config.toml")
 
 	opts := append([]core.Option{
 		core.WithConfigPath(configPath),
@@ -158,7 +172,7 @@ func newUninstallTestEngine(t *testing.T, extra ...core.Option) (eng *core.Engin
 	}, extra...)
 
 	eng, stateDir = newTestEngine(t, opts...)
-	return eng, stateDir, binaryPath
+	return eng, stateDir, binaryPath, configDir
 }
 
 func TestUninstall_ClosedEngineReturnsErrClosed(t *testing.T) {
@@ -325,6 +339,54 @@ func TestUninstall_OneTeardownFailureAbortsAndKeepsWDMInstalled(t *testing.T) {
 	assert.Empty(t, result.RemovedPaths)
 	assert.FileExists(t, binaryPath)
 	assert.DirExists(t, stateDir)
+}
+
+// A removeFootprint failure (here the config dir, removed FIRST, is made
+// un-removable) aborts the uninstall AFTER teardown but BEFORE the state/logs
+// dir is touched, so the §24 log sink survives and the best-effort
+// "operation failed" record naming failure_point=remove_footprint lands and is
+// assertable. preflightFootprint only path-validates, so a permission failure
+// passes it and surfaces specifically at removeFootprint.
+func TestUninstall_RemoveFootprintFailureLogsResult(t *testing.T) {
+	t.Parallel()
+
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based removal denial does not apply to root")
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	eng, stateDir, _, configDir := newUninstallTestEngineWithConfigDir(t, core.WithLogger(logger))
+
+	// Empty managed set: mkdir the stack base with no apps so teardown is a
+	// clean no-op and the op reaches removeFootprint.
+	require.NoError(t, os.MkdirAll(stopAllStackBase(stateDir), 0o755))
+	client := newUninstallDockerClient(t)
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(client))
+
+	// Make the config dir un-removable: a child file plus a read+execute-only
+	// (no write) mode makes os.RemoveAll fail with EACCES on the child. Restore
+	// write before anything that could fail so t.TempDir cleanup always works.
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o755) })
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("x"), 0o600))
+	require.NoError(t, os.Chmod(configDir, 0o500))
+
+	result, err := eng.Uninstall(t.Context(), types.UninstallRequest{}, nil, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.Nil(t, result)
+
+	// §24: the failure record names remove_footprint, not preflight_footprint.
+	rec := findOpFailureRecord(t, logs.Bytes(), "remove_footprint")
+	require.NotNil(t, rec, "a removeFootprint failure must emit a remove_footprint failure record")
+	assert.Equal(t, "uninstall", rec["action"])
+
+	// The abort happened at the config-dir step, before the state/logs dir that
+	// holds the sink: the state dir survives.
+	assert.DirExists(t, stateDir)
+
+	// No false success: the op-completed record must NOT be present.
+	assert.NotContains(t, logs.String(), "core: operation completed")
 }
 
 // findOpFailureRecord scans newline-delimited slog JSON for a
