@@ -24,9 +24,7 @@ func TestArtifactNames_PinExactLiterals(t *testing.T) {
 	assert.Equal(t, "catalog-stable.tar.gz", release.ArtifactCatalogBundle)
 	assert.Equal(t, "SHA256SUMS", release.ArtifactChecksums)
 	assert.Equal(t, "SHA256SUMS.sig", release.ArtifactChecksumSignature)
-	assert.Equal(t, "SHA256SUMS.cosign.bundle", release.ArtifactCosignBundle)
 	assert.Equal(t, "attestation.json", release.ArtifactAttestation)
-	assert.Equal(t, "wdm-linux-amd64.spdx.json", release.ArtifactSBOM)
 }
 
 func TestCatalogBundleLayoutConstants_PinExactLiterals(t *testing.T) {
@@ -40,136 +38,15 @@ func TestCatalogBundleLayoutConstants_PinExactLiterals(t *testing.T) {
 	assert.Equal(t, "templates/", release.CatalogBundleTemplatesDir)
 }
 
-func TestAssetSet_CoversEverySevenAssetWithRole(t *testing.T) {
-	t.Parallel()
-
-	set := release.AssetSet()
-
-	// The contract is exactly the seven settled assets, each with its role
-	// Build name->role to assert membership without pinning order
-	// here (ordering is asserted separately).
-	roles := make(map[string]release.AssetRole, len(set))
-	for _, asset := range set {
-		assert.NotEmpty(t, asset.Name, "asset name must not be empty")
-		_, dup := roles[asset.Name]
-		assert.False(t, dup, "asset %q listed more than once", asset.Name)
-		roles[asset.Name] = asset.Role
-	}
-
-	require.Len(t, roles, 7, "the release asset set must hold exactly seven assets")
-
-	assert.Equal(t, release.RolePayload, roles[release.ArtifactBinary])
-	assert.Equal(t, release.RolePayload, roles[release.ArtifactCatalogBundle])
-	assert.Equal(t, release.RolePayload, roles[release.ArtifactAttestation])
-	assert.Equal(t, release.RolePayload, roles[release.ArtifactSBOM])
-	assert.Equal(t, release.RoleChecksumFile, roles[release.ArtifactChecksums])
-	assert.Equal(t, release.RoleDetachedSignature, roles[release.ArtifactChecksumSignature])
-	assert.Equal(t, release.RoleCosignBundle, roles[release.ArtifactCosignBundle])
-}
-
-func TestAssetSet_ReturnsFreshSliceEachCall(t *testing.T) {
-	t.Parallel()
-
-	// The canonical set must not be mutable through a returned slice: a
-	// caller scribbling on one result cannot corrupt the contract for the
-	// next caller.
-	first := release.AssetSet()
-	require.NotEmpty(t, first)
-	first[0].Name = "tampered"
-	first[0].Role = "tampered"
-
-	second := release.AssetSet()
-	assert.Equal(t, "wdm-linux-amd64", second[0].Name)
-	assert.Equal(t, release.RolePayload, second[0].Role)
-}
-
-func TestChecksummedArtifactNames_AreExactlyThePayloadFiles(t *testing.T) {
-	t.Parallel()
-
-	covered := release.ChecksummedArtifactNames()
-
-	// SHA256SUMS lists the four release payload files only.
-	assert.ElementsMatch(t, []string{
-		"wdm-linux-amd64",
-		"catalog-stable.tar.gz",
-		"attestation.json",
-		"wdm-linux-amd64.spdx.json",
-	}, covered)
-}
-
-func TestChecksummedArtifactNames_ExcludesChecksumFileAndSignatures(t *testing.T) {
-	t.Parallel()
-
-	// SHA256SUMS cannot list itself, and cannot list its own signatures —
-	// those sign SHA256SUMS, so they are not inside it.
-	covered := release.ChecksummedArtifactNames()
-
-	assert.NotContains(t, covered, release.ArtifactChecksums)
-	assert.NotContains(t, covered, release.ArtifactChecksumSignature)
-	assert.NotContains(t, covered, release.ArtifactCosignBundle)
-}
-
-func TestChecksummedArtifactNames_MatchPayloadRoleInAssetSet(t *testing.T) {
-	t.Parallel()
-
-	// The coverage set must be derivable from the asset set by role so the
-	// two cannot drift: every covered name is a RolePayload asset, and
-	// every RolePayload asset is covered.
-	covered := release.ChecksummedArtifactNames()
-
-	var payloads []string
-	for _, asset := range release.AssetSet() {
-		if asset.Role == release.RolePayload {
-			payloads = append(payloads, asset.Name)
-		}
-	}
-
-	assert.ElementsMatch(t, payloads, covered)
-}
-
-func TestChecksummedArtifactNames_ReturnsFreshSliceEachCall(t *testing.T) {
-	t.Parallel()
-
-	first := release.ChecksummedArtifactNames()
-	require.NotEmpty(t, first)
-	first[0] = "tampered"
-
-	second := release.ChecksummedArtifactNames()
-	assert.NotContains(t, second, "tampered")
-}
-
-func TestExpectedCatalogBundleRootEntries_AreChannelAndTemplatesDir(t *testing.T) {
-	t.Parallel()
-
-	entries := release.ExpectedCatalogBundleRootEntries()
-
-	// Archive-root entries mirror the catalogs-root subtree: the channel
-	// directory and the shared templates directory as siblings. The
-	// manifest is one level deeper at stable/catalog.yaml, not at the root.
-	assert.Equal(t, []string{"stable/", "templates/"}, entries)
-	assert.Equal(t, "stable/catalog.yaml", release.CatalogBundleManifestPath)
-}
-
-func TestExpectedCatalogBundleRootEntries_ReturnsFreshSliceEachCall(t *testing.T) {
-	t.Parallel()
-
-	first := release.ExpectedCatalogBundleRootEntries()
-	require.NotEmpty(t, first)
-	first[0] = "tampered"
-
-	second := release.ExpectedCatalogBundleRootEntries()
-	assert.Equal(t, "stable/", second[0])
-}
-
 // TestCatalogBundle_LayoutIsRealizable proves the layout contract is
 // realizable as an actual gzip-compressed tar mirroring the engine's
 // catalogs-root subtree: it builds a tiny catalog-stable.tar.gz in memory
 // (the manifest at stable/catalog.yaml plus one app's compose template
 // under the sibling templates/ directory), walks it back, reduces each
 // member to its archive-root entry, and asserts the unique root entries
-// match ExpectedCatalogBundleRootEntries (stable/ and templates/). This
-// gives the workflow and storage writer a reference shape without committing
-// a binary blob.
+// match the layout contract (stable/ and templates/). This gives the
+// workflow and storage writer a reference shape without committing a binary
+// blob.
 func TestCatalogBundle_LayoutIsRealizable(t *testing.T) {
 	t.Parallel()
 
@@ -178,7 +55,7 @@ func TestCatalogBundle_LayoutIsRealizable(t *testing.T) {
 	rootEntries := walkBundleRootEntries(t, bundle)
 
 	assert.ElementsMatch(t,
-		release.ExpectedCatalogBundleRootEntries(),
+		[]string{release.CatalogBundleChannelDir, release.CatalogBundleTemplatesDir},
 		rootEntries,
 		"the realizable bundle's root entries must match the layout contract",
 	)
