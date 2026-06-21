@@ -253,9 +253,25 @@ wdm uninstall --yes
 | `~/.local/bin/wdm` and `~/.local/bin/wdm.previous` | The binary and the previous version kept for self-update rollback. |
 | `~/.config/wdm/config.toml` | User settings, schema-versioned. |
 | `~/.local/state/wdm/runtime.lock` | The global runtime lock for state-changing operations. |
-| `~/.local/state/wdm/logs/` | Logs, retained for about 30 days or 50 files. |
+| `~/.local/state/wdm/logs/` | Diagnostic logs: the current `latest.log` plus timestamped archives, owner-only (0700/0600), retained to the stricter of 30 days or 50 files. |
 | `~/.local/share/wdm/catalogs/<channel>/` | Verified catalog data, per channel. |
 | `~/docker/<app>/` | Each managed stack: its Compose file, `.env`, `.wdm.lock`, and `.wdm-backups/`. |
+
+## Diagnostic logs
+
+`wdm` writes a redacted diagnostic log of its own runs to
+`~/.local/state/wdm/logs/latest.log`. Each run starts a fresh `latest.log` and
+archives the previous one as `wdm-YYYY-MM-DD-HHMMSS.log`. Archives are pruned to
+the stricter of 30 days or 50 files; `latest.log` is always kept. Files are
+owner-only (directory `0700`, files `0600`).
+
+Secrets — passwords, tokens, generated secrets, private keys, and `.env`
+contents — are redacted before anything reaches the log. Even so, **review
+`latest.log` before sharing it on GitHub or anywhere public**, in case it
+contains paths or app names you would rather not disclose.
+
+These logs are separate from `wdm apps logs <app-id>`, which streams a stack's
+own container logs.
 
 ## Verification
 
