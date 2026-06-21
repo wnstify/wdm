@@ -291,6 +291,14 @@ func New(opts ...Option) (*Engine, error) {
 		logFile = closer
 	}
 
+	// Release the log handle if construction fails before the Engine owns it.
+	constructed := false
+	defer func() {
+		if !constructed && logFile != nil {
+			_ = logFile.Close() //nolint:errcheck // best-effort unwind on a failure path; the construction error is what the caller needs.
+		}
+	}()
+
 	settings, err := loadConfigOrDefaults(cfg.configPath)
 	if err != nil {
 		return nil, fmt.Errorf("core.New: %w", err)
@@ -301,6 +309,7 @@ func New(opts ...Option) (*Engine, error) {
 		return nil, fmt.Errorf("core.New: %w", err)
 	}
 
+	constructed = true
 	return &Engine{
 		settings:                   settings,
 		configPath:                 cfg.configPath,

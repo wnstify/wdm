@@ -54,6 +54,70 @@ func TestNew_DefaultLoggerProductionPathConstructsCleanly(t *testing.T) {
 	t.Cleanup(func() { _ = eng.Close() })
 }
 
+// TestNew_DefaultLoggerClosedWhenConstructionFailsAfterBuild covers Fix 3:
+// when the default logger branch opens latest.log but a later step fails
+// (here loadConfigOrDefaults rejects a malformed config), New must return an
+// error and the deferred unwind must release the log handle rather than
+// leaking the fd. WithLogger is omitted so the file-backed logger is built.
+func TestNew_DefaultLoggerClosedWhenConstructionFailsAfterBuild(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	dataDir := filepath.Join(tmp, "data")
+	stackBase := filepath.Join(tmp, "stacks")
+	require.NoError(t, os.MkdirAll(stackBase, 0o755))
+
+	// Malformed TOML so LoadConfig fails with a non-ErrNotExist error,
+	// driving loadConfigOrDefaults to return after the logger is built.
+	configPath := filepath.Join(tmp, "config.toml")
+	require.NoError(t, os.WriteFile(configPath, []byte("not = valid = toml ="), 0o600))
+
+	eng, err := core.New(
+		core.WithStateDir(stateDir),
+		core.WithDataDir(dataDir),
+		core.WithStackBaseDir(stackBase),
+		core.WithConfigPath(configPath),
+	)
+	require.Error(t, err, "malformed config after logger build must fail construction")
+	require.Nil(t, eng, "failed construction must not return an engine")
+}
+
+// TestNew_DefaultLoggerClosedWhenStackBaseInvalid covers the Fix 3 unwind on
+// the resolveStackBase failure branch: with no WithStackBaseDir override, a
+// valid config whose base_stack_path is relative passes config load but fails
+// the absolute-path check in resolveStackBase. New must return an error after
+// the file-backed logger was built, exercising the deferred close on that
+// later branch (engine.go resolveStackBase return).
+func TestNew_DefaultLoggerClosedWhenStackBaseInvalid(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	dataDir := filepath.Join(tmp, "data")
+
+	// Schema-valid config (base_stack_path only needs minLength 1) whose
+	// stack base is relative, so loadConfigOrDefaults succeeds and
+	// resolveStackBase rejects it as non-absolute.
+	configPath := filepath.Join(tmp, "config.toml")
+	body := "" +
+		"schema_version = 1\n" +
+		"base_stack_path = \"relative-stacks\"\n" +
+		"timezone = \"\"\n" +
+		"default_docker_network = \"wdm_default\"\n" +
+		"catalog_channel = \"stable\"\n" +
+		"update_check_preference = \"daily-on-launch\"\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(body), 0o600))
+
+	eng, err := core.New(
+		core.WithStateDir(stateDir),
+		core.WithDataDir(dataDir),
+		core.WithConfigPath(configPath),
+	)
+	require.Error(t, err, "a relative stack base must fail construction")
+	require.Nil(t, eng, "failed construction must not return an engine")
+}
+
 func TestSettings_ReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
