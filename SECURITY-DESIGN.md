@@ -115,8 +115,8 @@ Before granting write, admin, release, secret, or ruleset access, the maintainer
 
 Escalated access is removed when it is no longer needed. Release signing secrets and repository security settings remain maintainer-controlled unless a future governance change documents a different owner and review process.
 
-## Solo-Maintainer Review Posture
+## Two-Maintainer Review Posture
 
-The project is currently maintained by a single human maintainer, so independent human approval is not required until a second maintainer with write access exists. The project does not use alternate accounts to simulate independent review.
+The project has two human maintainers with Write access (the `webnestify-dev` team). Independent human approval is required: classic branch protection on `dev` and `main` mandates one approving review, and self-approval does not count, so the non-author maintainer reviews every pull request. `enforce_admins` applies the gate to the owner's own pull requests. The project does not use alternate accounts to simulate independent review.
 
-Compensating controls are public pull requests into `main`, signed commits, DCO signoff, required CI, CodeQL, govulncheck, protected `main`, protected `dev`, protected release tags, signed release artifacts, and public issue/security reporting.
+Controls are independent two-person review, public pull requests, signed commits, DCO signoff, required CI (`test`, `lint`, `govulncheck`), CodeQL, govulncheck, protected `main`, protected `dev`, protected release tags, signed release artifacts, and public issue/security reporting.
