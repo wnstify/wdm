@@ -74,7 +74,6 @@ func TestModel_FirstRunWizardMapsInstallProgressAndConfirmationToSteps(t *testin
 
 	m = updateModel(t, m, progressMsg{
 		step:    types.StepInstallRender,
-		pct:     25,
 		message: "rendering install",
 	})
 	view := m.View()
@@ -84,7 +83,6 @@ func TestModel_FirstRunWizardMapsInstallProgressAndConfirmationToSteps(t *testin
 
 	m = updateModel(t, m, progressMsg{
 		step:    types.StepInstallComposeValidate,
-		pct:     30,
 		message: "validating compose config",
 	})
 	view = m.View()

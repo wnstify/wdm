@@ -185,12 +185,9 @@ func TestIsCode_FalseForNilError(t *testing.T) {
 func TestSentinels_AreDistinctAndStable(t *testing.T) {
 	t.Parallel()
 
-	require.NotNil(t, types.ErrNotImplemented)
 	require.NotNil(t, types.ErrConfigInvalid)
 	require.NotNil(t, types.ErrStaleState)
 
-	assert.NotEqual(t, types.ErrNotImplemented, types.ErrConfigInvalid)
-	assert.NotEqual(t, types.ErrNotImplemented, types.ErrStaleState)
 	assert.NotEqual(t, types.ErrConfigInvalid, types.ErrStaleState)
 }
 
@@ -205,7 +202,6 @@ func TestSentinels_DetectableViaErrorsIs(t *testing.T) {
 		name string
 		s    error
 	}{
-		{"ErrNotImplemented", types.ErrNotImplemented},
 		{"ErrConfigInvalid", types.ErrConfigInvalid},
 		{"ErrStaleState", types.ErrStaleState},
 	}

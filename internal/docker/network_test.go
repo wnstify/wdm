@@ -27,7 +27,7 @@ func (f *ensureNetworkFakeClient) Run(ctx context.Context, inv Invocation) (Comm
 func TestEnsureNetwork_RejectsNilClient(t *testing.T) {
 	t.Parallel()
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		nil,
 		NetworkSpec{Name: "wdm_default", Internal: true},
@@ -91,7 +91,7 @@ func TestEnsureNetwork_RejectsInvalidNetworkSpecBeforeRunningClient(t *testing.T
 			t.Parallel()
 
 			fake := &ensureNetworkFakeClient{}
-			err := EnsureNetwork(t.Context(), fake, tt.network)
+			_, err := EnsureNetworkReport(t.Context(), fake, tt.network)
 			requireUsageValidationError(t, err)
 			require.Empty(t, fake.calls)
 		})
@@ -131,7 +131,7 @@ func TestEnsureNetwork_InspectMatchSkipsCreate(t *testing.T) {
 				},
 			}
 
-			err := EnsureNetwork(t.Context(), fake, tt.network)
+			_, err := EnsureNetworkReport(t.Context(), fake, tt.network)
 			require.NoError(t, err)
 			require.Len(t, fake.calls, 1)
 			_, isCreate := fake.calls[0].(networkCreateInvocation)
@@ -153,7 +153,7 @@ func TestEnsureNetwork_InspectMismatchReturnsUsageValidationWithExactHint(t *tes
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: networkName, Internal: false},
@@ -243,7 +243,7 @@ func TestEnsureNetwork_InspectMissingCreatesNetwork(t *testing.T) {
 				},
 			}
 
-			err := EnsureNetwork(t.Context(), fake, tt.network)
+			_, err := EnsureNetworkReport(t.Context(), fake, tt.network)
 			require.NoError(t, err)
 			require.Len(t, fake.calls, 2)
 		})
@@ -263,7 +263,7 @@ func TestEnsureNetwork_InspectErrorWithoutMissingIndicatorReturnsUnchanged(t *te
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: "wdm_default", Internal: false},
@@ -290,7 +290,7 @@ func TestEnsureNetwork_UnrelatedNotFoundErrorPropagatesWithoutCreate(t *testing.
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: "wdm_default", Internal: false},
@@ -330,7 +330,7 @@ func TestEnsureNetwork_CreateErrorReturnsUnchanged(t *testing.T) {
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: "wdm_default", Internal: false},
@@ -377,7 +377,7 @@ func TestEnsureNetwork_InspectSuccessRequiresExactTrueOrFalseToken(t *testing.T)
 				},
 			}
 
-			err := EnsureNetwork(
+			_, err := EnsureNetworkReport(
 				t.Context(),
 				fake,
 				NetworkSpec{Name: "wdm_default", Internal: false},
@@ -445,7 +445,7 @@ func TestEnsureNetwork_CreatePassesSubnetAndGateway(t *testing.T) {
 				},
 			}
 
-			err := EnsureNetwork(t.Context(), fake, tt.network)
+			_, err := EnsureNetworkReport(t.Context(), fake, tt.network)
 			require.NoError(t, err)
 			require.Len(t, fake.calls, 2)
 		})
@@ -475,7 +475,7 @@ func TestEnsureNetwork_ExistingSubnetMatchSkipsCreate(t *testing.T) {
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: "wg", Internal: false, Subnet: "10.8.0.0/24"},
@@ -574,7 +574,7 @@ func TestEnsureNetwork_ExistingSubnetMismatchReturnsUsageValidation(t *testing.T
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: "wg", Internal: false, Subnet: "10.8.0.0/24"},
@@ -600,7 +600,7 @@ func TestEnsureNetwork_ExistingNetworkWithNoPinnedSubnetSkipsSubnetCheck(t *test
 		},
 	}
 
-	err := EnsureNetwork(
+	_, err := EnsureNetworkReport(
 		t.Context(),
 		fake,
 		NetworkSpec{Name: "wdm_default", Internal: false},
@@ -643,7 +643,7 @@ func TestEnsureNetwork_RejectsInvalidAddressingBeforeRunningClient(t *testing.T)
 			t.Parallel()
 
 			fake := &ensureNetworkFakeClient{}
-			err := EnsureNetwork(t.Context(), fake, tt.network)
+			_, err := EnsureNetworkReport(t.Context(), fake, tt.network)
 			requireUsageValidationError(t, err)
 			require.Empty(t, fake.calls)
 		})

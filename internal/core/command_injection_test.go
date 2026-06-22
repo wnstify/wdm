@@ -67,7 +67,6 @@ func TestCommandInjection_HostileAppIDRefusedBeforeDocker(t *testing.T) {
 			require.Error(t, err)
 			assert.Nil(t, res)
 			assertUsageValidation(t, err)
-			assert.NotErrorIs(t, err, types.ErrNotImplemented)
 			assert.Zero(t, fake.calls,
 				"a hostile app id must be refused before any docker command")
 		})

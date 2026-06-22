@@ -108,32 +108,6 @@ func TestNewClient_RejectsMissingRepository(t *testing.T) {
 	}
 }
 
-func TestNewClient_WithRepositoryOverridesPolicy(t *testing.T) {
-	t.Parallel()
-
-	var gotPath atomic.Pointer[string]
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		gotPath.Store(&path)
-		_, _ = w.Write(latestReleaseBody(t))
-	}))
-	t.Cleanup(srv.Close)
-
-	c, err := release.NewClient(
-		release.TrustPolicy{SourceRepository: "ignored/policy"},
-		release.WithBaseURL(srv.URL),
-		release.WithHTTPClient(srv.Client()),
-		release.WithRepository("override-owner", "override-repo"),
-	)
-	require.NoError(t, err)
-
-	_, err = c.LatestRelease(context.Background())
-	require.NoError(t, err)
-
-	require.NotNil(t, gotPath.Load())
-	assert.Equal(t, "/repos/override-owner/override-repo/releases/latest", *gotPath.Load())
-}
-
 func TestLatestRelease_ParsesTagAndAssets(t *testing.T) {
 	t.Parallel()
 
@@ -163,7 +137,6 @@ func TestLatestRelease_ParsesTagAndAssets(t *testing.T) {
 	require.Len(t, meta.Assets, 2)
 	assert.Equal(t, "wdm-linux-amd64", meta.Assets[0].Name)
 	assert.Equal(t, "https://example.test/download/wdm-linux-amd64", meta.Assets[0].DownloadURL)
-	assert.Equal(t, int64(1234), meta.Assets[0].Size)
 
 	// Outbound request shape: path, User-Agent (GitHub requires one), and
 	// the GitHub media-type Accept header.
@@ -326,7 +299,6 @@ func TestDownloadAsset_ReturnsExactBytes(t *testing.T) {
 	asset := release.ReleaseAsset{
 		Name:        "wdm-linux-amd64",
 		DownloadURL: srv.URL + "/download/wdm-linux-amd64",
-		Size:        int64(len(payload)),
 	}
 
 	got, err := c.DownloadAsset(context.Background(), asset, 1<<20)

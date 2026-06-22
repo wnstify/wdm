@@ -58,9 +58,6 @@ func TestRenderEnv_OnlyEnvBytesPopulated(t *testing.T) {
 	if stack.AdditionalFiles != nil {
 		t.Errorf("AdditionalFiles = %v, want nil (RenderLabels handles sidecar files)", stack.AdditionalFiles)
 	}
-	if stack.LockManifest != nil {
-		t.Errorf("LockManifest = %v, want nil (later wiring populates this)", stack.LockManifest)
-	}
 	if stack.ServiceLabels != nil {
 		t.Errorf("ServiceLabels = %v, want nil (later wiring populates this)", stack.ServiceLabels)
 	}

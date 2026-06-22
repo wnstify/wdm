@@ -135,10 +135,7 @@ install a verified update.`,
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), status)
-			}
-			return writeSelfUpdateStatus(cmd.OutOrStdout(), status)
+			return emitResult(cmd, useJSON, status, writeSelfUpdateStatus)
 		},
 	}
 
@@ -260,15 +257,7 @@ latest verified release differs.`,
 			// replaces the binary while keeping a rollback copy, the confirmation rules);
 			// self-update never produces a database-risk confirmation, so
 			// acceptDBRisk is wired false.
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), assumeYes, false)
-
-			// JSON mode suppresses progress so the single envelope is the only
-			// thing on stdout (PRD §32). Plain mode sends progress to stderr so
-			// stdout carries just the finish block.
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, assumeYes, false, useJSON)
 
 			result, err := eng.ApplySelfUpdate(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {
@@ -294,10 +283,7 @@ latest verified release differs.`,
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), result)
-			}
-			return writeSelfUpdateFinish(cmd.OutOrStdout(), result)
+			return emitResult(cmd, useJSON, result, writeSelfUpdateFinish)
 		},
 	}
 

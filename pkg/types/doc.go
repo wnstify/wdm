@@ -9,8 +9,7 @@
 // Type roll-call:
 //   - Envelope, NewEnvelope — JSON envelope used by --json and IPC (PRD §32)
 //   - Error, ErrorCode, IsCode — typed error payload mapped to CLI exit codes (PRD §27, §37)
-//   - ErrNotImplemented,
-//     ErrConfigInvalid,
+//   - ErrConfigInvalid,
 //     ErrStaleState — sentinel errors used across the engine
 //   - Settings — user-configurable settings persisted at
 //     ~/.config/wdm/config.toml (PRD §34)
@@ -57,15 +56,14 @@
 //     PangolinGuidance — lifecycle support types used by install,
 //     update, remove, and status payloads
 //   - LogsRequest, LogLine — Engine.Logs streaming payloads (PRD §24)
-//   - Progress,
-//     StepInstall* / StepUpdate* /
+//   - StepInstall* / StepUpdate* /
 //     StepRemove* / StepRestart* / StepReconfigure* /
 //     StepStopAll* / StepUninstall* /
 //     StepRestore* / StepDelete* /
 //     StepCatalogUpdate* /
 //     StepSelfUpdate*
-//     constants — on-the-wire equivalent of the ProgressFn
-//     callback args, used by the future GUI/IPC (PRD §37)
+//     constants — stable progress step identifiers passed to the
+//     ProgressFn callback (PRD §37)
 //   - Confirmation — payload passed to a Confirmer (PRD §37)
 //
 // fields additively; added the engine-gap request/result shapes;

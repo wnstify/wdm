@@ -7,7 +7,6 @@ import (
 
 	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/security"
-	"github.com/wnstify/wdm/internal/state"
 	"github.com/wnstify/wdm/pkg/types"
 )
 
@@ -198,32 +197,16 @@ func confirmStopAll(
 	apps []types.AppInfo,
 	onProgress types.ProgressFn,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if confirmer == nil {
-		return types.NewError(
-			types.ErrCodeUsageValidation,
-			"confirmer is required before stopping all apps",
-			"pass a confirmer that can authorize docker compose stop",
-		)
-	}
-	if onProgress != nil {
-		onProgress(types.StepStopAllConfirm, 25, "confirming stop all")
-	}
-
-	confirmed, err := confirmer.Confirm(ctx, stopAllConfirmation(apps))
-	if err != nil {
-		return fmt.Errorf("core.stopall: confirming stop all: %w", err)
-	}
-	if !confirmed {
-		return types.NewError(
-			types.ErrCodeUserCanceled,
-			"stop all canceled before docker compose stop",
-			"re-run the stop and confirm the prompt",
-		)
-	}
-	return nil
+	return confirmLifecycleOp(ctx, confirmer, stopAllConfirmation(apps), confirmStrings{
+		stepID:         types.StepStopAllConfirm,
+		stepPct:        25,
+		stepMessage:    "confirming stop all",
+		nilMessage:     "confirmer is required before stopping all apps",
+		nilHint:        "pass a confirmer that can authorize docker compose stop",
+		confirmErrWrap: "core.stopall: confirming stop all",
+		declineMessage: "stop all canceled before docker compose stop",
+		declineHint:    "re-run the stop and confirm the prompt",
+	}, onProgress)
 }
 
 // stopAllConfirmation assembles the SAFE batch consequence payload: an
@@ -324,81 +307,17 @@ func (e *Engine) stopOneStack(
 	appID string,
 ) types.StoppedApp {
 	outcome := types.StoppedApp{AppID: appID}
-
-	stackPath, err := security.SafeJoin(e.stackBase, appID)
-	if err != nil {
-		outcome.Error = fmt.Sprintf("app id is unsafe: %v", err)
-		return outcome
-	}
-
-	handle, err := acquireInstallStackLock(ctx, stackPath)
-	if err != nil {
-		outcome.Error = err.Error()
-		return outcome
-	}
-	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
-
-	lock, err := reconfirmManagedStack(handle, appID)
-	if err != nil {
-		outcome.Error = err.Error()
-		return outcome
-	}
-	if lock.ComposeProject == "" {
-		outcome.Error = "stack manifest is missing its compose project"
-		return outcome
-	}
-	outcome.ComposeProject = lock.ComposeProject
-
-	project, err := stopAllComposeProject(stackPath, lock)
-	if err != nil {
-		outcome.Error = err.Error()
-		return outcome
-	}
-
-	if err := docker.ComposeStop(ctx, client, project); err != nil {
-		outcome.Error = err.Error()
-		return outcome
-	}
+	_, composeProject, errMsg := e.perStackOp(ctx, appID, func(opCtx context.Context, project docker.ComposeProject) error {
+		return docker.ComposeStop(opCtx, client, project)
+	})
+	outcome.ComposeProject = composeProject
+	outcome.Error = errMsg
 	return outcome
 }
 
-// stopAllComposeProject builds the validated [docker.ComposeProject] for
-// one stack's stop from the resolved stack path and the manifest's
-// Compose project name, resolving the compose and env file paths under
-// the stack path via [security.SafeJoin] (PRD §12, §13). It mirrors
-// restart's restartComposeProject.
-func stopAllComposeProject(stackPath string, lock *state.StackLock) (docker.ComposeProject, error) {
-	composePath, err := security.SafeJoin(stackPath, installComposeFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	envPath, err := security.SafeJoin(stackPath, installEnvFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	return docker.ComposeProject{
-		ComposeFile: composePath,
-		EnvFile:     envPath,
-		ProjectName: lock.ComposeProject,
-	}, nil
-}
-
 // stopAllProgressPct spreads the per-stack execution events across the
-// 30-95 band so the progress bar advances as stacks are stopped. With no
-// apps the planning band already covered the work, so this is never
-// called.
+// 30-95 band so the progress bar advances as stacks are stopped.
 func stopAllProgressPct(index, total int) float64 {
-	if total <= 0 {
-		return 95
-	}
 	const start, span = 30.0, 65.0
 	return start + span*float64(index)/float64(total)
 }

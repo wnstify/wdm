@@ -82,11 +82,6 @@ type ReleaseAsset struct {
 	// DownloadURL is the asset's browser_download_url — the URL
 	// [Client.DownloadAsset] GETs to fetch the bytes.
 	DownloadURL string `json:"browser_download_url"`
-
-	// Size is the asset size in bytes as GitHub reports it. It is advisory
-	// metadata; the download enforces its own caller-supplied cap rather
-	// than trust this value.
-	Size int64 `json:"size"`
 }
 
 // Metadata is the parsed subset of a GitHub release object: its tag and
@@ -118,8 +113,8 @@ func (m Metadata) FindAsset(name string) (ReleaseAsset, bool) {
 // header and stores no credentials. Every failure maps to
 // [types.ErrCodeNetworkFailure]; the client performs no verification.
 // Construct a Client with [NewClient] and configure it with the functional
-// options ([WithHTTPClient], [WithBaseURL], [WithRepository]). A zero
-// Client is not usable; go through the constructor.
+// options ([WithHTTPClient], [WithBaseURL]). A zero Client is not usable; go
+// through the constructor.
 type Client struct {
 	doer    httpDoer
 	baseURL string
@@ -155,30 +150,16 @@ func WithBaseURL(baseURL string) Option {
 	}
 }
 
-// WithRepository overrides the owner and repo the client queries (default
-// derived from the supplied [TrustPolicy.SourceRepository] in
-// [NewClient]). A blank owner or repo is ignored, leaving the default
-// identity in place.
-func WithRepository(owner, repo string) Option {
-	return func(c *Client) {
-		owner = strings.TrimSpace(owner)
-		repo = strings.TrimSpace(repo)
-		if owner != "" && repo != "" {
-			c.owner = owner
-			c.repo = repo
-		}
-	}
-}
-
 // NewClient builds a release metadata client for the repository named by
 // policy.SourceRepository (owner/name). The default HTTP client carries a
 // bounded timeout ([defaultRequestTimeout]); [WithHTTPClient] replaces it
 // for tests. The default base URL is the public GitHub REST API;
-// [WithBaseURL] and [WithRepository] override the endpoint and identity.
+// [WithBaseURL] overrides the endpoint. The owner/name identity is derived
+// from policy.SourceRepository.
 // It returns a typed [types.ErrCodeNetworkFailure] when no usable
-// repository identity remains after applying options — neither
-// policy.SourceRepository nor a [WithRepository] override produced a valid
-// owner/name pair — because a client with no target cannot make a request.
+// repository identity remains — policy.SourceRepository did not produce a
+// valid owner/name pair — because a client with no target cannot make a
+// request.
 func NewClient(policy TrustPolicy, opts ...Option) (*Client, error) {
 	owner, repo := splitOwnerRepo(policy.SourceRepository)
 

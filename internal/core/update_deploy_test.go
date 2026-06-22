@@ -881,7 +881,7 @@ func TestUpdate_ApplyEmitsNoInstallPrefixedStepIDs(t *testing.T) {
 	// Call order: config(1), network inspect(2, missing -> create),
 	// network create(3), pull(4), up(5), digest(6), container ls(7),
 	// container inspect(8). The network inspect must report "missing" so
-	// EnsureNetwork takes its create path and the apply runs to completion.
+	// EnsureNetworkReport takes its create path and the apply runs to completion.
 	fx.fake.runFn = func(call int, _ docker.Invocation) (docker.CommandResult, error) {
 		if call == 2 {
 			return missingNetworkResult("wdm_back")

@@ -164,7 +164,7 @@ type Input struct {
 	// catalog browsing and finish-screen copy: passing app.name would
 	// drift the wdm.app label off the slug and break managed-check
 	// identity matching.
-	// Ignored by [RenderEnv] and [RenderCompose].
+	// Ignored by [RenderEnv].
 	AppID string
 
 	// AdditionalFiles is the render-local projection of catalog
@@ -172,7 +172,7 @@ type Input struct {
 	// internal/core reads each source file and passes the bytes as
 	// [AdditionalFile.Template]; render verifies [AdditionalFile.Mount]
 	// against the parsed Compose volumes and renders the template in
-	// memory. Ignored by [RenderEnv] and [RenderCompose].
+	// memory. Ignored by [RenderEnv].
 	AdditionalFiles []AdditionalFile
 
 	// ConfigGeneration is the render-local projection of
@@ -182,7 +182,7 @@ type Input struct {
 	// as [ConfigArtifact.Template]; render parses it against [Values],
 	// verifies [ConfigArtifact.Mount] against the parsed Compose
 	// volumes, and traversal-checks [ConfigArtifact.Dest] before
-	// rendering. Ignored by [RenderEnv] and [RenderCompose]; rendered,
+	// rendering. Ignored by [RenderEnv]; rendered,
 	// mount-verified, and dest-traversal-checked by [RenderLabels].
 	ConfigGeneration []ConfigArtifact
 }
@@ -220,25 +220,22 @@ type ConfigArtifact struct {
 // the downstream write path (internal/state) commits to disk or that
 // the install/update orchestrator consults at deploy time.
 // Population is split by render entry point:
-// [RenderEnv] fills [EnvBytes], [RenderCompose] fills [ComposeBytes],
-// [RenderLabels] fills [ComposeBytes], [ServiceLabels], and
-// [AdditionalFiles] when [Input.AdditionalFiles] is supplied.
-// [LockManifest] stays declared-but-nil by design (core owns manifest
-// construction). Each field's godoc below names the entry point that
+// [RenderEnv] fills [EnvBytes]; [RenderLabels] fills [ComposeBytes],
+// [ServiceLabels], and [AdditionalFiles] when [Input.AdditionalFiles] is
+// supplied. The .wdm.lock manifest is NOT a render artifact: core owns
+// manifest construction in internal/state (render must not import it per the
+// internal-render-pure depguard rule, and the manifest needs deploy-time data
+// render cannot know). Each field's godoc below names the entry point that
 // populates it.
 // Render is pure: it produces this value in memory with no filesystem
 // side effects. Only the downstream write path touches disk.
 type RenderedStack struct {
 	// ComposeBytes is the rendered docker-compose.yml content.
-	// [RenderCompose] populates it with the template body and
-	// [Input.Values] substitution applied, no further mutation.
-	// [RenderLabels] populates it with the same rendering plus the
-	// mandatory wdm.managed="true" / wdm.app=<AppID> label injection
-	// via the gopkg.in/yaml.v3 parse-
+	// [RenderLabels] populates it: the template body with [Input.Values]
+	// substitution applied, plus the mandatory wdm.managed="true" /
+	// wdm.app=<AppID> label injection via the gopkg.in/yaml.v3 parse-
 	// mutate-emit cycle. The internal/core install/update path calls
-	// [RenderLabels] so the on-disk docker-compose.yml carries the
-	// labels; [RenderCompose] remains useful for unit-level template
-	// debugging where label state is irrelevant.
+	// [RenderLabels] so the on-disk docker-compose.yml carries the labels.
 	// Repeated renders of the same Input are byte-identical:
 	// text/template Execute is deterministic and action-free bodies
 	// are emitted contiguously, yaml.v3 iteration follows the Content
@@ -265,25 +262,13 @@ type RenderedStack struct {
 	// [AdditionalFiles].
 	ConfigArtifacts []RenderedFile
 
-	// LockManifest was reserved for a render-side contribution to
-	// .wdm.lock. settled manifest ownership in
-	// internal/core instead: the lock shape lives in internal/state
-	// (which render must not import per the internal-render-pure
-	// depguard rule) and the manifest needs deploy-time data render
-	// cannot know (image digests, operation timestamps), so the
-	// install path builds state.StackLock directly and persists it
-	// through the held per-stack flock fd. The field stays declared
-	// for the RenderedStack shape contract and remains nil.
-	LockManifest []byte
-
 	// VolumeMounts lists the volume mount specs declared by the
 	// rendered Compose services (e.g. "./data:/app/data" or
 	// "named-volume:/var/lib/data"), sorted and deduplicated.
 	// Populated by [RenderLabels] during the same YAML walk that
 	// injects labels; internal/core surfaces the entries in the
 	// pre-deployment confirmation payload so the user sees the volumes
-	// the deployment will create. Not populated by [RenderCompose] or
-	// [RenderEnv].
+	// the deployment will create. Not populated by [RenderEnv].
 	VolumeMounts []string
 
 	// ServiceLabels is the per-service label set the renderer enforces
@@ -292,7 +277,7 @@ type RenderedStack struct {
 	// is keyed by Compose service name; the inner map carries label
 	// key → value, including any pre-existing labels the template
 	// declared alongside the injected pair. Populated by
-	// [RenderLabels]; not by [RenderCompose] or [RenderEnv].
+	// [RenderLabels]; not by [RenderEnv].
 	ServiceLabels map[string]map[string]string
 }
 

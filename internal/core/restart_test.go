@@ -435,8 +435,6 @@ func TestRestart_RefusesUnmanagedMissingAndEmptyAppIDs(t *testing.T) {
 
 			res, err := eng.Restart(t.Context(), types.RestartRequest{AppID: tt.appID}, onProgress, &fakeConfirmer{})
 			require.Error(t, err)
-			assert.NotErrorIs(t, err, types.ErrNotImplemented,
-				"a managed-only refusal must not surface the retired stub boundary")
 			assert.Nil(t, res)
 			assertUsageValidation(t, err)
 			assert.ErrorContains(t, err, tt.wantContains)

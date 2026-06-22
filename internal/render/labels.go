@@ -21,7 +21,7 @@ import (
 // render-time refusal, not a run-time warning; internal/core does
 // NOT re-run the check.
 // Structural validation runs before the template is parsed (as in
-// [RenderEnv] and [RenderCompose]):
+// [RenderEnv]):
 //   - [ValidatePlaceholders] checks [Input.Placeholders] for empty
 //     names, invalid types, and duplicates.
 //   - [ValidateResolution] checks [Input.Values] against the
@@ -57,9 +57,8 @@ import (
 // present. When [Input.ConfigGeneration] is supplied it likewise
 // traversal-checks each [ConfigArtifact.Dest], verifies the declared
 // mounts against service volumes, and renders the artifacts into
-// [RenderedStack.ConfigArtifacts]. [RenderedStack.EnvBytes] and
-// [RenderedStack.LockManifest] stay zero per the [RenderedStack] godoc
-// staging contract.
+// [RenderedStack.ConfigArtifacts]. [RenderedStack.EnvBytes] stays zero per
+// the [RenderedStack] godoc staging contract.
 //
 //nolint:revive // "RenderLabels" intentionally mirrors the Render* family. The verb-noun pairing parallels Validate* (ValidatePlaceholders, ValidateResolution); renaming to "Labels" would lose verb intent and collide with the labels noun used by Compose.
 func RenderLabels(input Input) (RenderedStack, error) {

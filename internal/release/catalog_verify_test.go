@@ -99,10 +99,10 @@ func (fc *fakeCatalog) metadata() *release.Metadata {
 	return &release.Metadata{
 		Tag: testTag,
 		Assets: []release.ReleaseAsset{
-			{Name: release.ArtifactCatalogBundle, DownloadURL: url(release.ArtifactCatalogBundle), Size: int64(len(fc.bundle))},
-			{Name: release.ArtifactChecksums, DownloadURL: url(release.ArtifactChecksums), Size: int64(len(fc.sums))},
-			{Name: release.ArtifactChecksumSignature, DownloadURL: url(release.ArtifactChecksumSignature), Size: int64(len(fc.sig))},
-			{Name: release.ArtifactAttestation, DownloadURL: url(release.ArtifactAttestation), Size: int64(len(fc.attestation))},
+			{Name: release.ArtifactCatalogBundle, DownloadURL: url(release.ArtifactCatalogBundle)},
+			{Name: release.ArtifactChecksums, DownloadURL: url(release.ArtifactChecksums)},
+			{Name: release.ArtifactChecksumSignature, DownloadURL: url(release.ArtifactChecksumSignature)},
+			{Name: release.ArtifactAttestation, DownloadURL: url(release.ArtifactAttestation)},
 		},
 	}
 }

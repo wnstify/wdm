@@ -64,9 +64,10 @@ type Engine struct {
 
 	// logger is the engine's structured logger, used by [Engine.List]
 	// to surface scan warnings (PRD §26). Never nil: without WithLogger,
-	// [New] builds a redaction-wrapped logger over [os.Stderr] via
-	// [logging.New] and [security.NewActiveRedactor] so every record
-	// passes through the active redactor before the sink (PRD §11, §24).
+	// [New] builds a redaction-wrapped logger via [buildDefaultLogger],
+	// which wraps a [slog.NewJSONHandler] in [logging.NewRedactingHandler]
+	// over [security.NewActiveRedactor] so every record passes through the
+	// active redactor before the sink (PRD §11, §24).
 	// A caller-supplied logger is used as-is:
 	// the caller already chose the handler chain.
 	logger *slog.Logger

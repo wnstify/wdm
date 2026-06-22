@@ -33,10 +33,4 @@ func TestBundleLayoutMatchesReleaseContract(t *testing.T) {
 	// manifest path, and the engine reads <channel>/catalog.yaml.
 	assert.Equal(t, "catalog.yaml", activeManifestName)
 	assert.True(t, strings.HasSuffix(release.CatalogBundleManifestPath, "/"+activeManifestName))
-
-	// The expected root entries the release contract exposes must be the
-	// channel dir and templates dir this writer materializes.
-	roots := release.ExpectedCatalogBundleRootEntries()
-	assert.Contains(t, roots, release.CatalogBundleChannelDir)
-	assert.Contains(t, roots, release.CatalogBundleTemplatesDir)
 }

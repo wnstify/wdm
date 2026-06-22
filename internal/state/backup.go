@@ -52,7 +52,7 @@ func CreateConfigBackup(
 	operation string,
 	additionalRelativePaths []string,
 ) (snapshotPath string, err error) {
-	if err := validateBackupStackPath(stackPath); err != nil {
+	if err := validateBackupStackPath("state.CreateConfigBackup", stackPath); err != nil {
 		return "", err
 	}
 	if err := validateBackupOperation(operation); err != nil {
@@ -139,7 +139,7 @@ func CreateConfigBackup(
 // When pinnedSnapshot matches a direct child snapshot name, that snapshot is
 // never evicted.
 func PruneConfigBackups(stackPath string, pinnedSnapshot string) (removed []string, err error) {
-	if err := validatePruneBackupStackPath(stackPath); err != nil {
+	if err := validateBackupStackPath("state.PruneConfigBackups", stackPath); err != nil {
 		return nil, err
 	}
 
@@ -255,33 +255,22 @@ func removeBackupSnapshot(path string) error {
 	return nil
 }
 
-func validateBackupStackPath(stackPath string) error {
+// validateBackupStackPath enforces the no-write-outside-stack invariant
+// (PRD §29) for the stack-directory argument: it must be a non-empty
+// absolute path resolving to an existing directory. op is the caller's
+// error prefix (e.g. "state.CreateConfigBackup") so messages stay identical
+// to the per-caller checks they replace.
+func validateBackupStackPath(op, stackPath string) error {
 	if stackPath == "" || !filepath.IsAbs(stackPath) {
-		return fmt.Errorf("state.CreateConfigBackup: stackPath must be a non-empty absolute path, got %q", stackPath)
+		return fmt.Errorf("%s: stackPath must be a non-empty absolute path, got %q", op, stackPath)
 	}
 
 	stackInfo, err := os.Stat(stackPath)
 	if err != nil {
-		return fmt.Errorf("state.CreateConfigBackup: stating stackPath %q: %w", stackPath, err)
+		return fmt.Errorf("%s: stating stackPath %q: %w", op, stackPath, err)
 	}
 	if !stackInfo.IsDir() {
-		return fmt.Errorf("state.CreateConfigBackup: stackPath %q is not a directory", stackPath)
-	}
-
-	return nil
-}
-
-func validatePruneBackupStackPath(stackPath string) error {
-	if stackPath == "" || !filepath.IsAbs(stackPath) {
-		return fmt.Errorf("state.PruneConfigBackups: stackPath must be a non-empty absolute path, got %q", stackPath)
-	}
-
-	stackInfo, err := os.Stat(stackPath)
-	if err != nil {
-		return fmt.Errorf("state.PruneConfigBackups: stating stackPath %q: %w", stackPath, err)
-	}
-	if !stackInfo.IsDir() {
-		return fmt.Errorf("state.PruneConfigBackups: stackPath %q is not a directory", stackPath)
+		return fmt.Errorf("%s: stackPath %q is not a directory", op, stackPath)
 	}
 
 	return nil

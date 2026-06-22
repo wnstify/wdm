@@ -157,10 +157,7 @@ an available update.`,
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), status)
-			}
-			return writeCatalogUpdateStatus(cmd.OutOrStdout(), status)
+			return emitResult(cmd, useJSON, status, writeCatalogUpdateStatus)
 		},
 	}
 
@@ -267,26 +264,14 @@ catalog version (the value 'wdm catalog check' reports).`,
 			// A catalog write is non-destructive config (no app is touched), so
 			// the catalog_update confirmation is SAFE; acceptDBRisk is false
 			// because this flow never produces a database-risk kind.
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), assumeYes, false)
-
-			// JSON mode suppresses progress so the single envelope is the only
-			// thing on stdout (PRD §32). Plain mode streams the
-			// download/verify/write progress to stderr so stdout carries just
-			// the finish block.
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, assumeYes, false, useJSON)
 
 			result, err := eng.ApplyCatalogUpdate(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), result)
-			}
-			return writeCatalogUpdateResult(cmd.OutOrStdout(), result)
+			return emitResult(cmd, useJSON, result, writeCatalogUpdateResult)
 		},
 	}
 
@@ -456,10 +441,7 @@ resource bands, and its risk classification.`,
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), app)
-			}
-			return writeCatalogApp(cmd.OutOrStdout(), app)
+			return emitResult(cmd, useJSON, app, writeCatalogApp)
 		},
 	}
 

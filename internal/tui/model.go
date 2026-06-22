@@ -34,7 +34,6 @@ type screen int
 
 const (
 	screenDashboard screen = iota
-	screenPlaceholder
 	screenCheckApps
 	screenStopAll
 	screenStopAllResult
@@ -665,7 +664,7 @@ func (m *model) back() {
 	case screenInstallForm:
 		m.screen = screenInstallCatalog
 		m.err = nil
-	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenPlaceholder, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
+	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
 		m.screen = screenDashboard
 		m.firstRun = false
 		m.err = nil
@@ -747,11 +746,6 @@ func (m model) selectDashboardAction() (tea.Model, tea.Cmd) {
 		m.uninstallResult = nil
 		m.progress = progressMsg{}
 		return m, m.uninstallCmd()
-	}
-
-	if dashboardActions[m.cursor] != "Check my apps" {
-		m.screen = screenPlaceholder
-		return m, nil
 	}
 
 	m.screen = screenCheckApps
@@ -956,8 +950,6 @@ func (m model) screenView() string {
 		return m.settingsView()
 	case screenRuntimeLock:
 		return m.runtimeLockView()
-	case screenPlaceholder:
-		return m.placeholderView()
 	default:
 		if view, ok := m.distributionScreenView(); ok {
 			return view
@@ -1027,18 +1019,7 @@ func (m model) dashboardView() string {
 	b.WriteString("\n\n")
 	b.WriteString("What do you want to do?\n\n")
 
-	for i, action := range dashboardActions {
-		prefix := "  "
-		suffix := ""
-		if i == m.cursor {
-			prefix = "> "
-			suffix = " [selected]"
-		}
-		b.WriteString(prefix)
-		b.WriteString(action)
-		b.WriteString(suffix)
-		b.WriteByte('\n')
-	}
+	writeMenu(&b, dashboardActions, m.cursor)
 
 	m.writeLaunchCheckStatus(&b)
 
@@ -1073,15 +1054,6 @@ func (m model) resizeView() string {
 		m.width,
 		m.height,
 	)
-}
-
-func (m model) placeholderView() string {
-	var b strings.Builder
-	b.WriteString(titleStyle().Render(dashboardActions[m.cursor]))
-	b.WriteString("\n\n")
-	b.WriteString("This screen lands later in Wave H.\n\n")
-	b.WriteString(m.helpLine())
-	return b.String()
 }
 
 func (m model) checkAppsView() string {
@@ -1165,18 +1137,7 @@ func (m model) appActionsView() string {
 	}
 
 	b.WriteString("\nNext actions\n\n")
-	for i, action := range checkAppActions {
-		prefix := "  "
-		suffix := ""
-		if i == m.actionCursor {
-			prefix = "> "
-			suffix = " [selected]"
-		}
-		b.WriteString(prefix)
-		b.WriteString(action)
-		b.WriteString(suffix)
-		b.WriteByte('\n')
-	}
+	writeMenu(&b, checkAppActions, m.actionCursor)
 
 	b.WriteString("\n")
 	b.WriteString(m.helpLine())
@@ -1200,6 +1161,25 @@ func (m model) writeLogPathNotice(b *strings.Builder) {
 	b.WriteString("See ")
 	b.WriteString(path)
 	b.WriteString("; review the log before sharing it publicly (e.g. on GitHub).\n")
+}
+
+// writeMenu renders a plain selectable menu: one item per line, prefixed
+// with "> " for the row at cursor and "  " otherwise, with a " [selected]"
+// suffix on the active row. It reproduces the hand-rolled menu loop shared
+// across the dashboard, app-actions, remove, and runtime-lock screens.
+func writeMenu(b *strings.Builder, items []string, cursor int) {
+	for i, item := range items {
+		prefix := "  "
+		suffix := ""
+		if i == cursor {
+			prefix = "> "
+			suffix = " [selected]"
+		}
+		b.WriteString(prefix)
+		b.WriteString(item)
+		b.WriteString(suffix)
+		b.WriteByte('\n')
+	}
 }
 
 func (m model) writeStatusSummary(b *strings.Builder) {

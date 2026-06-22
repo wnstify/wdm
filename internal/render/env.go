@@ -30,8 +30,8 @@ import (
 // sibling imports (the internal-render-pure depguard rule enforces).
 // Populates only [RenderedStack.EnvBytes]; the other fields
 // ([RenderedStack.ComposeBytes], [RenderedStack.AdditionalFiles],
-// [RenderedStack.LockManifest], [RenderedStack.ServiceLabels]) stay
-// zero per the [RenderedStack] godoc staging contract.
+// [RenderedStack.ServiceLabels]) stay zero per the [RenderedStack] godoc
+// staging contract.
 //
 //nolint:revive // "RenderEnv" intentionally mirrors the Render* family. The verb-noun pairing parallels Validate* (ValidatePlaceholders, ValidateResolution); renaming to "Env" would lose verb intent and split the family.
 func RenderEnv(input Input) (RenderedStack, error) {

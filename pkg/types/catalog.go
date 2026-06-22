@@ -53,10 +53,6 @@ type CatalogApp struct {
 	// Channel is the catalog channel this entry was read from.
 	Channel string `json:"channel"`
 
-	// CatalogVersion is the catalog manifest version the entry belongs
-	// to.
-	CatalogVersion string `json:"catalog_version"`
-
 	// Placeholders enumerates the templated values the install form must
 	// collect or the engine generates. This projection lets a generic
 	// TUI form render and validate without per-app special-casing

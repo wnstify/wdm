@@ -17,37 +17,24 @@ import (
 	"github.com/wnstify/wdm/internal/security"
 )
 
-func TestNew_RequiresWriter(t *testing.T) {
-	t.Parallel()
-
-	logger, err := logging.New()
-
-	require.ErrorIs(t, err, logging.ErrNoWriter)
-	assert.Nil(t, logger)
-}
-
-func TestNew_RejectsNilRedactor(t *testing.T) {
-	t.Parallel()
-
-	logger, err := logging.New(
-		logging.WithWriter(io.Discard),
-		logging.WithRedactor(nil),
-	)
-
-	require.ErrorIs(t, err, logging.ErrNilRedactor)
-	assert.Nil(t, logger)
-	assert.Contains(t, err.Error(), "logging.New:")
+// newJSONLogger builds the same slog chain the engine wires in
+// buildDefaultLogger: a JSON handler over w wrapped by the redacting handler.
+// Tests construct the logger this way so redaction, level, and source
+// behavior stay covered through the production construction path rather than a
+// dedicated constructor.
+func newJSONLogger(w io.Writer, level slog.Level, addSource bool, redactor security.Redactor) *slog.Logger {
+	base := slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: addSource,
+	})
+	return slog.New(logging.NewRedactingHandler(base, redactor))
 }
 
 func TestLogger_RedactsMessagesAttributesAndGroups(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	logger, err := logging.New(
-		logging.WithWriter(&buf),
-		logging.WithRedactor(security.NewActiveRedactor([]string{"literal-secret"})),
-	)
-	require.NoError(t, err)
+	logger := newJSONLogger(&buf, slog.LevelInfo, false, security.NewActiveRedactor([]string{"literal-secret"}))
 
 	logger.Info("starting with literal-secret",
 		slog.String("token", "literal-secret"),
@@ -72,11 +59,7 @@ func TestLogger_RedactsScopedAttributesAndGroupedRecords(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	logger, err := logging.New(
-		logging.WithWriter(&buf),
-		logging.WithRedactor(security.NewActiveRedactor([]string{"literal-secret"})),
-	)
-	require.NoError(t, err)
+	logger := newJSONLogger(&buf, slog.LevelInfo, false, security.NewActiveRedactor([]string{"literal-secret"}))
 
 	logger.
 		With(slog.String("scoped", "literal-secret")).
@@ -94,11 +77,7 @@ func TestLogger_HonorsConfiguredLevel(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	logger, err := logging.New(
-		logging.WithWriter(&buf),
-		logging.WithLevel(slog.LevelWarn),
-	)
-	require.NoError(t, err)
+	logger := newJSONLogger(&buf, slog.LevelWarn, false, security.NoopRedactor)
 
 	logger.Info("hidden")
 	logger.Warn("visible")
@@ -112,11 +91,7 @@ func TestLogger_AddSourceIncludesSourceAttribute(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	logger, err := logging.New(
-		logging.WithWriter(&buf),
-		logging.WithAddSource(true),
-	)
-	require.NoError(t, err)
+	logger := newJSONLogger(&buf, slog.LevelInfo, true, security.NoopRedactor)
 
 	logger.Info("with source")
 
@@ -125,17 +100,6 @@ func TestLogger_AddSourceIncludesSourceAttribute(t *testing.T) {
 	assert.Contains(t, source["function"], "TestLogger_AddSourceIncludesSourceAttribute")
 	assert.Contains(t, source["file"], "logger_test.go")
 	assert.Greater(t, source["line"], float64(0))
-}
-
-func TestNoopRotator_RotateReturnsNil(t *testing.T) {
-	t.Parallel()
-
-	require.NoError(t, logging.NoopRotator.Rotate(t.Context()))
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	require.NoError(t, logging.NoopRotator.Rotate(ctx),
-		"noop rotator must not fail just because the context is canceled")
 }
 
 func TestRedactingHandler_PropagatesBaseErrors(t *testing.T) {

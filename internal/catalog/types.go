@@ -103,7 +103,7 @@ type App struct {
 
 	// Networks lists the Docker networks the rendered stack
 	// expects to exist before `docker compose up -d`.
-	// `internal/docker.EnsureNetwork` creates each one via
+	// `internal/docker.EnsureNetworkReport` creates each one via
 	// `docker network create [--internal] <name>` before deploy
 	// (idempotent skip-if-exists) and leaves them in place on
 	// safe-remove. Optional — apps with no external networks omit
@@ -337,7 +337,7 @@ type ImagePin struct {
 // `docker network create [--internal] <name>` before
 // `docker compose up -d` (idempotent skip-if-exists) and leaves it in
 // place on safe-remove. Network creation lives in
-// `internal/docker.EnsureNetwork` and runs in
+// `internal/docker.EnsureNetworkReport` and runs in
 type Network struct {
 	// Name is the Docker network name passed to `docker network
 	// create`. Lowercase ASCII + digits + underscore + hyphen,

@@ -18,12 +18,13 @@ import (
 
 // TestNew_DefaultLoggerProductionPathConstructsCleanly exercises the
 // default-logger branch: when [core.WithLogger] is not
-// supplied, [core.New] must construct a redaction-wrapped logger over
-// [os.Stderr] via internal/logging + internal/security rather than
-// falling back to the bare slog.Default. The construction must
-// succeed without surfacing the logging.New error wrap so callers
-// without a logger can rely on engine construction never failing on
-// the logger branch alone (PRD §11, §24).
+// supplied, [core.New] must construct a redaction-wrapped logger via
+// buildDefaultLogger (a slog.NewJSONHandler wrapped in
+// logging.NewRedactingHandler over security.NewActiveRedactor) rather
+// than falling back to the bare slog.Default. The construction must
+// succeed regardless of the logger branch, so callers without a logger
+// can rely on engine construction never failing on the logger branch
+// alone (PRD §11, §24).
 // Verifying redaction behavior itself lives in internal/security and
 // internal/logging tests; the observable behavior at the core boundary is
 // "engine construction still succeeds when WithLogger is omitted." The test

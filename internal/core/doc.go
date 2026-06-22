@@ -43,7 +43,7 @@
 //     and networks the deployment will touch (PRD §17 step 11; a nil
 //     confirmer refuses past the confirmation step, a decline maps to
 //     types.ErrCodeUserCanceled), pre-creates catalog-declared Docker
-//     networks via internal/docker.EnsureNetwork with internal-flag drift
+//     networks via internal/docker.EnsureNetworkReport with internal-flag drift
 //     rejected, re-checks localhost ports
 //     immediately before deploy, deploys
 //     via `docker compose up -d`, captures image digests opportunistically
@@ -220,10 +220,10 @@
 // Construction flow ([New]):
 //  1. Apply functional options (the [With*] setters in options.go).
 //  2. When [WithLogger] was not supplied, build the production default
-//     logger: a redaction-wrapped JSON handler over [os.Stderr] via
-//     [internal/logging.New] with [internal/security.NewActiveRedactor]
-//     so every record passes through the active redactor before reaching
-//     the sink (PRD §11, §24). A
+//     logger via buildDefaultLogger: a [slog.NewJSONHandler] wrapped in
+//     [internal/logging.NewRedactingHandler] over
+//     [internal/security.NewActiveRedactor] so every record passes through
+//     the active redactor before reaching the sink (PRD §11, §24). A
 //     caller-supplied logger is used as-is.
 //  3. Resolve unset paths to XDG defaults per
 //     "On-disk layout":

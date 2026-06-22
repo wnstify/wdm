@@ -205,32 +205,16 @@ func confirmUninstall(
 	footprint []string,
 	onProgress types.ProgressFn,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if confirmer == nil {
-		return types.NewError(
-			types.ErrCodeUsageValidation,
-			"confirmer is required before uninstalling wdm",
-			"pass a confirmer that can authorize the destructive self-uninstall",
-		)
-	}
-	if onProgress != nil {
-		onProgress(types.StepUninstallConfirm, 25, "confirming self-uninstall")
-	}
-
-	confirmed, err := confirmer.Confirm(ctx, uninstallConfirmation(apps, footprint))
-	if err != nil {
-		return fmt.Errorf("core.uninstall: confirming uninstall: %w", err)
-	}
-	if !confirmed {
-		return types.NewError(
-			types.ErrCodeUserCanceled,
-			"uninstall canceled before any teardown or removal",
-			"re-run the uninstall and confirm the prompt",
-		)
-	}
-	return nil
+	return confirmLifecycleOp(ctx, confirmer, uninstallConfirmation(apps, footprint), confirmStrings{
+		stepID:         types.StepUninstallConfirm,
+		stepPct:        25,
+		stepMessage:    "confirming self-uninstall",
+		nilMessage:     "confirmer is required before uninstalling wdm",
+		nilHint:        "pass a confirmer that can authorize the destructive self-uninstall",
+		confirmErrWrap: "core.uninstall: confirming uninstall",
+		declineMessage: "uninstall canceled before any teardown or removal",
+		declineHint:    "re-run the uninstall and confirm the prompt",
+	}, onProgress)
 }
 
 // uninstallConfirmation assembles the destructive consequence payload (PRD
@@ -342,39 +326,12 @@ func (e *Engine) teardownOneStack(
 	appID string,
 ) (types.TornDownApp, []string) {
 	outcome := types.TornDownApp{AppID: appID}
-
-	stackPath, err := security.SafeJoin(e.stackBase, appID)
-	if err != nil {
-		outcome.Error = fmt.Sprintf("app id is unsafe: %v", err)
-		return outcome, nil
-	}
-
-	handle, err := acquireInstallStackLock(ctx, stackPath)
-	if err != nil {
-		outcome.Error = err.Error()
-		return outcome, nil
-	}
-	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
-
-	lock, err := reconfirmManagedStack(handle, appID)
-	if err != nil {
-		outcome.Error = err.Error()
-		return outcome, nil
-	}
-	if lock.ComposeProject == "" {
-		outcome.Error = "stack manifest is missing its compose project"
-		return outcome, nil
-	}
-	outcome.ComposeProject = lock.ComposeProject
-
-	project, err := uninstallComposeProject(stackPath, lock)
-	if err != nil {
-		outcome.Error = err.Error()
-		return outcome, nil
-	}
-
-	if err := docker.ComposeDownRemoveImages(ctx, client, project); err != nil {
-		outcome.Error = err.Error()
+	project, composeProject, errMsg := e.perStackOp(ctx, appID, func(opCtx context.Context, project docker.ComposeProject) error {
+		return docker.ComposeDownRemoveImages(opCtx, client, project)
+	})
+	outcome.ComposeProject = composeProject
+	if errMsg != "" {
+		outcome.Error = errMsg
 		return outcome, nil
 	}
 
@@ -383,33 +340,6 @@ func (e *Engine) teardownOneStack(
 	// is best-effort — so the networks are simply dropped from the set.
 	networks := readExternalNetworkNames(project.ComposeFile)
 	return outcome, networks
-}
-
-// uninstallComposeProject builds the validated [docker.ComposeProject] for
-// one stack's teardown from the resolved stack path and the manifest's
-// Compose project name, mirroring stopAllComposeProject (PRD §12, §13).
-func uninstallComposeProject(stackPath string, lock *state.StackLock) (docker.ComposeProject, error) {
-	composePath, err := security.SafeJoin(stackPath, installComposeFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	envPath, err := security.SafeJoin(stackPath, installEnvFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	return docker.ComposeProject{
-		ComposeFile: composePath,
-		EnvFile:     envPath,
-		ProjectName: lock.ComposeProject,
-	}, nil
 }
 
 // uninstallKeptDataPaths reports the per-app stack directories self-uninstall
@@ -701,9 +631,6 @@ func (e *Engine) preflightFootprint() error {
 // band so the progress bar advances as stacks tear down, leaving room for the
 // footprint-removal step at 90.
 func uninstallTeardownPct(index, total int) float64 {
-	if total <= 0 {
-		return 85
-	}
 	const start, span = 30.0, 55.0
 	return start + span*float64(index)/float64(total)
 }

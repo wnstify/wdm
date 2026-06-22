@@ -158,13 +158,6 @@ func IsCode(err error, code ErrorCode) bool {
 // Sentinel errors. Compare with errors.Is; wrap with WrapError to attach
 // a CLI exit code and a user-visible message.
 var (
-	// ErrNotImplemented is the historical sentinel returned by engine
-	// stubs before their bodies landed. As of no engine
-	// method returns it, but the value stays exported and stable for
-	// older callers and tests. The "" wording is historical and
-	// load-bearing — compare with errors.Is, never by string match.
-	ErrNotImplemented = errors.New("types: not implemented in phase 1")
-
 	// ErrConfigInvalid is returned by engine.New when the user's
 	// config.toml fails schema validation (PRD §34).
 	ErrConfigInvalid = errors.New("types: config invalid")

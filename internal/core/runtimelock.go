@@ -15,8 +15,6 @@ import (
 
 // This file hosts the RuntimeLockStatus and ClearStaleRuntimeLock engine
 // methods (PRD §26, §18 condition 8).
-// Both landed as [types.ErrNotImplemented] stubs under the invariant, then
-// gained their bodies here.
 // Both methods read the global runtime.lock at the engine's
 // stateDir-joined [runtimeLockFilename] — the same path the read-only
 // status path probes via [Engine.staleRuntimeLockCondition]. The engine

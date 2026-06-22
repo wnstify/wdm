@@ -159,12 +159,8 @@ func (e *Engine) DeleteApp(
 // Every rejection is [types.ErrCodeUsageValidation] so cmd/wdm maps it to
 // PRD §27 exit code 2.
 func validateDeleteRequest(req types.DeleteRequest) error {
-	if req.AppID == "" {
-		return usageValidationError(
-			"app id is required",
-			"pass the app id of an installed stack",
-			nil,
-		)
+	if err := requireAppID(req.AppID); err != nil {
+		return err
 	}
 	if req.DeleteNamedVolumes {
 		return usageValidationError(
@@ -207,30 +203,11 @@ func (e *Engine) planDelete(
 		return nil, err
 	}
 
-	// Resolution is AppID-driven (mirroring Remove), so a supplied
-	// req.StackPath is a fail-closed cross-check, not an alternate resolution
-	// path: it must name the stack AppID already resolved to. A mismatch
-	// refuses before any Docker call so a stale or wrong --stack-path can
-	// never act on a different managed stack.
-	if req.StackPath != "" && filepath.Clean(req.StackPath) != stackPath {
-		return nil, usageValidationError(
-			"stack path does not match the managed stack for this app",
-			fmt.Sprintf("the managed stack for %q is at %s", req.AppID, stackPath),
-			nil,
-		)
+	if err := stackPathCrossCheck(req.StackPath, req.AppID, stackPath); err != nil {
+		return nil, err
 	}
-
-	// A managed stack always records its Compose project at install time
-	// (PRD §9, §30), so an empty value is a corrupt manifest. Refuse here —
-	// before the volume listing and the execution slice's down — so the
-	// failure names the corrupt manifest rather than
-	// degrading to a generic late refusal from [docker.ComposeDown].
-	if lock.ComposeProject == "" {
-		return nil, usageValidationError(
-			"stack manifest is missing its compose project",
-			"the .wdm.lock is corrupt; reinstall the app to restore managed state",
-			fmt.Errorf("stack lock for %q records no compose project", req.AppID),
-		)
+	if err := requireComposeProject(lock.ComposeProject, req.AppID); err != nil {
+		return nil, err
 	}
 
 	deletePaths, backupCount := deleteFileList(stackPath)
@@ -289,21 +266,13 @@ func deleteFileList(stackPath string) (paths []string, backupSnapshotCount int) 
 	// The stack directory itself is the outermost deleted path.
 	paths = append(paths, stackPath)
 
-	backupSnapshotCount = countBackupSnapshots(stackPath)
-	return paths, backupSnapshotCount
-}
-
-// countBackupSnapshots returns how many config-backup snapshots live under
-// the stack's .wdm-backups/ directory (the confirmation
-// names .wdm-backups/ with its snapshot count). The read is opportunistic:
-// any lister failure degrades to a count of 0 rather than failing the plan,
-// because the backups are deleted with the stack directory regardless.
-func countBackupSnapshots(stackPath string) int {
-	snapshots, err := state.ListConfigBackups(stackPath)
-	if err != nil {
-		return 0
+	// The .wdm-backups/ snapshot count is opportunistic: a lister failure
+	// degrades to 0 rather than failing the plan, because the backups are
+	// deleted with the stack directory regardless of how many there are.
+	if snapshots, err := state.ListConfigBackups(stackPath); err == nil {
+		backupSnapshotCount = len(snapshots)
 	}
-	return len(snapshots)
+	return paths, backupSnapshotCount
 }
 
 // listDeleteNamedVolumes lists the Compose-project named volumes the
@@ -511,32 +480,16 @@ func confirmDelete(
 	plan *deletePlan,
 	onProgress types.ProgressFn,
 ) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if confirmer == nil {
-		return types.NewError(
-			types.ErrCodeUsageValidation,
-			"confirmer is required before destructive deletion",
-			"pass a confirmer that can authorize the permanent deletion",
-		)
-	}
-	if onProgress != nil {
-		onProgress(types.StepDeleteConfirm, 30, "confirming destructive deletion")
-	}
-
-	confirmed, err := confirmer.Confirm(ctx, deleteConfirmation(plan))
-	if err != nil {
-		return fmt.Errorf("core.delete: confirming deletion: %w", err)
-	}
-	if !confirmed {
-		return types.NewError(
-			types.ErrCodeUserCanceled,
-			"deletion canceled before any files were removed",
-			"re-run the deletion and confirm the prompt",
-		)
-	}
-	return nil
+	return confirmLifecycleOp(ctx, confirmer, deleteConfirmation(plan), confirmStrings{
+		stepID:         types.StepDeleteConfirm,
+		stepPct:        30,
+		stepMessage:    "confirming destructive deletion",
+		nilMessage:     "confirmer is required before destructive deletion",
+		nilHint:        "pass a confirmer that can authorize the permanent deletion",
+		confirmErrWrap: "core.delete: confirming deletion",
+		declineMessage: "deletion canceled before any files were removed",
+		declineHint:    "re-run the deletion and confirm the prompt",
+	}, onProgress)
 }
 
 // deleteConfirmation assembles the destructive-deletion consequence payload
@@ -609,41 +562,11 @@ func runDeleteComposeDown(
 		onProgress(types.StepDeleteComposeDown, 55, "stopping and removing containers")
 	}
 
-	project, err := deleteComposeProject(plan)
+	project, err := logsComposeProject(plan.stackPath, plan.composeProject)
 	if err != nil {
 		return err
 	}
 	return docker.ComposeDown(ctx, client, project)
-}
-
-// deleteComposeProject builds the validated [docker.ComposeProject] for
-// the down invocation from the managed stack path and the manifest's
-// Compose project name. The compose and env file paths are resolved under
-// the stack path via [security.SafeJoin] (PRD §12, §13), and the project
-// name is the manifest's recorded `wdm-<app>` value (already proven
-// non-empty by planDelete's corrupt-manifest guard).
-func deleteComposeProject(plan *deletePlan) (docker.ComposeProject, error) {
-	composePath, err := security.SafeJoin(plan.stackPath, installComposeFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	envPath, err := security.SafeJoin(plan.stackPath, installEnvFilename)
-	if err != nil {
-		return docker.ComposeProject{}, usageValidationError(
-			"stack path is unsafe",
-			"choose a stack path under the configured stack base",
-			err,
-		)
-	}
-	return docker.ComposeProject{
-		ComposeFile: composePath,
-		EnvFile:     envPath,
-		ProjectName: plan.composeProject,
-	}, nil
 }
 
 // deleteStackFiles is the §19:452 containment heart of the destructive

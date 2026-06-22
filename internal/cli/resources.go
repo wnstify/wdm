@@ -84,10 +84,7 @@ confirmation without prompting.`,
 				if err != nil {
 					return err
 				}
-				if useJSON {
-					return EmitJSON(cmd.OutOrStdout(), settings)
-				}
-				return writeResourceSettings(cmd.OutOrStdout(), settings)
+				return emitResult(cmd, useJSON, settings, writeResourceSettings)
 			}
 
 			// With --service omitted, target the app's primary (first
@@ -122,22 +119,14 @@ confirmation without prompting.`,
 			// Reconfigure recreates a container (disruptive), so the
 			// confirmation is not a database-risk prompt; acceptDBRisk is wired
 			// false, and --yes accepts the recreate confirmation.
-			confirmer := newCLIConfirmer(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), assumeYes, false)
-
-			var onProgress types.ProgressFn
-			if !useJSON {
-				onProgress = stderrProgress(cmd.ErrOrStderr())
-			}
+			confirmer, onProgress := stateChangeIO(cmd, assumeYes, false, useJSON)
 
 			result, err := eng.Reconfigure(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {
 				return err
 			}
 
-			if useJSON {
-				return EmitJSON(cmd.OutOrStdout(), result)
-			}
-			return writeReconfigureFinish(cmd.OutOrStdout(), result)
+			return emitResult(cmd, useJSON, result, writeReconfigureFinish)
 		},
 	}
 

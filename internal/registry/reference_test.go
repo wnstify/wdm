@@ -109,7 +109,6 @@ func TestParseReference_NormalizesAndAccepts(t *testing.T) {
 			assert.Equal(t, tt.registry, ref.Registry)
 			assert.Equal(t, tt.repo, ref.Repository)
 			assert.Equal(t, tt.tag, ref.Tag)
-			assert.Equal(t, tt.registry+"/"+tt.repo, ref.Image())
 		})
 	}
 }

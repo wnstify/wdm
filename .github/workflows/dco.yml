@@ -43,8 +43,17 @@ jobs:
             exit 0
           fi
 
+          # One commit by the project owner predates this DCO gate and cannot be
+          # signed retroactively without rewriting 167 descendant commits on the
+          # protected dev branch. Grandfather it by exact SHA; every other commit
+          # is still strictly checked.
+          legacy_exempt="7640ac3c16a1f7a957699cc748ddb7e46520ccef"
+
           missing=0
           while IFS= read -r commit; do
+            if [ "$commit" = "$legacy_exempt" ]; then
+              continue
+            fi
             if ! git log -1 --format=%B "$commit" | grep -Eq '^Signed-off-by: .+ <[^<>[:space:]]+@[^<>[:space:]]+>$'; then
               echo "::error::Commit $commit is missing a Signed-off-by trailer."
               git log -1 --format='  %h %s' "$commit"
