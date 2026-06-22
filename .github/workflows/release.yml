@@ -14,7 +14,7 @@
 #     repository ONLY. The gated signed-release job signs the authoritative
 #     SHA256SUMS with the production Ed25519 key, mints the keyless cosign
 #     bundle and the SLSA attestation, and creates the GitHub Release with its
-#     seven assets.
+#     eight assets.
 #
 # A manual `workflow_dispatch` run, any branch build, and any run on a
 # non-`wnstify/wdm` repository stay dry-runs: they mint no real signature and
@@ -136,6 +136,20 @@
 # (ArtifactAttestation), and the two signatures over SHA256SUMS are
 # SHA256SUMS.sig (ArtifactChecksumSignature) and
 # SHA256SUMS.cosign.bundle.
+#
+# SLSA PROVENANCE JSONL (additive). The gated job ALSO publishes
+# wdm-linux-amd64.intoto.jsonl: the SAME SLSA v1.0 provenance the keyless
+# attestation carries, written as a genuine single-line in-toto Statement
+# (decoded from attestation.json's DSSE payload, not a misleading rename).
+# Publishing provenance as a standard `*.intoto.jsonl` in-toto Statement is the
+# conventional form supply-chain tooling expects, so it broadens downstream
+# verification compatibility. This asset is ADDITIVE — it does NOT replace or
+# rename attestation.json and is deliberately NOT in the locked artifact-name
+# set in internal/release/artifacts.go and NOT in the signed SHA256SUMS payload
+# set, so the in-product verifier (which keys on attestation.json by digest) and
+# the SHA256SUMS contract stay untouched. Its provenance is still anchored:
+# attestation.json IS a SHA256SUMS payload and carries the identical signed
+# Statement.
 name: release
 
 on:
@@ -511,6 +525,54 @@ jobs:
           test -f dist/attestation.json
           echo "attestation.json placed from $bundle"
 
+      - name: Emit SLSA provenance as wdm-linux-amd64.intoto.jsonl (in-toto JSONL)
+        run: |
+          set -euo pipefail
+          # Publish the SAME SLSA v1.0 provenance the keyless attestation already
+          # carries as a standard `*.intoto.jsonl` in-toto Statement file — the
+          # conventional provenance form supply-chain tooling expects. The
+          # content is genuine signed provenance, not a misleading rename of an
+          # unrelated file.
+          #
+          # The attestation.json Sigstore bundle wraps the in-toto Statement in
+          # its DSSE envelope: dsseEnvelope.payload is the base64-encoded
+          # in-toto/SLSA Statement JSON. Decode that payload to recover the
+          # genuine Statement and write it as one JSON object per line (in-toto
+          # JSONL). The decoded content is therefore the EXACT signed provenance
+          # the multi-subject attestation attests, not a fabricated stand-in.
+          #
+          # This asset is published ADDITIVELY for supply-chain tooling
+          # compatibility. It is NOT added to the signed SHA256SUMS payload set: its
+          # provenance content is already integrity-anchored because
+          # attestation.json (the canonical Sigstore bundle) IS a SHA256SUMS
+          # payload, and the in-product verifier keys on attestation.json by
+          # digest. Keeping the JSONL out of SHA256SUMS leaves the locked
+          # artifact-name set in internal/release/artifacts.go and the
+          # in-product verification path completely untouched.
+          payload="$(jq -r '.dsseEnvelope.payload' dist/attestation.json)"
+          [ -n "$payload" ] && [ "$payload" != "null" ] || {
+            echo "attestation bundle has no dsseEnvelope.payload" >&2; exit 1; }
+          # Re-serialize to one compact JSON object per line (JSONL). jq -c on a
+          # single Statement emits exactly one line. Fail closed if the decoded
+          # payload is not a valid in-toto Statement (missing _type or subjects).
+          printf '%s' "$payload" | base64 -d \
+            | jq -ce 'select(._type and .subject and .predicateType) ' \
+            > dist/wdm-linux-amd64.intoto.jsonl || {
+              echo "decoded DSSE payload is not a valid in-toto SLSA Statement" >&2
+              exit 1; }
+          test -s dist/wdm-linux-amd64.intoto.jsonl || {
+            echo "JSONL output is empty; jq matched no in-toto Statement in the DSSE payload" >&2
+            exit 1; }
+          # Evidence: confirm it is a single-line in-toto/SLSA v1.0 Statement
+          # over the released subjects.
+          [ "$(wc -l < dist/wdm-linux-amd64.intoto.jsonl)" -eq 1 ] || {
+            echo "expected exactly one in-toto Statement line" >&2; exit 1; }
+          jq -e '._type == "https://in-toto.io/Statement/v1"
+            and .predicateType == "https://slsa.dev/provenance/v1"
+            and (.subject | length) >= 1' \
+            dist/wdm-linux-amd64.intoto.jsonl > /dev/null
+          echo "in-toto provenance JSONL OK: dist/wdm-linux-amd64.intoto.jsonl"
+
       - name: Generate authoritative SHA256SUMS (full payload set incl. attestation)
         working-directory: dist
         run: |
@@ -601,26 +663,34 @@ jobs:
           sh scripts/extract-release-notes.sh CHANGELOG.md "${GITHUB_REF_NAME}" dist/RELEASE_NOTES.md
           echo "release notes extracted: dist/RELEASE_NOTES.md"
 
-      - name: Assert the seven release assets and create the GitHub Release
+      - name: Assert the eight release assets and create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The published release carries EXACTLY these seven assets — no more,
+          # The published release carries EXACTLY these eight assets — no more,
           # no fewer. RELEASE_NOTES.md, the helper binary, and every ephemeral
           # or private key live outside this list and are never uploaded.
+          # wdm-linux-amd64.intoto.jsonl is published ADDITIVELY for supply-chain
+          # tooling compatibility: it carries the same SLSA provenance as
+          # attestation.json but as a standard in-toto JSONL Statement file. It is
+          # deliberately absent from the signed SHA256SUMS set (its provenance is
+          # already anchored via attestation.json), so the in-product verifier and
+          # the locked artifact-name set in internal/release/artifacts.go stay
+          # untouched.
           assets=(
             dist/wdm-linux-amd64
             dist/catalog-stable.tar.gz
             dist/attestation.json
+            dist/wdm-linux-amd64.intoto.jsonl
             dist/wdm-linux-amd64.spdx.json
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
             dist/SHA256SUMS.cosign.bundle
           )
-          # Fail closed: exactly seven assets, each present, and none a key or
+          # Fail closed: exactly eight assets, each present, and none a key or
           # ephemeral file.
-          [ "${#assets[@]}" -eq 7 ] || { echo "expected 7 assets, have ${#assets[@]}"; exit 1; }
+          [ "${#assets[@]}" -eq 8 ] || { echo "expected 8 assets, have ${#assets[@]}"; exit 1; }
           for a in "${assets[@]}"; do
             test -f "$a" || { echo "missing release asset: $a"; exit 1; }
             case "$a" in
