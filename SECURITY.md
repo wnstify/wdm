@@ -71,7 +71,7 @@ Real signed releases are produced only by pushing a `v*` tag to the public `wnst
 
 ### Artifacts
 
-A release publishes the following assets (names locked in `internal/release/artifacts.go`):
+A release publishes the following assets. The verified payload and signature names are locked in `internal/release/artifacts.go`; the additive `wdm-linux-amd64.intoto.jsonl` (below) is the one exception — it is published by the release workflow and is intentionally not registered there:
 
 | Artifact | Purpose |
 |---|---|
