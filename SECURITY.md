@@ -71,19 +71,20 @@ Real signed releases are produced only by pushing a `v*` tag to the public `wnst
 
 ### Artifacts
 
-A release publishes the following assets (names locked in `internal/release/artifacts.go`):
+A release publishes the following assets. The verified payload and signature names are locked in `internal/release/artifacts.go`; the additive `wdm-linux-amd64.intoto.jsonl` (below) is the one exception — it is published by the release workflow and is intentionally not registered there:
 
 | Artifact | Purpose |
 |---|---|
 | `wdm-linux-amd64` | the linux/amd64 binary (payload) |
 | `catalog-stable.tar.gz` | the stable-channel catalog bundle (payload) |
 | `attestation.json` | SLSA provenance attestation, multi-subject (payload) |
+| `wdm-linux-amd64.intoto.jsonl` | same SLSA provenance as a genuine in-toto JSONL Statement (additive; not in `SHA256SUMS`) |
 | `wdm-linux-amd64.spdx.json` | SPDX 2.3 JSON SBOM of the binary (payload) |
 | `SHA256SUMS` | GNU-coreutils checksums over the payload files only |
 | `SHA256SUMS.sig` | detached Ed25519 signature over `SHA256SUMS` (in-product) |
 | `SHA256SUMS.cosign.bundle` | keyless cosign bundle over `SHA256SUMS` (human/CI) |
 
-Trust chains from the signed `SHA256SUMS` outward: verify `SHA256SUMS` once, then the checksums verify every payload (binary, catalog bundle, attestation, SBOM). `SHA256SUMS` never lists itself or its own signatures.
+Trust chains from the signed `SHA256SUMS` outward: verify `SHA256SUMS` once, then the checksums verify every payload (binary, catalog bundle, attestation, SBOM). `SHA256SUMS` never lists itself or its own signatures. `wdm-linux-amd64.intoto.jsonl` is published additively as the SLSA provenance in the standard in-toto JSONL form supply-chain tooling expects; it carries the same signed Statement as `attestation.json` (which is in `SHA256SUMS`), so it is intentionally not a `SHA256SUMS` payload and is not consumed by the in-product verifier.
 
 ### Human verification (cosign)
 
@@ -121,6 +122,15 @@ cosign verify-blob-attestation wdm-linux-amd64 \
 `--new-bundle-format` is required to parse the new-format Sigstore bundle that `actions/attest-build-provenance` emits (cosign v2.6+ accepts it; it is the default and a deprecated no-op in cosign v3). `--type slsaprovenance1` selects the SLSA **v1.0** predicate (`slsaprovenance` without the suffix is the v0.2 shorthand and does not match).
 
 Repeat with `catalog-stable.tar.gz` to verify the catalog bundle against the same attestation.
+
+**4. (Optional) Cross-check `wdm-linux-amd64.intoto.jsonl`.** This asset is the in-toto Statement decoded from the now-verified `attestation.json`, published additively in the standard `*.intoto.jsonl` form; it has no `SHA256SUMS` entry of its own. Confirm it is exactly the provenance carried by the signed, checksum-anchored `attestation.json`:
+
+```sh
+diff <(jq -c . wdm-linux-amd64.intoto.jsonl) \
+     <(jq -r '.dsseEnvelope.payload' attestation.json | base64 -d | jq -c .)
+```
+
+A clean (empty) `diff` proves the JSONL matches the verified bundle's DSSE payload. The authoritative, independently signed provenance remains `attestation.json` (step 3); the JSONL is a convenience copy whose integrity derives from it.
 
 ### In-product verification
 
