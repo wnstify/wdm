@@ -1,0 +1,47 @@
+name: back-merge
+
+# After every push to main, open a main -> dev pull request so dev never falls
+# behind main. The merge itself happens under dev's normal protections (required
+# review, required status checks, owner-only merge) -- this workflow only OPENS
+# the PR, so two-person review and the empty bypass list stay intact. No commit
+# is created here; merging the PR yields a GitHub-signed merge commit on dev,
+# which satisfies the signed-commits rule.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  open-back-merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open the main -> dev back-merge PR if dev is behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Skip when dev already contains main (dev was the source of this push,
+          # or is otherwise current). compare base...head is relative to base=dev.
+          status="$(gh api "repos/${REPO}/compare/dev...main" --jq '.status')"
+          case "$status" in
+            behind|identical)
+              echo "dev already contains main (status: $status); nothing to do."
+              exit 0 ;;
+          esac
+          # Don't stack duplicates if a back-merge PR is already waiting.
+          existing="$(gh pr list --repo "$REPO" --base dev --head main \
+            --state open --json number --jq '.[].number')"
+          if [ -n "$existing" ]; then
+            echo "An open main -> dev back-merge PR already exists (#${existing})."
+            exit 0
+          fi
+          gh pr create --repo "$REPO" --base dev --head main \
+            --title "Merge main into dev (auto back-merge)" \
+            --body "Automated back-merge opened after a push to main so dev stays current with main. Review and merge under the normal dev protections."
