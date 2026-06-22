@@ -552,11 +552,15 @@ jobs:
           payload="$(jq -r '.dsseEnvelope.payload' dist/attestation.json)"
           [ -n "$payload" ] && [ "$payload" != "null" ] || {
             echo "attestation bundle has no dsseEnvelope.payload" >&2; exit 1; }
+          # Decode the base64 DSSE payload first, with its own guard, so a decode
+          # failure is not misattributed to a bad in-toto structure below.
+          statement="$(printf '%s' "$payload" | base64 -d)" || {
+            echo "DSSE payload is not valid base64" >&2; exit 1; }
           # Re-serialize to one compact JSON object per line (JSONL). jq -c on a
           # single Statement emits exactly one line. Fail closed if the decoded
           # payload is not a valid in-toto Statement (missing _type or subjects).
-          printf '%s' "$payload" | base64 -d \
-            | jq -ce 'select(._type and .subject and .predicateType) ' \
+          printf '%s' "$statement" \
+            | jq -ce 'select(._type and .subject and .predicateType)' \
             > dist/wdm-linux-amd64.intoto.jsonl || {
               echo "decoded DSSE payload is not a valid in-toto SLSA Statement" >&2
               exit 1; }

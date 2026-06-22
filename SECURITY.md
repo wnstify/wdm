@@ -123,6 +123,15 @@ cosign verify-blob-attestation wdm-linux-amd64 \
 
 Repeat with `catalog-stable.tar.gz` to verify the catalog bundle against the same attestation.
 
+**4. (Optional) Cross-check `wdm-linux-amd64.intoto.jsonl`.** This asset is the in-toto Statement decoded from the now-verified `attestation.json`, published additively in the standard `*.intoto.jsonl` form; it has no `SHA256SUMS` entry of its own. Confirm it is exactly the provenance carried by the signed, checksum-anchored `attestation.json`:
+
+```sh
+diff <(jq -c . wdm-linux-amd64.intoto.jsonl) \
+     <(jq -r '.dsseEnvelope.payload' attestation.json | base64 -d | jq -c .)
+```
+
+A clean (empty) `diff` proves the JSONL matches the verified bundle's DSSE payload. The authoritative, independently signed provenance remains `attestation.json` (step 3); the JSONL is a convenience copy whose integrity derives from it.
+
 ### In-product verification
 
 `wdm` verifies releases itself, Go-native, with no external verifier (decision #56). Instead of the keyless cosign path, the binary verifies a **detached Ed25519 signature** (`SHA256SUMS.sig`, raw 64-byte signature) over the exact `SHA256SUMS` bytes against a **long-lived public key embedded in `internal/release`**, then verifies each payload against the SHA-256 checksums and verifies `attestation.json` by digest. This embedded-key path is independent of the keyless cosign identity above; both cover the same `SHA256SUMS`, so the human and the product reach the same trust decision by different routes.
