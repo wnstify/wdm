@@ -78,12 +78,13 @@ A release publishes the following assets (names locked in `internal/release/arti
 | `wdm-linux-amd64` | the linux/amd64 binary (payload) |
 | `catalog-stable.tar.gz` | the stable-channel catalog bundle (payload) |
 | `attestation.json` | SLSA provenance attestation, multi-subject (payload) |
+| `wdm-linux-amd64.intoto.jsonl` | same SLSA provenance as a genuine in-toto JSONL Statement (additive; not in `SHA256SUMS`) |
 | `wdm-linux-amd64.spdx.json` | SPDX 2.3 JSON SBOM of the binary (payload) |
 | `SHA256SUMS` | GNU-coreutils checksums over the payload files only |
 | `SHA256SUMS.sig` | detached Ed25519 signature over `SHA256SUMS` (in-product) |
 | `SHA256SUMS.cosign.bundle` | keyless cosign bundle over `SHA256SUMS` (human/CI) |
 
-Trust chains from the signed `SHA256SUMS` outward: verify `SHA256SUMS` once, then the checksums verify every payload (binary, catalog bundle, attestation, SBOM). `SHA256SUMS` never lists itself or its own signatures.
+Trust chains from the signed `SHA256SUMS` outward: verify `SHA256SUMS` once, then the checksums verify every payload (binary, catalog bundle, attestation, SBOM). `SHA256SUMS` never lists itself or its own signatures. `wdm-linux-amd64.intoto.jsonl` is published additively as the SLSA provenance in the standard in-toto JSONL form supply-chain tooling expects; it carries the same signed Statement as `attestation.json` (which is in `SHA256SUMS`), so it is intentionally not a `SHA256SUMS` payload and is not consumed by the in-product verifier.
 
 ### Human verification (cosign)
 
