@@ -3,6 +3,27 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.0.7 - 2026-06-22
+
+### Security
+- Release artifacts now include SLSA build provenance, published as
+  `wdm-linux-amd64.intoto.jsonl` (an in-toto/DSSE statement). This is an
+  eighth, additive release asset alongside the existing checksums, signature,
+  cosign bundle, attestation, and SBOM; verification of the binary and catalog
+  is unchanged and still fails closed. See SECURITY.md for the cross-check.
+
+### Changed
+- Internal cleanup with no change to user-facing behavior: consolidated the
+  destructive lifecycle verbs (delete, remove, restart, stop-all, uninstall)
+  onto shared core helpers, extracted a shared CLI command preamble and a
+  shared plain-TUI menu writer, merged the duplicate backup path validators,
+  and removed a large amount of dead code across the catalog, registry,
+  release, render, and logging packages.
+- Hardened project CI and governance: scoped the CodeQL `security-events`
+  permission to the analyze job, targeted Dependabot updates at `dev`, and
+  documented the consolidated review gate and owner-only merge policy. Added
+  `GOVERNANCE.md` and `ROADMAP.md`.
+
 ## v1.0.6 - 2026-06-21
 
 ### Added
