@@ -9,13 +9,15 @@ on:
     - cron: "0 6 * * 2"
 
 permissions:
-  security-events: write
   contents: read
-  actions: read
 
 jobs:
   analyze:
     name: analyze-go
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
     # SARIF upload requires GitHub Code Security. Skip the job while the
     # repository payload reports a visibility where upload is unavailable;
     # otherwise analysis burns minutes and the upload step fails with no
