@@ -560,7 +560,9 @@ jobs:
             > dist/wdm-linux-amd64.intoto.jsonl || {
               echo "decoded DSSE payload is not a valid in-toto SLSA Statement" >&2
               exit 1; }
-          test -s dist/wdm-linux-amd64.intoto.jsonl
+          test -s dist/wdm-linux-amd64.intoto.jsonl || {
+            echo "JSONL output is empty; jq matched no in-toto Statement in the DSSE payload" >&2
+            exit 1; }
           # Evidence: confirm it is a single-line in-toto/SLSA v1.0 Statement
           # over the released subjects.
           [ "$(wc -l < dist/wdm-linux-amd64.intoto.jsonl)" -eq 1 ] || {
