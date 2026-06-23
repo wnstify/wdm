@@ -451,6 +451,12 @@ func (p *installPlan) resolveUpdatePlaceholder(
 			)
 		}
 		p.resolvedValues[ph.Name] = value
+		// A sensitive non-secret placeholder carries user-supplied plaintext
+		// that must reach the redactor and the non-secret leak check exactly
+		// like a reused secret, even though it is not secret-typed.
+		if ph.Sensitive && value != "" {
+			p.reusedSecretValues = append(p.reusedSecretValues, value)
+		}
 		return nil
 	}
 

@@ -412,7 +412,7 @@ func assertInstalledStackOnDisk(t *testing.T, app catalog.App, stackPath string,
 
 // loadRealStableCatalogApps loads and validates the real stable catalog from
 // the source tree and returns its apps, failing the test on any error so a
-// malformed catalog cannot silently skip coverage. The nineteen curated apps
+// malformed catalog cannot silently skip coverage. The twenty curated apps
 // must all be present.
 func loadRealStableCatalogApps(t *testing.T) []catalog.App {
 	t.Helper()
@@ -422,7 +422,7 @@ func loadRealStableCatalogApps(t *testing.T) []catalog.App {
 	cat, err := catalog.LoadCatalog(context.Background(), abs)
 	require.NoError(t, err, "load real stable catalog")
 	require.NotNil(t, cat)
-	require.Len(t, cat.Apps, 19, "stable catalog must carry the nineteen curated apps")
+	require.Len(t, cat.Apps, 20, "stable catalog must carry the twenty curated apps")
 
 	return cat.Apps
 }
@@ -648,6 +648,13 @@ func requiredPlaceholderValues(t *testing.T, app catalog.App, stackPath string) 
 		switch ph.Type {
 		case "timezone":
 			values[ph.Name] = fixedTestTimezone
+		case "string":
+			// Required string placeholders (e.g. mira's GitHub App ID,
+			// webhook secret, OpenRouter key) are user-supplied via --set;
+			// a deterministic non-empty value satisfies the requirement.
+			if ph.Required {
+				values[ph.Name] = "test-" + strings.ToLower(ph.Name)
+			}
 		case "path":
 			// Path placeholders must be absolute, exist, and live outside
 			// the stack dir (install.go resolvePathPlaceholder). t.TempDir

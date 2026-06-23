@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -482,7 +483,13 @@ func (e *Engine) renderInstall(
 	if err := verifyCompletedServicesMatchCatalog(plan.app, plan.rendered.ServiceLabels); err != nil {
 		return err
 	}
-	return verifyRenderedNonSecretArtifacts(redactor, plan.generatedValues, plan.rendered, guidance)
+	// Generated secrets plus sensitive --set values are both forbidden from
+	// non-secret artifacts; sensitive values fail closed against inline
+	// rendering exactly as on the update and reconfigure paths. argon2id
+	// one-time plaintexts are deliberately excluded here (they never enter
+	// generatedValues), keeping the leak-check scope unchanged for every app.
+	leakSecrets := append(slices.Clone(plan.generatedValues), sensitiveSetValues(plan)...)
+	return verifyRenderedNonSecretArtifacts(redactor, leakSecrets, plan.rendered, guidance)
 }
 
 // buildInstallGuidance assembles the post-install guidance from the
@@ -563,11 +570,13 @@ func guidanceText(guidance *types.PostInstallGuidance) []byte {
 
 // installDockerClient builds the Docker client for one install
 // operation. The factory receives a fresh active redactor carrying the
-// plan's generated secret literals, so any Docker stderr surfaced by
-// compose validation or network pre-creation is scrubbed before it can
-// reach errors or logs.
+// plan's full redaction set (generated secrets, argon2id one-time
+// plaintexts, and sensitive --set values) via installRedactionSecrets, so
+// any Docker stderr surfaced by compose validation or network pre-creation
+// is scrubbed before it can reach errors or logs — the same source the
+// install logger uses.
 func (e *Engine) installDockerClient(plan *installPlan) (docker.Client, error) {
-	return e.buildDockerClient(security.NewActiveRedactor(plan.generatedValues))
+	return e.buildDockerClient(security.NewActiveRedactor(installRedactionSecrets(plan)))
 }
 
 // buildDockerClient constructs one operation's Docker client through
@@ -2007,7 +2016,24 @@ func installRedactionSecrets(plan *installPlan) []string {
 	for _, cred := range plan.shownCredentials {
 		secrets = append(secrets, cred.Value)
 	}
-	return secrets
+	return append(secrets, sensitiveSetValues(plan)...)
+}
+
+// sensitiveSetValues returns the resolved plaintext of user-supplied
+// placeholders flagged Sensitive (type:string via --set). wdm never
+// generates these, so they are not secret-typed; they are collected
+// separately for value-redaction and non-secret leak-checking, matching
+// the reused-secret treatment on the update and reconfigure paths.
+func sensitiveSetValues(plan *installPlan) []string {
+	var vals []string
+	for _, ph := range plan.app.Placeholders {
+		if ph.Sensitive {
+			if v := plan.resolvedValues[ph.Name]; v != "" {
+				vals = append(vals, v)
+			}
+		}
+	}
+	return vals
 }
 
 // installEnvEscapeDollar doubles every `$` so a value survives Docker

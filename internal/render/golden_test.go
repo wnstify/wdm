@@ -138,9 +138,9 @@ func TestGoldenRenderedArtifacts(t *testing.T) {
 
 	cat := loadStableCatalog(t)
 
-	// The nineteen curated apps must all be present; a missing entry is a
+	// The twenty curated apps must all be present; a missing entry is a
 	// catalog regression, not a skip.
-	require.Len(t, cat.Apps, 19, "stable catalog must carry the nineteen curated apps")
+	require.Len(t, cat.Apps, 20, "stable catalog must carry the twenty curated apps")
 
 	for _, app := range cat.Apps {
 		t.Run(app.AppID, func(t *testing.T) {
