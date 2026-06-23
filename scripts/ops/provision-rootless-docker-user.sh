@@ -244,7 +244,6 @@ export XDG_RUNTIME_DIR=\"/run/user/\$uid\"
 export DBUS_SESSION_BUS_ADDRESS=\"unix:path=\${XDG_RUNTIME_DIR}/bus\"
 tmpdir=\"\$(mktemp -d)\"
 trap 'rm -rf \"\$tmpdir\"' EXIT
-export PATH=\"\$HOME/bin:\$PATH\"
 compose_plugin=\"\$HOME/.docker/cli-plugins/docker-compose\"
 if [ -x \"\$HOME/bin/docker\" ] && [ -x \"\$HOME/bin/dockerd-rootless-setuptool.sh\" ]; then
   installed=\"\$(\"\$HOME/bin/docker\" --version 2>/dev/null || true)\"
