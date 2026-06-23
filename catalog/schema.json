@@ -220,7 +220,7 @@
           "type": "boolean",
           "description": "Per-secret rotation policy. Only allowed when type='secret' — the allOf branch below rejects this field on non-secret placeholders so catalog authors cannot pretend the field has any effect there. Defaults to true when absent: install always generates fresh values; update regenerates only when true (false-marked secrets are read from the existing .env via state.ReadStackEnv)."
         },
-        "sensitive": { "type": "boolean", "description": "Marks a non-secret user-supplied placeholder (type:string) whose plaintext must still be value-redacted from logs, errors, and JSON. Distinct from type:secret (wdm-generated). Defaults to false." }
+        "sensitive": { "type": "boolean", "description": "Marks a non-secret user-supplied placeholder (type:string) whose plaintext must still be value-redacted from logs, errors, and JSON. Distinct from type:secret (wdm-generated). Only allowed on type:string — the allOf branch below rejects sensitive:true elsewhere so the flag cannot be set where it has no effect. Defaults to false." }
       },
       "allOf": [
         {
@@ -240,6 +240,17 @@
                 { "required": ["regenerable"] }
               ]
             }
+          }
+        },
+        {
+          "$comment": "sensitive is meaningful only on a user-supplied type:string value; reject sensitive:true on other types (generated secrets are already redacted) so authors fail fast at catalog load.",
+          "if": {
+            "type": "object",
+            "required": ["sensitive"],
+            "properties": { "sensitive": { "const": true } }
+          },
+          "then": {
+            "properties": { "type": { "const": "string" } }
           }
         }
       ]
