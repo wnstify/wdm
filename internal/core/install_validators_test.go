@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/wnstify/wdm/internal/catalog"
 	"github.com/wnstify/wdm/pkg/types"
 )
 
@@ -87,4 +88,40 @@ func TestValidateTimezone_RejectsLoadLocationError(t *testing.T) {
 	require.ErrorAs(t, err, &typedErr)
 	require.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
 	require.ErrorIs(t, err, wantErr)
+}
+
+// resolveStringPlaceholder must reject CR/LF/NUL in a request value before it
+// reaches the .env template (the --set line-injection vector), while letting a
+// clean value through unchanged.
+func TestResolveStringPlaceholder_RejectsControlChars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		wantError bool
+	}{
+		{name: "clean value", value: "admin", wantError: false},
+		{name: "newline injection", value: "admin\nADMIN_PASSWORD=pwned", wantError: true},
+		{name: "carriage return", value: "admin\rextra", wantError: true},
+		{name: "nul byte", value: "admin\x00", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := resolveStringPlaceholder(catalog.Placeholder{Name: "ADMIN_USER"}, tt.value, true)
+			if !tt.wantError {
+				require.NoError(t, err)
+				require.Equal(t, tt.value, got)
+				return
+			}
+
+			require.Error(t, err)
+			var typedErr *types.Error
+			require.ErrorAs(t, err, &typedErr)
+			require.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
+		})
+	}
 }
