@@ -3,6 +3,7 @@ package core_test
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/wnstify/wdm/internal/catalog"
 	"github.com/wnstify/wdm/internal/core"
+	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/logging"
 	"github.com/wnstify/wdm/internal/security"
 	"github.com/wnstify/wdm/internal/system"
@@ -303,6 +305,187 @@ func TestInstall_DebugRecordsGatedByDebugFlag(t *testing.T) {
 			"--debug must surface command-argv summaries")
 		assert.Contains(t, all, "DEBUG", "debug records must be written at DEBUG level")
 		assert.NotContains(t, all, generatedSecret)
+	})
+}
+
+// TestInstall_RedactsSensitiveSetValueFromLogSink proves the value-redaction
+// path for a catalog `sensitive: true` placeholder: its user-supplied --set
+// plaintext is registered with the rebound install redactor via
+// installRedactionSecrets, so a later log line echoing it is scrubbed. The
+// --set values are BARE tokens (no KEY= context), so the structural
+// name-pattern redactor cannot catch them — only value registration can. A
+// non-flagged string placeholder of the same shape proves it is the value
+// path, not a name pattern: its token survives verbatim.
+func TestInstall_RedactsSensitiveSetValueFromLogSink(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sensitiveToken = "Zk9pXq7Wm2Lt4Rv8Bn3Hd6Fy1Gc5Js0"
+		plainToken     = "Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0K"
+	)
+
+	app := appFixture("sensitive-app", freeLocalTCPPort(t))
+	app.ComposeTemplate = "templates/sensitive-app/docker-compose.yml.tmpl"
+	app.EnvTemplate = "templates/sensitive-app/.env.tmpl"
+	app.Placeholders = []catalog.Placeholder{
+		{Name: "WEBHOOK_SECRET", Type: "string", Required: true, Sensitive: true},
+		{Name: "SITE_LABEL", Type: "string", Required: true},
+	}
+
+	tmp := coreTestTempDir(t)
+	stateDir := filepath.Join(tmp, "state")
+	dataDir := filepath.Join(tmp, "data")
+	stackBase := filepath.Join(tmp, "stacks")
+	require.NoError(t, os.MkdirAll(stackBase, 0o755))
+	configPath := filepath.Join(tmp, "nonexistent.toml")
+
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: "services:\n  app:\n    image: docker.io/example/app:1.0.0\n",
+		app.EnvTemplate:     "WEBHOOK_SECRET={{ .WEBHOOK_SECRET }}\nSITE_LABEL={{ .SITE_LABEL }}\n",
+	}, app)
+
+	eng, err := core.New(
+		core.WithStateDir(stateDir),
+		core.WithDataDir(dataDir),
+		core.WithStackBaseDir(stackBase),
+		core.WithConfigPath(configPath),
+		core.WithCatalog(catalogFS),
+		core.WithVersion("9.9.9-test"),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+	// Fail the first docker call (compose config validate) with an error that
+	// echoes both bare tokens, so the secret-aware failure logger must scrub
+	// the registered sensitive value while leaving the unflagged one intact.
+	fake := &fakeDockerClient{
+		runFn: func(call int, _ docker.Invocation) (docker.CommandResult, error) {
+			if call == 1 {
+				return docker.CommandResult{}, fmt.Errorf(
+					"compose config rejected values %s and %s",
+					sensitiveToken, plainToken,
+				)
+			}
+			return docker.CommandResult{}, nil
+		},
+	}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+
+	_, err = eng.Install(
+		t.Context(),
+		types.InstallRequest{
+			AppID: app.AppID,
+			PlaceholderValues: map[string]string{
+				"WEBHOOK_SECRET": sensitiveToken,
+				"SITE_LABEL":     plainToken,
+			},
+		},
+		nil,
+		&fakeConfirmer{},
+	)
+	require.Error(t, err)
+	require.NoError(t, eng.Close())
+
+	all := string(readLogBytes(t, filepath.Join(stateDir, "logs")))
+	assert.NotContains(t, all, sensitiveToken,
+		"sensitive --set value must be value-redacted from the log sink")
+	assert.Contains(t, all, security.RedactedPlaceholder,
+		"the scrubbed value must surface as the redaction placeholder")
+	assert.Contains(t, all, plainToken,
+		"an unflagged string --set value must NOT be redacted (proves value path, not name pattern)")
+}
+
+// TestInstall_FailsClosedOnSensitiveValueInlinedIntoCompose proves the install
+// leak verifier treats a sensitive --set value like a secret: when the compose
+// template inlines the value literally (not via ${VAR}), install refuses before
+// deploy — parity with the update/reconfigure leak check. An unflagged string
+// value inlined the same way does NOT trip the check, isolating the sensitive
+// dimension.
+func TestInstall_FailsClosedOnSensitiveValueInlinedIntoCompose(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sensitiveToken = "Inline-sensitive-canary-9Qw2Er4Ty6"
+		plainToken     = "Inline-plain-canary-7Zx3Cv5Bn8Mk1"
+	)
+
+	newEngine := func(t *testing.T, composeTemplate string) (*core.Engine, catalog.App) {
+		t.Helper()
+		app := appFixture("inline-leak-app", freeLocalTCPPort(t))
+		app.ComposeTemplate = "templates/inline-leak-app/docker-compose.yml.tmpl"
+		app.EnvTemplate = "templates/inline-leak-app/.env.tmpl"
+		app.Placeholders = []catalog.Placeholder{
+			{Name: "WEBHOOK_SECRET", Type: "string", Required: true, Sensitive: true},
+			{Name: "SITE_LABEL", Type: "string", Required: true},
+		}
+
+		tmp := coreTestTempDir(t)
+		stackBase := filepath.Join(tmp, "stacks")
+		require.NoError(t, os.MkdirAll(stackBase, 0o755))
+		catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+			app.ComposeTemplate: composeTemplate,
+			app.EnvTemplate:     "WEBHOOK_SECRET={{ .WEBHOOK_SECRET }}\nSITE_LABEL={{ .SITE_LABEL }}\n",
+		}, app)
+
+		eng, err := core.New(
+			core.WithStateDir(filepath.Join(tmp, "state")),
+			core.WithDataDir(filepath.Join(tmp, "data")),
+			core.WithStackBaseDir(stackBase),
+			core.WithConfigPath(filepath.Join(tmp, "nonexistent.toml")),
+			core.WithCatalog(catalogFS),
+			core.WithVersion("9.9.9-test"),
+		)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = eng.Close() })
+		core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+			return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+		})
+		core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(&fakeDockerClient{}))
+		return eng, app
+	}
+
+	install := func(t *testing.T, eng *core.Engine, app catalog.App) error {
+		t.Helper()
+		_, err := eng.Install(
+			t.Context(),
+			types.InstallRequest{
+				AppID: app.AppID,
+				PlaceholderValues: map[string]string{
+					"WEBHOOK_SECRET": sensitiveToken,
+					"SITE_LABEL":     plainToken,
+				},
+			},
+			nil,
+			&fakeConfirmer{},
+		)
+		return err
+	}
+
+	t.Run("sensitive value inlined fails closed", func(t *testing.T) {
+		t.Parallel()
+		// The compose inlines the sensitive value literally — a label echoing
+		// the resolved WEBHOOK_SECRET rather than referencing ${WEBHOOK_SECRET}.
+		compose := "services:\n  app:\n    image: docker.io/example/app:1.0.0\n" +
+			"    labels:\n      wdm.test: \"" + sensitiveToken + "\"\n"
+		eng, app := newEngine(t, compose)
+		err := install(t, eng, app)
+		require.Error(t, err, "sensitive value inlined into compose must fail closed")
+		assert.Contains(t, err.Error(), "non-secret artifact",
+			"failure must come from the non-secret leak verifier")
+	})
+
+	t.Run("unflagged value inlined passes", func(t *testing.T) {
+		t.Parallel()
+		// Same shape, but the inlined value is the unflagged SITE_LABEL, which
+		// the leak check ignores — install proceeds past the verifier.
+		compose := "services:\n  app:\n    image: docker.io/example/app:1.0.0\n" +
+			"    labels:\n      wdm.test: \"" + plainToken + "\"\n"
+		eng, app := newEngine(t, compose)
+		require.NoError(t, install(t, eng, app),
+			"an unflagged value inlined into compose must not trip the leak check")
 	})
 }
 

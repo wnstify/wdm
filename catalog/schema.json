@@ -219,7 +219,8 @@
         "regenerable": {
           "type": "boolean",
           "description": "Per-secret rotation policy. Only allowed when type='secret' — the allOf branch below rejects this field on non-secret placeholders so catalog authors cannot pretend the field has any effect there. Defaults to true when absent: install always generates fresh values; update regenerates only when true (false-marked secrets are read from the existing .env via state.ReadStackEnv)."
-        }
+        },
+        "sensitive": { "type": "boolean", "description": "Marks a non-secret user-supplied placeholder (type:string) whose plaintext must still be value-redacted from logs, errors, and JSON. Distinct from type:secret (wdm-generated). Defaults to false." }
       },
       "allOf": [
         {

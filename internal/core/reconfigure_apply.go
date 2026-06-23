@@ -264,7 +264,7 @@ func readStackFile(stackPath, name string) ([]byte, error) {
 func collectStackSecretValues(app catalog.App, env map[string]string) []string {
 	secrets := make([]string, 0, len(app.Placeholders))
 	for _, ph := range app.Placeholders {
-		if render.Type(ph.Type) != render.TypeSecret {
+		if render.Type(ph.Type) != render.TypeSecret && !ph.Sensitive {
 			continue
 		}
 		if value, ok := env[ph.Name]; ok && value != "" {
