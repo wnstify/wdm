@@ -4,7 +4,7 @@ import "testing"
 
 // WDM-SEC-001: the original attack is a moved or forged "latest" pointing at an
 // OLDER signed release (running v2.0.0, latest v1.1.0). Both the check-time
-// gate (selfUpdateAvailable) and the apply-time re-assertion (selfUpdateNotOlder)
+// gate (selfUpdateAvailable) and the apply-time re-assertion (selfUpdateStrictlyNewer)
 // must REFUSE it, must ALLOW a strictly-newer release, and must keep the
 // permissive fallback for dev/unstamped builds. These call the real comparison
 // functions directly (no mock).
@@ -20,29 +20,29 @@ func TestSelfUpdate_WDMSEC001_RefusesDowngrade(t *testing.T) {
 	if selfUpdateAvailable(running, older) {
 		t.Errorf("selfUpdateAvailable(%q, %q) = true, want false (older release must not be offered)", running, older)
 	}
-	if selfUpdateNotOlder(running, older) {
-		t.Errorf("selfUpdateNotOlder(%q, %q) = true, want false (apply must refuse downgrade)", running, older)
+	if selfUpdateStrictlyNewer(running, older) {
+		t.Errorf("selfUpdateStrictlyNewer(%q, %q) = true, want false (apply must refuse downgrade)", running, older)
 	}
 
 	if !selfUpdateAvailable(running, newer) {
 		t.Errorf("selfUpdateAvailable(%q, %q) = false, want true (strictly newer must be offered)", running, newer)
 	}
-	if !selfUpdateNotOlder(running, newer) {
-		t.Errorf("selfUpdateNotOlder(%q, %q) = false, want true (apply must permit strictly newer)", running, newer)
+	if !selfUpdateStrictlyNewer(running, newer) {
+		t.Errorf("selfUpdateStrictlyNewer(%q, %q) = false, want true (apply must permit strictly newer)", running, newer)
 	}
 
 	// Unstamped fallback: a non-semver running build (not the "dev" sentinel,
 	// which is never offered an update) still sees a differing published release
-	// as available via the != path, and selfUpdateNotOlder permits the apply.
+	// as available via the != path, and selfUpdateStrictlyNewer permits the apply.
 	if !selfUpdateAvailable("nightly", older) {
 		t.Errorf("selfUpdateAvailable(nightly, %q) = false, want true (unstamped != fallback)", older)
 	}
-	if !selfUpdateNotOlder("nightly", older) {
-		t.Errorf("selfUpdateNotOlder(nightly, %q) = false, want true (unstamped permissive fallback)", older)
+	if !selfUpdateStrictlyNewer("nightly", older) {
+		t.Errorf("selfUpdateStrictlyNewer(nightly, %q) = false, want true (unstamped permissive fallback)", older)
 	}
 }
 
-// selfUpdateAvailable and selfUpdateNotOlder must treat a self-update as a
+// selfUpdateAvailable and selfUpdateStrictlyNewer must treat a self-update as a
 // strictly-newer-only operation when both versions are valid semver, so a
 // moved or forged "latest" can never downgrade or re-install the same version.
 // Invalid/dev pairs fall back to the prior "differs"/"permit" posture so
@@ -94,8 +94,8 @@ func TestSelfUpdateNotOlder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := selfUpdateNotOlder(tt.current, tt.candidate); got != tt.want {
-				t.Errorf("selfUpdateNotOlder(%q, %q) = %v, want %v", tt.current, tt.candidate, got, tt.want)
+			if got := selfUpdateStrictlyNewer(tt.current, tt.candidate); got != tt.want {
+				t.Errorf("selfUpdateStrictlyNewer(%q, %q) = %v, want %v", tt.current, tt.candidate, got, tt.want)
 			}
 		})
 	}

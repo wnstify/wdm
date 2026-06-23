@@ -153,12 +153,12 @@ func selfUpdateAvailable(current, latest string) bool {
 	return current != latest
 }
 
-// selfUpdateNotOlder reports whether candidate is acceptable to install over
+// selfUpdateStrictlyNewer reports whether candidate is acceptable to install over
 // current at apply time: strictly newer when both are valid semver, otherwise
 // (a dev/unstamped build on either side) it permits the apply, matching
 // selfUpdateAvailable's fallback so non-release builds can still self-update.
 // It is the apply-path re-assertion of the check-time downgrade guard.
-func selfUpdateNotOlder(current, candidate string) bool {
+func selfUpdateStrictlyNewer(current, candidate string) bool {
 	c, cand := semver.Canonical(ensureV(current)), semver.Canonical(ensureV(candidate))
 	if semver.IsValid(c) && semver.IsValid(cand) {
 		return semver.Compare(cand, c) > 0

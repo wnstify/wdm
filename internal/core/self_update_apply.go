@@ -156,7 +156,7 @@ func (e *Engine) ApplySelfUpdate(
 	// pointing at an older release). When either version is not valid semver
 	// (a dev/unstamped build) it does not block, matching the check-time
 	// fallback so those builds can still self-update.
-	if !selfUpdateNotOlder(e.version, appliedVersion) {
+	if !selfUpdateStrictlyNewer(e.version, appliedVersion) {
 		return nil, usageValidationError(
 			"the verified release is not newer than the running version",
 			fmt.Sprintf("the running version is %s and the verified release is %s; self-update does not downgrade", displayVersion(e.version), appliedVersion),
