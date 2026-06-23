@@ -64,7 +64,7 @@ Manual fallback:
 
 Instead of a `docker`-group account, you can run `wdm` against a dedicated user with [rootless Docker](https://docs.docker.com/engine/security/rootless/): the daemon runs unprivileged under that user, with no `docker` group and no root-owned socket. `provision-rootless-docker-user.sh` bootstraps such a host — it creates the user, allocates subuid/subgid ranges, enables systemd linger, and installs SHA-256-pinned rootless Docker and Compose.
 
-Run it as root on the target server (it refuses `docker`-group members and existing system accounts):
+Run it as root, or as a user with `sudo`, on the target server (it refuses `docker`-group members and existing system accounts):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wnstify/wdm/main/scripts/ops/provision-rootless-docker-user.sh | sudo bash -s -- --user wdm
@@ -112,7 +112,7 @@ Run `wdm <command> --help` for the full flag set of any command.
 
 ## Safety model
 
-- **No root, no sudo.** `wdm` refuses to run as root or under sudo; run it as a normal user in the `docker` group.
+- **No root, no sudo.** `wdm` refuses to run as root or under sudo; run it as a normal user — in the `docker` group, or with [rootless Docker](#rootless-docker-host-optional).
 - **Localhost by default.** Generated stacks bind to localhost. A template opens a public port only when the app genuinely requires one (for example a VPN listener).
 - **Signed and verified.** Catalog and release artifacts are signed, and verification fails closed on a missing or invalid signature, checksum, or attestation.
 - **Managed stacks only.** `wdm` touches only the stacks it manages under `~/docker/<app>/`, and never writes outside the selected stack directory.
