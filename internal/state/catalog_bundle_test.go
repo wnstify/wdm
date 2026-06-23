@@ -113,10 +113,12 @@ func TestExtractTarGzToDir_HappyPathProducesContainedTree(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o755), rootInfo.Mode().Perm())
 }
 
-// A trusted catalog bundle never carries two members that normalize to the same
-// path. ExtractTarGzToDir must fail closed on a duplicate regular-file member so
-// a later peek and the activated tree cannot silently diverge.
-func TestExtractTarGzToDir_RejectsDuplicateMember(t *testing.T) {
+// WDM-SEC-002: the original attack is a verified bundle carrying two members
+// that normalize to the same path (e.g. two stable/catalog.yaml entries), so an
+// anti-rollback peek sees one manifest while last-write-wins activates another.
+// ExtractTarGzToDir must fail closed on the duplicate regular-file member. This
+// drives the real ExtractTarGzToDir -> extractMembers seen-files guard (no mock).
+func TestExtractTarGzToDir_WDMSEC002_RejectsDuplicateMember(t *testing.T) {
 	t.Parallel()
 
 	bundle := makeTarGz(t, []tarMember{

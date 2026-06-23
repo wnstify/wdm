@@ -10,10 +10,12 @@ import (
 	"github.com/wnstify/wdm/internal/security"
 )
 
-// The Logs path seeds its redactor from the stack .env via validateConfigRedactor
-// so a bare secret literal echoed into a log line is scrubbed. A stack without a
-// .env still yields a working (structural-only) redactor rather than failing.
-func TestValidateConfigRedactor_SeedsFromStackEnv(t *testing.T) {
+// WDM-SEC-006: the Logs path must seed its redactor from the stack .env VALUES
+// (via the real validateConfigRedactor seam) so a bare generated-secret literal
+// echoed into a container log line is scrubbed; the prior nil-redactor path left
+// it in cleartext. This drives the real validateConfigRedactor and asserts the
+// literal is replaced with the redaction placeholder (no mock).
+func TestValidateConfigRedactor_WDMSEC006_SeedsFromStackEnv(t *testing.T) {
 	t.Parallel()
 
 	stackPath := t.TempDir()
