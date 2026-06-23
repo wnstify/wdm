@@ -38,7 +38,7 @@
 - **Platform:** Linux amd64
 - **OS:** Debian 12 / 13, Ubuntu 24.04 / 26.04
 - **Runtime:** Docker 20.10+ with Compose V2
-- **User:** a normal account in the `docker` group — `wdm` refuses to run as root or under sudo
+- **User:** a normal account in the `docker` group, or a [rootless Docker](#rootless-docker-host-optional) setup — `wdm` refuses to run as root or under sudo
 
 ## Install
 
@@ -59,6 +59,18 @@ Manual fallback:
 1. Download the binary (`wdm-linux-amd64`) and the verification assets (`SHA256SUMS`, its signatures, the provenance attestation, and the SBOM) from the [Releases page](https://github.com/wnstify/wdm/releases).
 2. **Verify before you run.** Check the signature, checksums, and provenance attestation as described in [SECURITY.md](SECURITY.md). Verification fails closed: a missing or invalid signature, checksum, or attestation stops the process — do not run an artifact that does not verify.
 3. Place the verified binary on your `PATH` (for example `~/.local/bin/wdm`) and mark it executable.
+
+## Rootless Docker host (optional)
+
+Instead of a `docker`-group account, you can run `wdm` against a dedicated user with [rootless Docker](https://docs.docker.com/engine/security/rootless/): the daemon runs unprivileged under that user, with no `docker` group and no root-owned socket. `provision-rootless-docker-user.sh` bootstraps such a host — it creates the user, allocates subuid/subgid ranges, enables systemd linger, and installs SHA-256-pinned rootless Docker and Compose.
+
+Run it as root on the target server (it refuses `docker`-group members and existing system accounts):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wnstify/wdm/main/scripts/ops/provision-rootless-docker-user.sh | sudo bash -s -- --user wdm
+```
+
+Review the script before piping it into a root shell, or download it and pass `--dry-run` first to print every command without changing the system. Then log in as that user, install `wdm` as shown above, and run it.
 
 ## First run
 
