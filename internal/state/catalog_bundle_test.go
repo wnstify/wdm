@@ -113,6 +113,26 @@ func TestExtractTarGzToDir_HappyPathProducesContainedTree(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o755), rootInfo.Mode().Perm())
 }
 
+// A trusted catalog bundle never carries two members that normalize to the same
+// path. ExtractTarGzToDir must fail closed on a duplicate regular-file member so
+// a later peek and the activated tree cannot silently diverge.
+func TestExtractTarGzToDir_RejectsDuplicateMember(t *testing.T) {
+	t.Parallel()
+
+	bundle := makeTarGz(t, []tarMember{
+		{Name: "stable/", Dir: true},
+		{Name: "stable/catalog.yaml", Body: "schema_version: 1\n"},
+		{Name: "stable/catalog.yaml", Body: "schema_version: 2\n"},
+	})
+
+	root := secureTempDir(t)
+	dest := filepath.Join(root, "dup")
+
+	err := state.ExtractTarGzToDir(context.Background(), bundle, dest)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, state.ErrBundleExtraction)
+}
+
 func TestExtractTarGzToDir_RejectsExistingDestination(t *testing.T) {
 	t.Parallel()
 
