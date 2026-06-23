@@ -3,9 +3,12 @@
 # GitHub App that reviews pull requests with an LLM of your choice).
 #
 # Security baseline:
-#   - cap_drop: ALL with minimum caps only — postgres adds the five init /
-#     privilege-drop caps; mira runs rootless (uid 1000) and needs ZERO added
-#     caps (probe-verified), so it carries cap_drop: ALL with no cap_add.
+#   - cap_drop: ALL on both services — postgres re-adds only its five init /
+#     privilege-drop caps; mira adds none. The mira image ships no USER, so it
+#     runs as root in-container — needed to write its Docker-created root:root
+#     index volume — contained by cap_drop: ALL + no-new-privileges (and
+#     remapped to an unprivileged host uid under rootless Docker). Do NOT pin a
+#     non-root user: it cannot write the root:root named volume.
 #   - security_opt: no-new-privileges; ipc: private on every container
 #   - Two-network isolation (wdm creates internal networks at install):
 #       mira-front  (external) — reverse proxy reaches mira here
@@ -87,9 +90,6 @@ services:
   mira:
     image: ghcr.io/miracodeai/mira:0.4.0
     container_name: mira
-    # Pin the rootless uid declaratively (probe-verified image default) so a
-    # future image rebuild cannot silently revert the app to root.
-    user: "1000"
     restart: unless-stopped
     depends_on:
       postgres:
@@ -133,10 +133,10 @@ services:
       - mira-db
     cap_drop:
       - ALL
-    # mira runs rootless (uid 1000) and needs no added capabilities
-    # (probe-verified): it binds the unprivileged port 8000 and writes its
-    # named index volume without any chown/setuid caps. cap_drop: ALL with no
-    # cap_add.
+    # The image ships no USER, so mira runs as root in-container — required to
+    # write its Docker-created root:root index volume — but adds no caps. A
+    # non-root user: pin breaks that write; cap_drop: ALL + no-new-privileges
+    # (and rootless Docker's uid remap) keep root contained.
     security_opt:
       - no-new-privileges:true
     ipc: private
