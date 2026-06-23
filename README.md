@@ -145,6 +145,7 @@ See [SECURITY-DESIGN.md](SECURITY-DESIGN.md) for actors, actions, trust boundari
 | Zulip | Team chat with topic-based threading (a Slack alternative). |
 | Dockhand | Docker-management web UI with filtered socket access (a Portainer alternative). |
 | Stoat | Chat platform (formerly Revolt) with channels, voice, and file sharing. |
+| Mira | Mira is a self-hostable, fully open-source AI code reviewer. |
 
 ## Limitations & support
 
