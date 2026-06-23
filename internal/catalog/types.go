@@ -267,6 +267,11 @@ type Placeholder struct {
 	// a non-pointer bool would default to false and silently invert
 	// the documented semantics.
 	Regenerable *bool `yaml:"regenerable,omitempty" json:"regenerable,omitempty"`
+
+	// Sensitive marks a non-secret, user-supplied value (type:string via --set)
+	// whose plaintext must still be value-redacted from logs, errors, and JSON.
+	// wdm does not generate it, so it is not type:secret; false = ordinary string.
+	Sensitive bool `yaml:"sensitive,omitempty" json:"sensitive,omitempty"`
 }
 
 // Port is a single port declaration in an [App.Ports] entry.
