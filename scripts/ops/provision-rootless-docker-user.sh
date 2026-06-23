@@ -102,8 +102,8 @@ ensure_root() {
 
 install_prerequisites() {
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf '+ apt-get update\n'
-    printf '+ apt-get install -y ca-certificates curl dbus-user-session iproute2 procps sudo tar uidmap\n'
+    printf '+ DEBIAN_FRONTEND=noninteractive apt-get update\n'
+    printf '+ DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl dbus-user-session iproute2 procps sudo tar uidmap\n'
     return
   fi
 
@@ -112,6 +112,7 @@ install_prerequisites() {
     return
   fi
 
+  export DEBIAN_FRONTEND=noninteractive
   run apt-get update
   run apt-get install -y ca-certificates curl dbus-user-session iproute2 procps sudo tar uidmap
 }
@@ -142,6 +143,7 @@ ensure_subid() {
   local file="$1"
   local start
 
+  run touch "$file"
   if grep -q "^${USERNAME}:" "$file" 2>/dev/null; then
     return
   fi
@@ -329,6 +331,8 @@ install_prerequisites
 ensure_ipv4_forwarding
 
 if user_exists; then
+  existing_uid="$(id -u "$USERNAME")"
+  [ "$existing_uid" -ge 1000 ] || fail "Refusing existing system account $USERNAME (uid=$existing_uid). Provision a dedicated non-system user instead."
   printf 'User already exists: %s\n' "$USERNAME"
 else
   run useradd --create-home --shell /bin/bash "$USERNAME"
