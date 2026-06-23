@@ -149,6 +149,21 @@ func (e *Engine) ApplySelfUpdate(
 		)
 	}
 
+	// Step 4c: re-assert the candidate is strictly newer than the running
+	// binary, mirroring selfUpdateAvailable's check-time guard. This refuses a
+	// downgrade or same-version re-install at apply time even if the candidate
+	// would otherwise pass verification (defense against a moved/forged "latest"
+	// pointing at an older release). When either version is not valid semver
+	// (a dev/unstamped build) it does not block, matching the check-time
+	// fallback so those builds can still self-update.
+	if !selfUpdateNotOlder(e.version, appliedVersion) {
+		return nil, usageValidationError(
+			"the verified release is not newer than the running version",
+			fmt.Sprintf("the running version is %s and the verified release is %s; self-update does not downgrade", displayVersion(e.version), appliedVersion),
+			fmt.Errorf("running version %q, verified candidate %q is not newer", e.version, appliedVersion),
+		)
+	}
+
 	if onProgress != nil {
 		onProgress(types.StepSelfUpdateStage, 60, "staged verified candidate binary")
 	}
