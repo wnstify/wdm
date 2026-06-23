@@ -1,0 +1,178 @@
+# Mira (Miracode) — Hardened Docker Compose (wdm template, AI code reviewer)
+# Two services: postgres backend + the mira app container (a self-hosted
+# GitHub App that reviews pull requests with an LLM of your choice).
+#
+# Security baseline:
+#   - cap_drop: ALL with minimum caps only — postgres adds the five init /
+#     privilege-drop caps; mira runs rootless (uid 1000) and needs ZERO added
+#     caps (probe-verified), so it carries cap_drop: ALL with no cap_add.
+#   - security_opt: no-new-privileges; ipc: private on every container
+#   - Two-network isolation (wdm creates internal networks at install):
+#       mira-front  (external) — reverse proxy reaches mira here
+#       mira-db     (internal) — mira <-> postgres only, no internet
+#   - deploy.resources limits incl. pids on every container
+#   - tmpfs for postgres ephemeral writes; healthchecks gate startup via
+#     depends_on
+#   - 127.0.0.1 port binding only — reverse proxy in front for TLS
+#   - SCRAM-SHA-256 password auth on postgres (stronger than the default md5)
+#   - postgres data dir is a named volume (db_storage); the index store is a
+#     named volume (indexes_storage) — it holds the dashboard admin/settings DB
+#     and is NOT a rebuildable cache, so it is preserved on remove
+#   - the GitHub App private key is mounted read-only from a user-supplied host
+#     path (MIRA_PEM_PATH) so the in-container uid only ever reads it
+#
+# wdm renders this template into ~/docker/mira/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` time via
+# --env-file ~/docker/mira/.env (mode 0600).
+
+name: mira
+services:
+  postgres:
+    image: postgres:18.3-alpine
+    container_name: mira-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # SCRAM-SHA-256 password hashing instead of the historical md5 default.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      # Postgres 18 moved its default data dir under /var/lib/postgresql/18/.
+      # Pin it back to /var/lib/postgresql/data so the named volume layout
+      # stays stable across image upgrades.
+      PGDATA: /var/lib/postgresql/data
+      TZ: ${TZ}
+    volumes:
+      # Named volume (not a bind mount): postgres self-chowns its PGDATA on
+      # init, and a named volume keeps the data inside Docker rather than in a
+      # host dir wdm would have to pre-create.
+      - db_storage:/var/lib/postgresql/data
+    networks:
+      - mira-db
+    cap_drop:
+      - ALL
+    cap_add:
+      # Minimum caps for the postgres entrypoint init + privilege drop to
+      # postgres:postgres. No NET_* / SYS_*.
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=64m
+      - /var/run/postgresql:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_POSTGRES}
+          cpus: "${CPUS_LIMIT_POSTGRES}"
+          pids: ${PIDS_LIMIT_POSTGRES}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "mira"
+  mira:
+    image: ghcr.io/miracodeai/mira:0.4.0
+    container_name: mira
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000" # localhost only — front with a reverse proxy
+    environment:
+      # Code/vector indexes + the dashboard admin/settings SQLite DB live here.
+      MIRA_INDEX_DIR: /data/indexes
+      # docuseal-style external Postgres connection (non-default; mira falls
+      # back to SQLite without it). The password is base64url-encoded so it
+      # carries no ':' / '@' / '$' that would break the URL.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # GitHub App ID (user-supplied at install via --set).
+      MIRA_GITHUB_APP_ID: ${MIRA_GITHUB_APP_ID}
+      # GitHub App private key. The '@' prefix tells mira to read the PEM from
+      # the mounted file path rather than treat the value as an inline key.
+      MIRA_GITHUB_PRIVATE_KEY: "@/keys/github-app.pem"
+      # Webhook secret — must match the GitHub App registration.
+      MIRA_WEBHOOK_SECRET: ${MIRA_WEBHOOK_SECRET}
+      # LLM provider key (OpenRouter by default).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      # Default primary model (env fallback; dashboard can override live).
+      MIRA_MODEL: ${MIRA_MODEL}
+      # Dashboard admin password (username is always 'admin'). Created once on
+      # first boot; changing it later does not update the existing admin.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      # Index store (vector/code indexes + the dashboard _app.db that holds the
+      # admin login, model settings, and custom rules). Named volume so wdm
+      # need not pre-create a host bind dir; preserved on remove — it is NOT a
+      # rebuildable cache.
+      - indexes_storage:/data/indexes
+      # GitHub App private key, read-only, from a user-supplied host path
+      # (MIRA_PEM_PATH). internal/core validates the path (absolute, exists,
+      # outside the stack dir, symlinks resolved) at install planning time.
+      - ${MIRA_PEM_PATH}:/keys/github-app.pem:ro
+    networks:
+      - mira-front
+      - mira-db
+    cap_drop:
+      - ALL
+    # mira runs rootless (uid 1000) and needs no added capabilities
+    # (probe-verified): it binds the unprivileged port 8000 and writes its
+    # named index volume without any chown/setuid caps. cap_drop: ALL with no
+    # cap_add.
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    deploy:
+      resources:
+        limits:
+          memory: ${MEMORY_LIMIT_MIRA}
+          cpus: "${CPUS_LIMIT_MIRA}"
+          pids: ${PIDS_LIMIT_MIRA}
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+    healthcheck:
+      # /health returns 200 once mira is ready. The image ships Python, not
+      # curl/wget, so the probe uses urllib. First boot runs migrations + a
+      # GitHub backfill before binding, so start_period: 90s covers the cold
+      # start.
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 90s
+    labels:
+      wdm.managed: "true"
+      wdm.app: "mira"
+networks:
+  # Front: reverse proxy reaches mira here (or via 127.0.0.1:8000). mira needs
+  # outbound to the GitHub API + the LLM provider, so this network is external.
+  mira-front:
+    external: true
+  # Backend DB: mira <-> postgres only, no internet egress. wdm creates this
+  # with --internal at install time.
+  mira-db:
+    external: true
+volumes:
+  # Postgres data dir. A named volume so wdm need not pre-create a host bind
+  # dir; postgres self-chowns it on init. Preserved on remove.
+  db_storage:
+  # Index store (vector/code indexes + the dashboard _app.db). A named volume —
+  # holds the admin login, model settings, and custom rules, so it is NOT a
+  # cache. Preserved on remove like db_storage.
+  indexes_storage:
