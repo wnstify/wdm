@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-23T16:00:00Z"
+generated_at: "2026-06-23T17:00:00Z"
 
 apps:
 
@@ -4157,11 +4157,13 @@ apps:
       - name: MIRA_WEBHOOK_SECRET
         type: string
         required: true
+        sensitive: true
 
       # LLM provider key (OpenRouter by default). User-supplied via --set.
       - name: OPENROUTER_API_KEY
         type: string
         required: true
+        sensitive: true
 
       # Absolute host path to the GitHub App private key (PEM). Mounted
       # read-only at /keys/github-app.pem. internal/core validates it at install
