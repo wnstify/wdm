@@ -41,7 +41,7 @@ type uninstallDockerClient struct {
 	onNetworkRemove    func(name string)    // optional hook fired before each network rm is answered
 	unmanagedNetworks  map[string]bool      // names whose wdm.managed label inspect reports NOT owned
 	networkLabelErr    map[string]error     // network name -> error to inject from the label inspect
-	networkLabelStder  map[string]string    // network name -> stderr to inject alongside the label-inspect error
+	networkLabelStderr map[string]string    // network name -> stderr to inject alongside the label-inspect error
 }
 
 func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
@@ -52,7 +52,7 @@ func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
 		networkRemoveStder: map[string]string{},
 		unmanagedNetworks:  map[string]bool{},
 		networkLabelErr:    map[string]error{},
-		networkLabelStder:  map[string]string{},
+		networkLabelStderr: map[string]string{},
 	}
 }
 
@@ -108,7 +108,7 @@ func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (d
 		// empty so the removal skips it.
 		name := invocationField(inv, "name:")
 		if err := c.networkLabelErr[name]; err != nil {
-			return docker.CommandResult{Stderr: c.networkLabelStder[name]}, err
+			return docker.CommandResult{Stderr: c.networkLabelStderr[name]}, err
 		}
 		if c.unmanagedNetworks[name] {
 			return docker.CommandResult{Stdout: "\n"}, nil
