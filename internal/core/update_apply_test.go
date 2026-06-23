@@ -194,7 +194,7 @@ func updateApplySecretGenerator(t *testing.T) func(security.Encoding) (string, e
 
 func renderEnvFixture(env map[string]string) string {
 	var b strings.Builder
-	for _, key := range []string{"DB_PASSWORD", "API_TOKEN", "SITE_NAME"} {
+	for _, key := range []string{"DB_PASSWORD", "API_TOKEN", "SITE_NAME", "WEBHOOK_SECRET"} {
 		value, ok := env[key]
 		if !ok {
 			continue
@@ -635,6 +635,64 @@ func TestUpdate_ApplyReusedSecretLeakIntoComposeFailsRedacted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sidecarBefore, sidecarAfter,
 		"a verification failure must not touch the stack sidecar")
+}
+
+// TestUpdate_ApplySensitiveValueLeakIntoComposeFailsRedacted covers the
+// update-path sensitive append (resolveUpdatePlaceholder, update_apply.go:458):
+// a sensitive non-secret placeholder reused from the on-disk .env enters
+// reusedSecretValues, so it both seeds the redactor and is forbidden from
+// non-secret artifacts. The compose inlines the resolved sensitive value as a
+// BARE token (no KEY= context), so only value-registration can catch it. The
+// update must fail the non-secret leak check before any write, and the bare
+// token must never appear in the error chain — parity with a reused secret.
+func TestUpdate_ApplySensitiveValueLeakIntoComposeFailsRedacted(t *testing.T) {
+	t.Parallel()
+
+	const sensitiveValue = "Wb7Hk2Pq9Zr4Tn6Vc1Xd8Fy3Gj5Ms0"
+
+	app := updateApplyApp("apply-sensitive-leak-app")
+	app.Placeholders = append(app.Placeholders,
+		catalog.Placeholder{Name: "WEBHOOK_SECRET", Type: "string", Required: true, Sensitive: true},
+	)
+
+	fx := newUpdateApplyFixture(t, app, false, func(templates map[string]string) {
+		// Inline the resolved sensitive value as a bare label token — no
+		// WEBHOOK_SECRET= context, so the structural name-pattern redactor
+		// cannot catch it; only value-registration via reusedSecretValues can.
+		templates["templates/apply-sensitive-leak-app/docker-compose.yml.tmpl"] = `services:
+  app:
+    image: docker.io/example/app:2.0.0
+    volumes:
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    labels:
+      wdm.test: "{{ .WEBHOOK_SECRET }}"
+`
+		// Reference WEBHOOK_SECRET in .env.tmpl so it renders into the
+		// (secret-bearing) .env normally; the leak is the same value
+		// inlined into the non-secret compose label above.
+		templates["templates/apply-sensitive-leak-app/.env.tmpl"] =
+			"DB_PASSWORD={{ .DB_PASSWORD }}\nAPI_TOKEN={{ .API_TOKEN }}\n" +
+				"SITE_NAME={{ .SITE_NAME }}\nWEBHOOK_SECRET={{ .WEBHOOK_SECRET }}\n"
+	}, func(env map[string]string) {
+		env["WEBHOOK_SECRET"] = sensitiveValue
+	})
+
+	composeBefore, err := os.ReadFile(fx.composePath)
+	require.NoError(t, err)
+
+	res, err := fx.eng.Update(t.Context(), types.UpdateRequest{AppID: fx.appID}, nil, nil)
+	require.Error(t, err)
+	assert.Nil(t, res)
+	assertVerificationFailed(t, err)
+	assertErrorChainDoesNotContain(t, err, sensitiveValue)
+	assert.Zero(t, fx.fake.calls)
+
+	// The leak check fires before any write, so the on-disk compose is
+	// byte-identical to its pre-update contents.
+	composeAfter, err := os.ReadFile(fx.composePath)
+	require.NoError(t, err)
+	assert.Equal(t, composeBefore, composeAfter,
+		"a verification failure must not touch the stack compose")
 }
 
 // TestUpdate_ApplyReleasesStackFlock proves the per-stack exclusive flock

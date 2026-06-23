@@ -448,6 +448,33 @@ apps:
 `,
 		},
 		{
+			"sensitive_on_non_string",
+			`schema_version: 1
+channel: stable
+generated_at: "2026-05-19T09:14:33Z"
+apps:
+  - app_id: vaultwarden
+    name: Vaultwarden
+    summary: ok
+    description: ok
+    template_name: vaultwarden
+    template_version: "1.0.0"
+    compose_template: x/compose.yaml
+    env_template: x/env.template
+    placeholders:
+      - name: API_TOKEN
+        type: secret
+        required: true
+        encoding: hex
+        sensitive: true
+    supported_versions: { docker: ">=20.10", compose: ">=2.0" }
+    ports: []
+    image_pins: []
+    pangolin_guidance: {}
+    risk_classification: [database]
+`,
+		},
+		{
 			"completed_services_non_string_item",
 			`schema_version: 1
 channel: stable
