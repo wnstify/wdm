@@ -398,3 +398,28 @@ func TestCommandInjection_AllowlistRejectsShellAndInjectedTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestCommandInjection_ManagedLabelInspectAllowlisted drives the real builder
+// and the real validateCommandSpec/validateNetworkArgv path for the ownership
+// gate's `network inspect --format {{index .Labels "wdm.managed"}}` shape.
+// A prior fix added the builder but never extended the inspect-arm allowlist,
+// so every compose-external network was retained instead of removed. This
+// asserts the genuine label-inspect argv is ACCEPTED while a bogus inspect
+// format is still refused (PRD §10).
+func TestCommandInjection_ManagedLabelInspectAllowlisted(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildNetworkManagedLabelCommand("wdm_default")
+	require.NoError(t, err)
+	require.NoError(t, validateCommandSpec(cmd))
+
+	bogus := commandSpec{argv: []string{
+		"network", "inspect", "--format", "{{.Driver}}", "wdm_default",
+	}}
+	err = validateCommandSpec(bogus)
+	require.Error(t, err)
+
+	var typedErr *types.Error
+	require.ErrorAs(t, err, &typedErr)
+	assert.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
+}

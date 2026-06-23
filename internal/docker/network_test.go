@@ -1402,3 +1402,50 @@ func TestParseManagedNetworkNames(t *testing.T) {
 		})
 	}
 }
+
+// RemoveNetworkIfManaged must remove only networks carrying wdm.managed=true;
+// an unlabeled (foreign) network is skipped without a `network rm` ever
+// reaching the daemon.
+func TestRemoveNetworkIfManaged_GatesOnOwnershipLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		labelValue  string
+		wantRemoved bool
+		wantSkipped bool
+		wantRm      bool
+	}{
+		{name: "managed network removed", labelValue: "true", wantRemoved: true, wantSkipped: false, wantRm: true},
+		{name: "unlabeled network skipped", labelValue: "", wantRemoved: false, wantSkipped: true, wantRm: false},
+		{name: "foreign label value skipped", labelValue: "false", wantRemoved: false, wantSkipped: true, wantRm: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rmCalled := false
+			fake := &ensureNetworkFakeClient{
+				runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
+					switch inv.(type) {
+					case networkManagedLabelInvocation:
+						return CommandResult{Stdout: tt.labelValue + "\n"}, nil
+					case removeNetworkInvocation:
+						rmCalled = true
+						return CommandResult{}, nil
+					default:
+						t.Fatalf("unexpected invocation %T", inv)
+						return CommandResult{}, nil
+					}
+				},
+			}
+
+			removed, skipped, err := RemoveNetworkIfManaged(t.Context(), fake, "wdm_default")
+			require.NoError(t, err)
+			require.Equal(t, tt.wantRemoved, removed)
+			require.Equal(t, tt.wantSkipped, skipped)
+			require.Equal(t, tt.wantRm, rmCalled)
+		})
+	}
+}

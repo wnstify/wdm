@@ -18,7 +18,10 @@
 //	  A spec carrying an app id stamps the PRD §10 ownership labels
 //	  (wdm.managed=true, wdm.app=<app>) on newly-created networks;
 //	  [RemoveNetworkIfPresent] is the idempotent, not-found-tolerant
-//	  removal used by destructive delete and self-uninstall.
+//	  removal used by install rollback and the label-discovered uninstall
+//	  sweep, while [RemoveNetworkIfManaged] gates compose-derived delete and
+//	  uninstall removal on the wdm.managed=true ownership label so a foreign
+//	  network reached only by name is never deleted.
 //	-: [InspectProjectContainers], [InspectImageDigest], and
 //	  [ListProjectNamedVolumes] wrap inspection for labels, ports, image
 //	  digests, and named volume listing.

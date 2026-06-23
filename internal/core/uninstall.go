@@ -662,14 +662,26 @@ func (e *Engine) removeManagedNetworks(
 	}
 
 	for _, name := range names {
-		if err := docker.RemoveNetworkIfPresent(ctx, client, name); err != nil {
+		ok, skipped, err := docker.RemoveNetworkIfManaged(ctx, client, name)
+		if err != nil {
 			retained = append(retained, types.RetainedNetwork{
 				Name:   name,
 				Reason: err.Error(),
 			})
 			continue
 		}
-		removed = append(removed, name)
+		if skipped {
+			// Present but not wdm-owned: a compose-named network that now
+			// resolves to a foreign one is left alone, not removed.
+			retained = append(retained, types.RetainedNetwork{
+				Name:   name,
+				Reason: "network is not wdm-managed (missing wdm.managed=true label)",
+			})
+			continue
+		}
+		if ok {
+			removed = append(removed, name)
+		}
 	}
 	return removed, retained
 }
