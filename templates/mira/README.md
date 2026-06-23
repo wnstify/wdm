@@ -23,29 +23,56 @@
 - Docker and Docker Compose
 - A public HTTPS endpoint (Pangolin or your own reverse proxy) so GitHub can deliver webhooks
 - A registered GitHub App (see below)
-- An OpenRouter API key (or Bedrock/direct provider credentials)
+- An OpenRouter API key with credit (or Bedrock/direct provider credentials)
 
 ## Setup guide
 
-Mira needs credentials that only you can create, so the install is wired in a
-specific order. wdm deploys the stack first; Mira boots and tolerates not-yet-valid
-credentials, then sees your installation on the next restart.
+Mira needs three credentials that only you can create: a **GitHub App** (App ID +
+webhook secret + private key), and an **OpenRouter key**. The install is wired in a
+specific order — wdm deploys the stack first; Mira boots and tolerates not-yet-valid
+credentials, then picks up your App installation on the next restart. Create the
+credentials first, then install.
 
 ### 1. Register the GitHub App
 
-1. GitHub → Settings → Developer settings → GitHub Apps → New GitHub App.
-2. Permissions: **Pull requests R/W**, **Contents R/W**, **Issues R/W**, Metadata read.
-3. Subscribe to **Pull request** webhook events.
-4. Webhook URL: `https://<your-public-host>/github/webhook`.
-5. Generate a **webhook secret** and keep it.
-6. Generate and **download the private key (PEM)**; note its host path.
-7. Record the **App ID**.
-8. Install the App on the repositories you want reviewed.
+GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App**. The
+registration form produces three of the values you pass to wdm. Step through it
+top to bottom:
+
+1. **Name + Homepage URL** — any name and URL; these are cosmetic.
+2. **Webhook URL** — set this to `https://<your-public-host>/github/webhook`.
+   `<your-public-host>` must be the exact public hostname your reverse proxy or
+   Pangolin actually serves Mira on (the same host you confirm in step 4). GitHub
+   delivers pull-request events here; a host mismatch means no reviews.
+3. **Webhook secret** — type a strong random string into the **Secret** field
+   (e.g. `openssl rand -hex 32`). Copy it now — GitHub will not show it again. This
+   is your `MIRA_WEBHOOK_SECRET`.
+4. **Permissions** (Repository permissions) — grant exactly:
+   - **Pull requests**: Read & write
+   - **Contents**: Read & write
+   - **Issues**: Read & write
+   - **Metadata**: Read-only (auto-selected)
+5. **Subscribe to events** — check **Pull request**. (Mira reviews on PR events;
+   without this subscription GitHub never notifies it.)
+6. **Create the App.** On the App's settings page, note the **App ID** shown near
+   the top — this is your `MIRA_GITHUB_APP_ID`.
+7. **Generate a private key.** Scroll to **Private keys → Generate a private key**.
+   Your browser downloads a `*.pem` file. Move it to a stable absolute path on the
+   host that will run wdm (e.g. `/home/<user>/github-app.pem`) — that path is your
+   `MIRA_PEM_PATH`. See [PEM handling](#pem-handling) below.
+8. **Install the App** on the repositories you want reviewed
+   (**Install App** in the left sidebar → pick the account/repos).
 
 ### 2. Get an OpenRouter key
 
-Create a key at [openrouter.ai](https://openrouter.ai/). Bedrock (AWS credentials)
-and direct provider keys are alternatives — see the upstream docs.
+1. Sign in at [openrouter.ai](https://openrouter.ai/) and open **Keys → Create Key**.
+2. Copy the key — this is your `OPENROUTER_API_KEY`.
+3. **Add credit / balance** under **Settings → Credits**. OpenRouter is pay-per-use;
+   a key with a zero balance authenticates but every review fails with a provider
+   billing error, so fund the account before opening a test PR.
+
+Bedrock (AWS credentials) and direct provider keys are alternatives — see the
+upstream docs.
 
 ### 3. Install with wdm
 
@@ -57,14 +84,29 @@ wdm apps install mira --domain mira.example.com \
   --set MIRA_PEM_PATH=/absolute/path/to/github-app.pem
 ```
 
-`mira` carries the `database` risk tag, so install gates interactively (it is not
-auto-installed under `--yes`). wdm generates `POSTGRES_PASSWORD` and `ADMIN_PASSWORD`
-itself and mounts the PEM read-only at `/keys/github-app.pem`.
+`apps install` runs fully non-interactively — add `--yes` to skip the deploy
+confirmation and it installs without prompting. wdm generates `POSTGRES_PASSWORD`
+and `ADMIN_PASSWORD` itself and mounts the PEM read-only at `/keys/github-app.pem`.
+
+(The interactive `database`-risk warning and the `--accept-database-risk` flag
+apply only to `wdm apps update mira`, not to install.)
+
+#### PEM handling
+
+- `--set MIRA_PEM_PATH=...` takes the **absolute host path** to the GitHub App
+  private key you downloaded in step 1.
+- wdm bind-mounts that file **read-only** into the container at
+  `/keys/github-app.pem`; Mira only ever reads it.
+- The file must be **readable by the container process**. If permissions block the
+  mount, `chmod 644 /absolute/path/to/github-app.pem`.
+- This is your App's **private key** — keep it on a trusted host, do not commit it,
+  and do not copy it where it isn't needed.
 
 ### 4. Reverse proxy / ingress
 
 Mira binds `127.0.0.1:8000` only. Point your reverse proxy (or Pangolin) at it and
-confirm the live public URL matches the webhook URL set in step 1.
+confirm the live public URL matches the **Webhook URL** set in step 1. The public
+host in both places must be identical.
 
 ### 5. Models
 
@@ -95,7 +137,7 @@ string / no provider credits).
 | `MIRA_GITHUB_PRIVATE_KEY` | `@/keys/github-app.pem` (the mounted PEM) | Fixed |
 | `MIRA_PEM_PATH` | Host path to the PEM, mounted read-only | `--set` |
 | `MIRA_WEBHOOK_SECRET` | Must match the GitHub App registration | `--set` |
-| `OPENROUTER_API_KEY` | LLM provider key | `--set` |
+| `OPENROUTER_API_KEY` | LLM provider key (needs OpenRouter credit) | `--set` |
 | `MIRA_MODEL` | Primary model (env fallback) | Fixed default |
 | `TZ` | Container timezone | Host zone |
 
@@ -127,6 +169,7 @@ both volumes on remove (wdm never runs `docker compose down -v`).
 | Port exposure | `127.0.0.1:8000` only | Only the reverse proxy can reach mira |
 | Postgres auth | `SCRAM-SHA-256` | Stronger than the default md5 |
 | Private key | Mounted read-only from a host path | mira only ever reads the PEM |
+| In-container user | Image ships no `USER`, so mira runs as in-container **root** | Required: Docker creates the `indexes_storage` volume `root:root` and only root can write the index store. Contained by `cap_drop: ALL` + `no-new-privileges` + the internal/loopback network split, and remapped to an unprivileged host uid under rootless Docker. Not the same as non-root. |
 
 > **Boot tolerates not-yet-valid credentials.** Mira logs a 401 and completes
 > startup even before the GitHub App is fully wired, so a deploy-then-install (or
