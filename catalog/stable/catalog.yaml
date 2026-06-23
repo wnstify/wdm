@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-18T19:02:00Z"
+generated_at: "2026-06-23T16:00:00Z"
 
 apps:
 
@@ -4078,3 +4078,196 @@ apps:
       notes:
         - "Front the in-stack Caddy with your reverse proxy: point it at http://127.0.0.1:8880 (Caddy serves plain HTTP — the proxy terminates TLS) and forward X-Forwarded-Proto. A real FQDN is required."
         - "Do NOT reverse-proxy the LiveKit WebRTC ports — 7881/tcp and 50000-50100/udp must be reachable directly (they are published publicly by design for voice/video media)."
+
+  # ============================================================================
+  # Mira (Miracode) — two-service self-hosted AI code reviewer (a GitHub App).
+  # An official postgres:18.3-alpine backend plus the ghcr.io/miracodeai/mira
+  # app container (the dashboard + GitHub webhook receiver). The mira image ships
+  # no non-root user, so it runs as in-container root with ZERO added caps under
+  # cap_drop: ALL + no-new-privileges (root is required to write the
+  # Docker-created root:root index volume); postgres adds the standard five init
+  # caps. The database network is --internal. The GitHub App
+  # private key is supplied as a user host path (MIRA_PEM_PATH) and mounted
+  # read-only; the App ID, webhook secret, and OpenRouter key are user-supplied
+  # via --set (they come from the GitHub App registration, not from wdm).
+  # POSTGRES_PASSWORD and ADMIN_PASSWORD are wdm-generated. No public port — the
+  # dashboard binds localhost only and reaches the internet through a reverse
+  # proxy so GitHub can deliver webhooks. The index store volume holds the
+  # dashboard admin/settings DB and is preserved on remove (not a cache).
+  # ============================================================================
+  - app_id: mira
+    name: Mira
+    summary: Self-hosted AI code reviewer that runs as a GitHub App and reviews pull requests with an LLM of your choice.
+    description: |
+      Open-source AI code reviewer (miracode.ai) that runs as a self-hosted
+      GitHub App. It indexes your repository, reviews pull requests with inline
+      comments and walkthroughs using an LLM of your choice, scans for
+      vulnerabilities, and learns from feedback — no telemetry, no phone-home.
+      Two-container split: an official Postgres backend and the mira app
+      container, which serves both the dashboard and the GitHub webhook receiver
+      on a single localhost-only port. The database network is created
+      --internal, so Postgres has no internet egress. The mira image ships no
+      non-root user, so the app runs as in-container root with zero added
+      capabilities under cap_drop: ALL and no-new-privileges. The GitHub App
+      private key is mounted read-only from a user-supplied host path; the App
+      ID, webhook secret, and OpenRouter key are user-supplied (they come from
+      your GitHub App registration). The dashboard admin (username "admin") and
+      model settings live in the index store volume, which wdm preserves on
+      remove. mira tolerates not-yet-valid credentials at boot, so a
+      deploy-then-install order works.
+    template_name: mira
+    template_version: "2026-06-23"
+    compose_template: templates/mira/docker-compose.yml.tmpl
+    env_template: templates/mira/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Postgres password — used by the postgres entrypoint on first-run init
+      # and by mira in DATABASE_URL. base64url so it carries no ':' / '@' / '$'
+      # that would break the URL. regenerable=false: rotating it later would
+      # require ALTER USER orchestration wdm does not do; the update path reuses
+      # the existing value via state.ReadStackEnv.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Dashboard admin password (username is always 'admin'). regenerable=false:
+      # the admin is created once on first boot into the index store; changing
+      # this value later does not update the existing admin, so wdm reuses it.
+      - name: ADMIN_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # GitHub App ID — from your GitHub App registration. User-supplied via
+      # --set (not a generated secret).
+      - name: MIRA_GITHUB_APP_ID
+        type: string
+        required: true
+
+      # GitHub App webhook secret — must match the value set in the GitHub App
+      # registration. User-supplied via --set (a generated secret would not
+      # match GitHub's side).
+      - name: MIRA_WEBHOOK_SECRET
+        type: string
+        required: true
+
+      # LLM provider key (OpenRouter by default). User-supplied via --set.
+      - name: OPENROUTER_API_KEY
+        type: string
+        required: true
+
+      # Absolute host path to the GitHub App private key (PEM). Mounted
+      # read-only at /keys/github-app.pem. internal/core validates it at install
+      # planning time (must be absolute, must exist, must not be inside the
+      # stack dir — symlinks resolved before the check).
+      - name: MIRA_PEM_PATH
+        type: path
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+    ports:
+      # Dashboard + webhook receiver — localhost only (no public port; front
+      # with a reverse proxy so GitHub can deliver webhooks).
+      - service: mira
+        container: 8000
+        host: 8000
+
+    image_pins:
+      - service: postgres
+        image: postgres
+        tag: "18.3-alpine"
+      - service: mira
+        image: ghcr.io/miracodeai/mira
+        tag: "0.4.0"
+
+    # postgres adds the five minimal init / privilege-drop caps. mira runs as
+    # in-container root (the image ships no non-root user) and adds ZERO caps, so
+    # it declares no service_hardening entry — every cap stays dropped under
+    # cap_drop: ALL.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETGID
+            - SETUID
+            - DAC_OVERRIDE
+            - FOWNER
+
+    networks:
+      # Front: reverse proxy reaches mira here; mira needs outbound to the
+      # GitHub API + the LLM provider.
+      - name: mira-front
+        internal: false
+      # Backend DB: mira <-> postgres only, no internet egress.
+      - name: mira-db
+        internal: true
+
+    resources:
+      # postgres: mira's code-index/review engine store; modest write rate for a
+      # personal install. Recommended 512m / 0.5 cpu suffices on a small VPS.
+      - service: postgres
+        memory:
+          min: 256m
+          recommended: 512m
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "0.5"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 400
+        allow_override: true
+
+      # mira: indexing + PR review drive transient memory/CPU spikes during LLM
+      # calls. Recommended 1g / 1.0 cpu fits a typical personal install; max is
+      # the override ceiling for larger repos.
+      - service: mira
+        memory:
+          min: 256m
+          recommended: 1g
+          max: 2g
+        cpus:
+          min: "0.25"
+          recommended: "1.0"
+          max: "2.0"
+        pids:
+          default: 200
+          max: 512
+        allow_override: true
+
+    # database: the stack owns a Postgres instance (triggers the DB-risk
+    # warning). complex: a GitHub-App onboarding with user-supplied credentials,
+    # a private-key host mount, and a webhook round-trip — not a one-command
+    # install.
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:8000"
+
+    first_run_notes:
+      - "mira tolerates not-yet-valid credentials at boot (it logs a 401 and completes startup), so register the GitHub App and wire the webhook URL after install, then it picks up the installation on the next boot."
+      - "Log in to the dashboard as user 'admin' (password = ADMIN_PASSWORD, shown at install) and set your review/indexing models under Settings -> Models."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8000"
+      recommended_subdomain: mira
+      notes:
+        - "Set the GitHub App webhook URL to https://<your-public-host>/github/webhook so GitHub can deliver pull-request events."
+        - "Using your own reverse proxy? Point it to http://127.0.0.1:8000"

@@ -575,6 +575,7 @@ func TestContainerPrivilegeDisclosure(t *testing.T) {
 			"syncthing":   {"syncthing", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"},
 			"baserow":     {"postgres", "baserow", "NET_BIND_SERVICE", "FOWNER", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"},
 			"docuseal":    {"postgres", "CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE", "FOWNER"},
+			"mira":        {"postgres", "CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE", "FOWNER"},
 			"vaultwarden": {"postgres", "CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE", "FOWNER"},
 			"authentik":   {"postgres", "CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE", "FOWNER"},
 			"meshcentral": {"mongodb", "CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE", "FOWNER"},
