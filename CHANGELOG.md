@@ -3,6 +3,31 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.1.0 - 2026-06-23
+
+### Added
+- Added Mira (Miracode) to the curated catalog — a self-hosted AI code reviewer
+  that runs as a GitHub App and reviews pull requests with an LLM of your
+  choice. It ships a hardened two-service stack (the mira app container plus a
+  pinned `postgres:18.3-alpine` backend) with `cap_drop: ALL`,
+  `no-new-privileges`, an internal database network, a loopback-only
+  dashboard/webhook port, and two persisted volumes. The GitHub App ID, webhook
+  secret, OpenRouter key, and App private-key path are supplied at install via
+  `--set`; the database and admin passwords are generated. A step-by-step setup
+  guide ships with the template.
+- Added a catalog `sensitive` placeholder flag for user-supplied secret values.
+  A `type: string` credential provided via `--set` — which wdm does not
+  generate, so it cannot be `type: secret` — is now value-redacted from logs,
+  errors, and JSON and refused if it would render inline into a non-secret
+  artifact, the same protection generated secrets already receive, across
+  install, update, and reconfigure. The flag is gated to `type: string` at the
+  schema level. Mira's webhook secret and OpenRouter key use it.
+- Added `scripts/ops/provision-rootless-docker-user.sh`, an operator helper that
+  creates a dedicated Linux user and installs rootless Docker for it from pinned,
+  checksum-verified static releases (Docker 29.6.0, Compose v5.1.2), starts the
+  user-scoped Docker service, and verifies it with `hello-world`. Supports
+  `--dry-run` and an unprivileged host-capability precheck.
+
 ## v1.0.7 - 2026-06-22
 
 ### Security
