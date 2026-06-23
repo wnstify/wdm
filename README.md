@@ -38,7 +38,7 @@
 - **Platform:** Linux amd64
 - **OS:** Debian 12 / 13, Ubuntu 24.04 / 26.04
 - **Runtime:** Docker 20.10+ with Compose V2
-- **User:** a normal account in the `docker` group, or a [rootless Docker](#rootless-docker-host-optional) setup — `wdm` refuses to run as root or under sudo
+- **User:** a [rootless Docker](#rootless-docker-host-recommended) setup (recommended), or a normal account in the `docker` group — `wdm` refuses to run as root or under sudo
 
 ## Install
 
@@ -60,9 +60,9 @@ Manual fallback:
 2. **Verify before you run.** Check the signature, checksums, and provenance attestation as described in [SECURITY.md](SECURITY.md). Verification fails closed: a missing or invalid signature, checksum, or attestation stops the process — do not run an artifact that does not verify.
 3. Place the verified binary on your `PATH` (for example `~/.local/bin/wdm`) and mark it executable.
 
-## Rootless Docker host (optional)
+## Rootless Docker host (recommended)
 
-Instead of a `docker`-group account, you can run `wdm` against a dedicated user with [rootless Docker](https://docs.docker.com/engine/security/rootless/): the daemon runs unprivileged under that user, with no `docker` group and no root-owned socket. `provision-rootless-docker-user.sh` bootstraps such a host — it creates the user, allocates subuid/subgid ranges, enables systemd linger, and installs SHA-256-pinned rootless Docker and Compose.
+The recommended setup runs `wdm` against a dedicated user with [rootless Docker](https://docs.docker.com/engine/security/rootless/): the daemon runs unprivileged under that user, with no `docker` group and no root-owned socket. `provision-rootless-docker-user.sh` bootstraps such a host — it creates the user, allocates subuid/subgid ranges, enables systemd linger, and installs SHA-256-pinned rootless Docker and Compose. (A normal account in the `docker` group is the simpler alternative.)
 
 Run it as root, or as a user with `sudo`, on the target server (it refuses `docker`-group members and existing system accounts):
 
@@ -112,7 +112,7 @@ Run `wdm <command> --help` for the full flag set of any command.
 
 ## Safety model
 
-- **No root, no sudo.** `wdm` refuses to run as root or under sudo; run it as a normal user — in the `docker` group, or with [rootless Docker](#rootless-docker-host-optional).
+- **No root, no sudo.** `wdm` refuses to run as root or under sudo; run it as a normal user — with [rootless Docker](#rootless-docker-host-recommended) (recommended), or in the `docker` group.
 - **Localhost by default.** Generated stacks bind to localhost. A template opens a public port only when the app genuinely requires one (for example a VPN listener).
 - **Signed and verified.** Catalog and release artifacts are signed, and verification fails closed on a missing or invalid signature, checksum, or attestation.
 - **Managed stacks only.** `wdm` touches only the stacks it manages under `~/docker/<app>/`, and never writes outside the selected stack directory.
@@ -161,3 +161,13 @@ Each stable release is supported until the next stable release is published. Sup
 Only the latest stable release receives security fixes. When a newer stable release is published, earlier releases become unsupported and no longer receive security updates. If a release must be withdrawn for security reasons, the advisory or release notes will say so.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## Thanks
+
+`wdm` stands on the shoulders of open source, and we are grateful for every project that made it possible.
+
+A huge, heartfelt thank you to [**Pangolin**](https://github.com/fosrl/pangolin) and the team at [fosrl](https://github.com/fosrl) — your work on secure, self-hosted tunneling is a cornerstone of what this project recommends, and your generosity to the community is genuinely appreciated. 💙
+
+And thank you to the wider open source world — Go, Docker, Bubble Tea, Cobra, every container image we curate, and the countless maintainers behind them. None of this would exist without your time, care, and willingness to share your work freely. We're proud to build on top of it, and we hope `wdm` gives a little something back.
+
+To everyone who writes, maintains, documents, and supports open source: thank you. 🙏
