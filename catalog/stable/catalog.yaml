@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-23T15:00:00Z"
+generated_at: "2026-06-23T16:00:00Z"
 
 apps:
 
@@ -4082,9 +4082,11 @@ apps:
   # ============================================================================
   # Mira (Miracode) — two-service self-hosted AI code reviewer (a GitHub App).
   # An official postgres:18.3-alpine backend plus the ghcr.io/miracodeai/mira
-  # app container (the dashboard + GitHub webhook receiver). mira runs rootless
-  # (uid 1000) and needs ZERO added caps under cap_drop: ALL; postgres adds the
-  # standard five init caps. The database network is --internal. The GitHub App
+  # app container (the dashboard + GitHub webhook receiver). The mira image ships
+  # no non-root user, so it runs as in-container root with ZERO added caps under
+  # cap_drop: ALL + no-new-privileges (root is required to write the
+  # Docker-created root:root index volume); postgres adds the standard five init
+  # caps. The database network is --internal. The GitHub App
   # private key is supplied as a user host path (MIRA_PEM_PATH) and mounted
   # read-only; the App ID, webhook secret, and OpenRouter key are user-supplied
   # via --set (they come from the GitHub App registration, not from wdm).
@@ -4104,8 +4106,9 @@ apps:
       Two-container split: an official Postgres backend and the mira app
       container, which serves both the dashboard and the GitHub webhook receiver
       on a single localhost-only port. The database network is created
-      --internal, so Postgres has no internet egress. mira runs rootless (uid
-      1000) with zero added capabilities under cap_drop: ALL. The GitHub App
+      --internal, so Postgres has no internet egress. The mira image ships no
+      non-root user, so the app runs as in-container root with zero added
+      capabilities under cap_drop: ALL and no-new-privileges. The GitHub App
       private key is mounted read-only from a user-supplied host path; the App
       ID, webhook secret, and OpenRouter key are user-supplied (they come from
       your GitHub App registration). The dashboard admin (username "admin") and
@@ -4188,9 +4191,10 @@ apps:
         image: ghcr.io/miracodeai/mira
         tag: "0.4.0"
 
-    # postgres adds the five minimal init / privilege-drop caps. mira runs
-    # rootless and needs ZERO added caps (probe-verified), so it declares no
-    # service_hardening entry — every cap stays dropped under cap_drop: ALL.
+    # postgres adds the five minimal init / privilege-drop caps. mira runs as
+    # in-container root (the image ships no non-root user) and adds ZERO caps, so
+    # it declares no service_hardening entry — every cap stays dropped under
+    # cap_drop: ALL.
     service_hardening:
       - service: postgres
         capabilities:
