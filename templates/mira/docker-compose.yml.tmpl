@@ -87,6 +87,9 @@ services:
   mira:
     image: ghcr.io/miracodeai/mira:0.4.0
     container_name: mira
+    # Pin the rootless uid declaratively (probe-verified image default) so a
+    # future image rebuild cannot silently revert the app to root.
+    user: "1000"
     restart: unless-stopped
     depends_on:
       postgres:
@@ -96,9 +99,9 @@ services:
     environment:
       # Code/vector indexes + the dashboard admin/settings SQLite DB live here.
       MIRA_INDEX_DIR: /data/indexes
-      # docuseal-style external Postgres connection (non-default; mira falls
-      # back to SQLite without it). The password is base64url-encoded so it
-      # carries no ':' / '@' / '$' that would break the URL.
+      # External Postgres connection (non-default; mira falls back to SQLite
+      # without it). The password is base64url-encoded so it carries no
+      # ':' / '@' / '$' that would break the URL.
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # GitHub App ID (user-supplied at install via --set).
       MIRA_GITHUB_APP_ID: ${MIRA_GITHUB_APP_ID}
