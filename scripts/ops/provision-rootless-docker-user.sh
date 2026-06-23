@@ -321,9 +321,9 @@ fi
 
 validate_username "$USERNAME"
 
+ensure_supported_docker_artifact_target
 if [ "$DRY_RUN" -eq 0 ]; then
   ensure_root
-  ensure_supported_docker_artifact_target
 fi
 
 install_prerequisites
