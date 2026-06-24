@@ -269,7 +269,7 @@ func isManagedConfigRestorePath(relativePath string) bool {
 
 	baseName := filepath.Base(relativePath)
 	switch relativePath {
-	case "docker-compose.yml", ".env", stackLockFilename, "Caddyfile", "init-data.sh", "nginx.conf":
+	case "docker-compose.yml", ".env", ".env.user", stackLockFilename, "Caddyfile", "init-data.sh", "nginx.conf":
 		return true
 	}
 	switch baseName {
