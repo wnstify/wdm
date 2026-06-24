@@ -256,6 +256,63 @@ func TestRealCatalogDryRunUpdate_ReportsAvailableUpdate(t *testing.T) {
 	}
 }
 
+// TestUpdateApply_VaultwardenDomainPlaceholderPersisted is the issue #98
+// regression: vaultwarden's .env.tmpl consumes VAULTWARDEN_DOMAIN inside the
+// derived DOMAIN=https://… line but must ALSO persist it as its own key, or
+// the update rewrite precheck (resolveUpdatePlaceholder) fails closed because
+// the declared non-secret placeholder is absent from the rendered .env. This
+// drives the REAL vaultwarden catalog + templates: a real install, then a
+// real (non-DryRun) Update whose rewrite stage re-resolves every declared
+// placeholder from the existing .env. Before the template fix the rewrite
+// refuses with "placeholder \"VAULTWARDEN_DOMAIN\" is absent from the existing
+// .env"; after it the update completes end to end.
+func TestUpdateApply_VaultwardenDomainPlaceholderPersisted(t *testing.T) {
+	t.Parallel()
+
+	var app catalog.App
+	for _, a := range loadRealStableCatalogApps(t) {
+		if a.AppID == "vaultwarden" {
+			app = a
+			break
+		}
+	}
+	require.Equal(t, "vaultwarden", app.AppID, "stable catalog must carry vaultwarden")
+
+	eng, stackPath, hostPort := installRealCuratedApp(t, app)
+
+	// The update redeploy reuses the install Docker factory, so give it a
+	// fresh run-fn (a new closure with its own inspect counter) — the install
+	// run-fn's stateful per-service inspect index is already exhausted.
+	updateFake := &fakeDockerClient{}
+	updateFake.runFn = happyInstallRunFn(t, app, hostPort)
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(updateFake))
+
+	// The install must have persisted VAULTWARDEN_DOMAIN as its own .env key
+	// (not only the derived DOMAIN= line) so the update rewrite can read it
+	// back. install.go writes the domain placeholder from InstallRequest.Domain.
+	envBytes, err := os.ReadFile(filepath.Join(stackPath, ".env"))
+	require.NoError(t, err)
+	assert.Contains(t, string(envBytes), "VAULTWARDEN_DOMAIN=app.test.example",
+		"the rendered .env must persist VAULTWARDEN_DOMAIN as its own key")
+
+	// A real (non-DryRun) Update against the unchanged catalog is a no-op
+	// apply that still re-renders the stack: its rewrite stage re-resolves
+	// every declared placeholder from the existing .env. This is the seam the
+	// bug lived in — it must no longer refuse on VAULTWARDEN_DOMAIN.
+	res, err := eng.Update(t.Context(), types.UpdateRequest{AppID: app.AppID}, nil, &fakeConfirmer{})
+	require.NoError(t, err, "the update rewrite must resolve VAULTWARDEN_DOMAIN from the existing .env")
+	require.NotNil(t, res)
+
+	// The rewritten .env still carries the persisted placeholder, reused
+	// byte-identically from the existing .env.
+	envAfter, err := os.ReadFile(filepath.Join(stackPath, ".env"))
+	require.NoError(t, err)
+	assert.Contains(t, string(envAfter), "VAULTWARDEN_DOMAIN=app.test.example",
+		"the rewrite must reuse the persisted VAULTWARDEN_DOMAIN value")
+	assert.Contains(t, string(envAfter), "DOMAIN=https://app.test.example",
+		"the derived DOMAIN line must survive the rewrite")
+}
+
 // installRealCuratedApp drives a full mocked-Docker install of one real
 // curated app into a tempdir stack and returns the engine (reusable for a
 // same-catalog DryRun), the stack path, and the free host port the install
