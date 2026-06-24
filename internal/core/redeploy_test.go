@@ -14,6 +14,7 @@ import (
 	"github.com/wnstify/wdm/internal/core"
 	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/security"
+	"github.com/wnstify/wdm/internal/state"
 	"github.com/wnstify/wdm/pkg/types"
 )
 
@@ -240,6 +241,62 @@ func TestRedeploy_DeclineCancelsWithoutComposeUp(t *testing.T) {
 	assert.Equal(t, types.ErrCodeUserCanceled, typed.Code)
 	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
 		"a decline must run no compose up")
+}
+
+// TestRedeploy_StatusInspectFailureMarksNeedsAttention proves the
+// post-redeploy status verify is fail-soft: a container-list failure AFTER a
+// successful compose up does NOT fail the redeploy. The result carries a
+// needs-attention status with the status_check_failed reason instead, so an
+// applied overlay is never rolled back over a flaky inspect.
+func TestRedeploy_StatusInspectFailureMarksNeedsAttention(t *testing.T) {
+	t.Parallel()
+
+	fx := newRestartFixture(t, appFixture("redeploy-status-fail-app", 18080), nil)
+	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		if fmt.Sprintf("%T", inv) == "docker.projectContainerListInvocation" {
+			return docker.CommandResult{}, types.NewError(
+				types.ErrCodeDockerUnavailable,
+				"docker ps failed",
+				"check the docker daemon",
+			)
+		}
+		// `docker compose up -d` succeeds.
+		return docker.CommandResult{}, nil
+	}
+
+	res, err := fx.eng.RedeployStack(t.Context(), types.RestartRequest{AppID: fx.appID}, nil, &fakeConfirmer{})
+	require.NoError(t, err, "a post-redeploy inspect failure must not fail the redeploy")
+	require.NotNil(t, res)
+	require.NotNil(t, res.Status)
+
+	assert.Equal(t, "needs_attention", res.Status.State)
+	assert.True(t, res.Status.NeedsAttention)
+	assert.Contains(t, res.Status.AttentionReasons, "status_check_failed")
+	assert.Contains(t, fx.fake.invocationTypes, "docker.composeUpInvocation",
+		"the compose up still ran before the inspect failure")
+}
+
+// TestRedeploy_PortMismatchFlagsAttention proves the post-redeploy port guard:
+// when the recorded manifest LocalPorts differ from the observed running port,
+// the status fuses the port_mismatch attention reason. The redeploy still
+// succeeds (a port drift is reported, not fatal).
+func TestRedeploy_PortMismatchFlagsAttention(t *testing.T) {
+	t.Parallel()
+
+	// The manifest records a port the running container does NOT publish
+	// (the fixture container publishes 18080), so observed != recorded.
+	fx := newRestartFixture(t, appFixture("redeploy-port-mismatch-app", 18080), func(lock *state.StackLock) {
+		lock.LocalPorts = []int{19999}
+	})
+	scriptRestartRunning(fx, t)
+
+	res, err := fx.eng.RedeployStack(t.Context(), types.RestartRequest{AppID: fx.appID}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, res.Status)
+
+	assert.Contains(t, res.Status.AttentionReasons, "port_mismatch",
+		"a recorded/observed port drift must flag port_mismatch")
 }
 
 // TestRedeploy_RefusesUnmanagedAndEmptyAppID covers the managed-only refusals:
