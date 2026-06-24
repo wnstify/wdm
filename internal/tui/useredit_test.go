@@ -58,21 +58,84 @@ func TestModel_EditCompose_SeedsOverrideAndShowsWarning(t *testing.T) {
 	assert.Equal(t, fake.ensureOverridePath, resolved.path)
 }
 
-func TestModel_EditEnv_SeedsEnvNoWarning(t *testing.T) {
+func TestModel_EditEnv_OffersRewireThenSeedsEnv(t *testing.T) {
 	t.Parallel()
 
 	fake := userEditFake()
 	m := loadCheckAppsStatusScreen(t, fake)
 
+	// "Edit env" first runs the rewire migration offer (a no-op on an
+	// already-wired stack), then chains to the .env.user path resolve.
 	m, cmd := selectActionByName(t, m, "Edit env")
 	require.NotNil(t, cmd)
 	assert.Empty(t, m.actionMessage, "env edit must not show the compose-only warning")
 
-	resolved, ok := cmd().(editPathResolvedMsg)
+	rewired, ok := cmd().(rewireDoneMsg)
+	require.True(t, ok, "Edit env must offer the rewire migration before the editor")
+	assert.Equal(t, []string{"alpha"}, fake.rewireStackCalls)
+
+	_, chain, handled := m.updateUserEditMsg(rewired)
+	require.True(t, handled)
+	require.NotNil(t, chain, "a settled rewire must chain to the env path resolve")
+
+	resolved, ok := chain().(editPathResolvedMsg)
 	require.True(t, ok)
 	assert.Equal(t, []string{"alpha"}, fake.ensureEnvCalls)
 	assert.False(t, resolved.isCompose)
 	assert.Equal(t, fake.ensureEnvPath, resolved.path)
+}
+
+func TestModel_EditEnv_RewiredShowsStatusAndProceeds(t *testing.T) {
+	t.Parallel()
+
+	fake := userEditFake()
+	fake.rewireStackDone = true
+	m := loadCheckAppsStatusScreen(t, fake)
+
+	next, chain, ok := m.updateUserEditMsg(rewireDoneMsg{appID: "alpha", rewired: true})
+	require.True(t, ok)
+	require.NotNil(t, chain, "a rewired stack still opens the editor")
+
+	settled := assertModel(t, next)
+	assert.Contains(t, settled.actionMessage, "Migrated")
+
+	resolved, ok := chain().(editPathResolvedMsg)
+	require.True(t, ok)
+	assert.Equal(t, fake.ensureEnvPath, resolved.path)
+}
+
+func TestModel_EditEnv_DeclinedRewireWarnsAndProceeds(t *testing.T) {
+	t.Parallel()
+
+	fake := userEditFake()
+	m := loadCheckAppsStatusScreen(t, fake)
+
+	next, chain, ok := m.updateUserEditMsg(rewireDoneMsg{appID: "alpha", declined: true})
+	require.True(t, ok)
+	require.NotNil(t, chain, "a declined rewire is warn-but-allow and still opens the editor")
+
+	settled := assertModel(t, next)
+	assert.Contains(t, settled.actionMessage, "not activated")
+	assert.Contains(t, settled.actionMessage, "wdm update alpha")
+
+	_, ok = chain().(editPathResolvedMsg)
+	require.True(t, ok)
+}
+
+func TestModel_EditEnv_RewireErrorAborts(t *testing.T) {
+	t.Parallel()
+
+	fake := userEditFake()
+	m := loadCheckAppsStatusScreen(t, fake)
+
+	next, chain, ok := m.updateUserEditMsg(rewireDoneMsg{appID: "alpha", err: errors.New("rewire blew up")})
+	require.True(t, ok)
+	assert.Nil(t, chain, "a hard rewire error must not open the editor")
+
+	settled := assertModel(t, next)
+	assert.False(t, settled.busy)
+	require.Error(t, settled.err)
+	assert.Empty(t, fake.ensureEnvCalls, "an aborted rewire must not seed the env overlay")
 }
 
 func TestModel_EditPathResolved_LaunchesEditor(t *testing.T) {
@@ -182,6 +245,7 @@ func TestModel_ViewEnv_RendersRedactedAndLeaksNoSecret(t *testing.T) {
 
 	m = updateModel(t, m, cmd())
 	require.Equal(t, []string{"alpha"}, fake.viewEnvCalls)
+	assert.Empty(t, fake.rewireStackCalls, "the read-only view must never rewire/restart the stack")
 	require.NotNil(t, m.viewEnv)
 
 	view := m.View()

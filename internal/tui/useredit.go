@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -63,9 +64,44 @@ func (m model) editComposeCmd(appID string) tea.Cmd {
 	}
 }
 
-// editEnvCmd seeds (create-if-missing) the user .env.user and resolves its
-// path so the editor can open it.
+// rewireDoneMsg carries the outcome of the pre-edit .env.user migration so
+// Update can settle a status line and then open the editor. rewired reports a
+// re-render+restart happened; declined is true when the operator dismissed the
+// confirm (warn-but-allow); err holds any non-decline failure that aborts.
+type rewireDoneMsg struct {
+	appID    string
+	rewired  bool
+	declined bool
+	err      error
+}
+
+// editEnvCmd offers the .env.user migration before opening the editor. A stack
+// installed before the env_file overlay landed does not wire .env.user, so the
+// edit would never reach the containers; RewireStack re-renders+restarts to
+// activate it (detect → confirm → rewire → restart, T8). It runs through the
+// bridge confirmer, so a pre-feature stack raises the standard confirm screen;
+// an already-wired stack is a silent no-op. The decline (UserCanceled) is
+// warn-but-allow — Update still opens the editor.
 func (m model) editEnvCmd(appID string) tea.Cmd {
+	return engineCommand(m.ctx, m.bridge, func(
+		ctx context.Context,
+		_ types.ProgressFn,
+		confirmer types.Confirmer,
+	) tea.Msg {
+		rewired, _, err := m.eng.RewireStack(ctx, appID, confirmer)
+		if err != nil {
+			if types.IsCode(err, types.ErrCodeUserCanceled) {
+				return rewireDoneMsg{appID: appID, declined: true}
+			}
+			return rewireDoneMsg{appID: appID, err: err}
+		}
+		return rewireDoneMsg{appID: appID, rewired: rewired}
+	})
+}
+
+// resolveEnvPathCmd seeds (create-if-missing) the user .env.user and resolves
+// its path so the editor can open it. It runs after the migration offer.
+func (m model) resolveEnvPathCmd(appID string) tea.Cmd {
 	return func() tea.Msg {
 		path, err := m.eng.EnsureUserEnv(m.ctx, appID)
 		return editPathResolvedMsg{appID: appID, path: path, isCompose: false, err: err}
@@ -94,6 +130,21 @@ func (m model) loadViewEnvCmd(appID string) tea.Cmd {
 // caller falls through to the next dispatcher.
 func (m model) updateUserEditMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case rewireDoneMsg:
+		if msg.err != nil {
+			m.busy = false
+			m.err = msg.err
+			m.actionMessage = ""
+			return m, nil, true
+		}
+		switch {
+		case msg.rewired:
+			m.actionMessage = "Migrated this stack so .env.user is now active."
+		case msg.declined:
+			m.actionMessage = "Overlay not activated; run `wdm update " + msg.appID + "` to activate .env.user later."
+		}
+		// Rewired, declined, or a silent no-op all proceed to the editor.
+		return m, m.resolveEnvPathCmd(msg.appID), true
 	case editPathResolvedMsg:
 		if msg.err != nil {
 			m.busy = false

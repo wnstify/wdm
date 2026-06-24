@@ -43,6 +43,12 @@ var launchEditor = func(argv []string) error {
 // 0.0.0.0, or break wdm tracking if it removes the wdm.managed labels or
 // the project name (PRD §29, §37). The .env overlay carries no such risk,
 // so no warning there.
+//
+// --env first offers a migration on a pre-feature stack: if the on-disk
+// compose does not yet wire .env.user via env_file, RewireStack re-renders
+// and restarts the stack so the overlay goes live (detect → confirm →
+// rewire → restart, T8). A decline is warn-but-allow — the editor still
+// opens; an already-wired stack is a silent no-op (no prompt).
 func newEditCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 	var (
 		composeFlag bool
@@ -118,6 +124,30 @@ needs an interactive terminal.`,
 				if _, err := io.WriteString(cmd.ErrOrStderr(),
 					"warning: a compose override can re-add dropped capabilities, expose ports on 0.0.0.0, or break wdm tracking if it removes the wdm.managed labels or project name.\n"); err != nil {
 					return fmt.Errorf("edit: writing warning: %w", err)
+				}
+			}
+
+			// .env.user reaches the containers only if the on-disk compose wires
+			// it via env_file. A stack installed before that overlay landed lacks
+			// the line, so offer to re-render+restart (RewireStack) BEFORE opening
+			// the editor. The compose override merges independently of env_file, so
+			// this is the --env path only. A no-op (already wired) never prompts; a
+			// decline is warn-but-allow — the edit still opens (PRD §3.40, T8).
+			if envFlag {
+				confirmer, _ := stateChangeIO(cmd, false, false, false)
+				if rewired, _, rwErr := eng.RewireStack(ctx, appID, confirmer); rwErr != nil {
+					if !types.IsCode(rwErr, types.ErrCodeUserCanceled) {
+						return rwErr
+					}
+					if _, err := io.WriteString(cmd.ErrOrStderr(),
+						"overlay not activated; run `wdm update "+appID+"` to activate .env.user later.\n"); err != nil {
+						return fmt.Errorf("edit: writing rewire note: %w", err)
+					}
+				} else if rewired {
+					if _, err := io.WriteString(cmd.ErrOrStderr(),
+						"migrated this stack so .env.user is now active.\n"); err != nil {
+						return fmt.Errorf("edit: writing rewire note: %w", err)
+					}
 				}
 			}
 

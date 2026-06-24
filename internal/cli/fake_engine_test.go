@@ -88,6 +88,15 @@ type fakeEngine struct {
 	viewEnvAppID        string
 	validateStackAppID  string
 	validateStackCalled bool
+
+	// RewireStack double (T8 edit-env migration). rewireCalled records that
+	// the edit-env path consulted the migration; rewireAppID the target;
+	// rewireDone/rewireErr the canned (rewired, err) outcome a test drives to
+	// exercise the rewired / declined / hard-error branches.
+	rewireCalled bool
+	rewireAppID  string
+	rewireDone   bool
+	rewireErr    error
 }
 
 // Compile-time proof the double satisfies the full surface; if the
@@ -351,8 +360,10 @@ func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, e
 	return f.validateStackWarn, f.validateStackErr
 }
 
-func (f *fakeEngine) RewireStack(_ context.Context, _ string, _ types.Confirmer) (bool, string, error) {
-	return false, "", nil
+func (f *fakeEngine) RewireStack(_ context.Context, appID string, _ types.Confirmer) (bool, string, error) {
+	f.rewireCalled = true
+	f.rewireAppID = appID
+	return f.rewireDone, "", f.rewireErr
 }
 
 func (f *fakeEngine) RuntimeLockStatus(_ context.Context) (*types.RuntimeLockStatus, error) {
