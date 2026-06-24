@@ -598,13 +598,16 @@ func (e *Engine) applyRewire(
 		return "", err
 	}
 
-	// .env.user may now carry user secrets; fold its values into the restart
-	// redactor (over-redaction acceptable, fail-closed).
-	userValues, err := readUserEnvValues(stackPath)
+	// ComposeRestart sets project.EnvFile to .env below, so compose interpolates
+	// .env values and MAY echo a .env secret in a restart error. Build the
+	// redactor over the stack's on-disk .env + .env.user secret set — the same
+	// fail-closed builder ValidateConfig/redeploy use — so any interpolated
+	// secret is scrubbed before it leaves the engine (PRD §11, §24).
+	redactor, err := validateConfigRedactor(stackPath)
 	if err != nil {
 		return "", err
 	}
-	client, err := e.buildDockerClient(security.NewActiveRedactor(userValues))
+	client, err := e.buildDockerClient(redactor)
 	if err != nil {
 		return "", err
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/wnstify/wdm/internal/catalog"
 	"github.com/wnstify/wdm/internal/core"
+	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/security"
 	"github.com/wnstify/wdm/pkg/types"
 )
@@ -157,6 +158,34 @@ func TestRewireStack_PreFeatureStackInjectsOverlayImagesAndSecretsUnchanged(t *t
 
 	assert.Contains(t, fx.fake.invocationTypes, "docker.composeRestartInvocation",
 		"the stack must restart so the overlay takes effect")
+}
+
+// TestRewireStack_RestartRedactorCoversBaseEnvSecret is the binding fail-closed
+// criterion for the rewire restart: applyRewire sets project.EnvFile to the
+// stack .env, so compose interpolates .env values and MAY echo a .env secret in
+// a ComposeRestart error. The redactor handed to the restart Docker client MUST
+// therefore cover the .env secret set, not just .env.user. It exercises the
+// REAL per-operation redactor builder (validateConfigRedactor) by capturing the
+// redactor the rewire restart factory receives and asserting it scrubs the
+// on-disk .env secret.
+func TestRewireStack_RestartRedactorCoversBaseEnvSecret(t *testing.T) {
+	t.Parallel()
+
+	fx := newRewireFixture(t, rewireApp("rewire-app"), preFeatureCompose)
+
+	var capturedRedactor security.Redactor
+	core.SetInstallDockerClientFactoryForTest(fx.eng, func(redactor security.Redactor) (docker.Client, error) {
+		capturedRedactor = redactor
+		return fx.fake, nil
+	})
+
+	rewired, _, err := fx.eng.RewireStack(t.Context(), fx.appID, &fakeConfirmer{})
+	require.NoError(t, err)
+	assert.True(t, rewired)
+
+	require.NotNil(t, capturedRedactor, "the rewire restart must build a Docker client")
+	assert.Equal(t, security.RedactedPlaceholder, capturedRedactor.Redact(rewireSecretValue),
+		"the restart redactor must scrub the on-disk .env secret so a compose restart error cannot leak it")
 }
 
 // TestRewireStack_AlreadyWiredIsNoOp proves an already-wired stack is a
