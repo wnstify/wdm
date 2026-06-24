@@ -692,6 +692,11 @@ func validateRenderedComposeConfig(
 	staged := []installFileWrite{
 		{path: composePath, data: rendered.ComposeBytes, mode: installComposeFileMode},
 		{path: filepath.Join(tempDir, installEnvFilename), data: rendered.EnvBytes, mode: security.SecretFileMode},
+		// Stage an empty .env.user so a template's env_file: [.env.user]
+		// resolves during `compose config`. It is user-owned, not a
+		// rendered artifact, so it is seeded on disk at install (T2) and
+		// staged empty here for pre-write validation only.
+		{path: filepath.Join(tempDir, installEnvUserFilename), data: []byte{}, mode: security.SecretFileMode},
 	}
 	artifactWrites, err := renderedArtifactWrites(rendered, tempDir)
 	if err != nil {
