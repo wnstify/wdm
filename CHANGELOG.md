@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
-## v1.2.0 - Unreleased
+## v1.2.0 - 2026-06-24
 
 ### Added
 - User-editable stacks: every managed stack now carries two user-owned files
@@ -45,6 +45,30 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   every stack now merges `.env.user` via `env_file`, ordered ahead of any
   generated-secret env file so the overlay can add knobs without overriding
   generated secrets.
+
+### Fixed
+- `wdm apps update vaultwarden` no longer fails closed with `placeholder
+  "VAULTWARDEN_DOMAIN" is absent from the existing .env`. The vaultwarden
+  template now persists `VAULTWARDEN_DOMAIN` as its own `.env` key (matching
+  nextcloud, meshcentral, and stoat), so the update precheck can re-resolve it.
+
+### Security
+- Self-update refuses any release that is not strictly newer than the running
+  binary, in both the check and apply paths, so a validly signed but older
+  release can no longer downgrade `wdm` (from-source/unstamped builds keep the
+  prior "differs" behavior).
+- String placeholder values are rejected when they contain control characters
+  (CR/LF/NUL) before they reach the `.env` template, so a `--set` or default
+  value cannot inject extra `KEY=VALUE` lines or override a generated secret.
+- Removing or uninstalling a stack deletes a compose-declared external network
+  only when it carries the `wdm.managed=true` label, so an operator's
+  pre-existing network adopted at install is left in place while `wdm`'s own
+  networks are still removed.
+- `wdm apps logs` scrubs bare secret literals from `.env` out of container log
+  output, mirroring config validation, and fails closed when `.env` is present
+  but unreadable.
+- Catalog bundle extraction fails closed on a duplicate normalized member, so a
+  verified bundle cannot pass checks on one manifest while activating another.
 
 ## v1.1.0 - 2026-06-23
 
