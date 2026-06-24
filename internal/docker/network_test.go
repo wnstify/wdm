@@ -1405,13 +1405,17 @@ func TestParseManagedNetworkNames(t *testing.T) {
 
 // RemoveNetworkIfManaged must remove only networks carrying wdm.managed=true;
 // an unlabeled (foreign) network is skipped without a `network rm` ever
-// reaching the daemon.
+// reaching the daemon, and an absent network is an idempotent non-owned
+// success (no removal, no skip, no error) so a concurrent teardown cannot
+// surface a spurious failure.
 func TestRemoveNetworkIfManaged_GatesOnOwnershipLabel(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
 		labelValue  string
+		labelStderr string
+		labelErr    error
 		wantRemoved bool
 		wantSkipped bool
 		wantRm      bool
@@ -1419,6 +1423,7 @@ func TestRemoveNetworkIfManaged_GatesOnOwnershipLabel(t *testing.T) {
 		{name: "managed network removed", labelValue: "true", wantRemoved: true, wantSkipped: false, wantRm: true},
 		{name: "unlabeled network skipped", labelValue: "", wantRemoved: false, wantSkipped: true, wantRm: false},
 		{name: "foreign label value skipped", labelValue: "false", wantRemoved: false, wantSkipped: true, wantRm: false},
+		{name: "absent network is idempotent non-owned success", labelStderr: "Error response from daemon: network wdm_default not found", labelErr: errors.New("exit status 1"), wantRemoved: false, wantSkipped: false, wantRm: false},
 	}
 
 	for _, tt := range tests {
@@ -1430,6 +1435,9 @@ func TestRemoveNetworkIfManaged_GatesOnOwnershipLabel(t *testing.T) {
 				runFn: func(_ context.Context, inv Invocation) (CommandResult, error) {
 					switch inv.(type) {
 					case networkManagedLabelInvocation:
+						if tt.labelErr != nil {
+							return CommandResult{Stderr: tt.labelStderr}, tt.labelErr
+						}
 						return CommandResult{Stdout: tt.labelValue + "\n"}, nil
 					case removeNetworkInvocation:
 						rmCalled = true
