@@ -1666,10 +1666,12 @@ type installAdditionalDestTracker struct {
 func newInstallAdditionalDestTracker() *installAdditionalDestTracker {
 	return &installAdditionalDestTracker{
 		final: map[string]string{
-			installComposeFilename: installComposeFilename,
-			installEnvFilename:     installEnvFilename,
-			installLockFilename:    installLockFilename,
-			state.BackupDirName:    state.BackupDirName,
+			installComposeFilename:         installComposeFilename,
+			installEnvFilename:             installEnvFilename,
+			installEnvUserFilename:         installEnvUserFilename,
+			installComposeOverrideFilename: installComposeOverrideFilename,
+			installLockFilename:            installLockFilename,
+			state.BackupDirName:            state.BackupDirName,
 		},
 		temp: map[string]string{
 			installComposeFilename + ".tmp": installComposeFilename,

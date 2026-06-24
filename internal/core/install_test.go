@@ -1917,6 +1917,20 @@ func TestWriteInstallFilesForTest_RefusesReservedAdditionalFileDestBeforeWrites(
 			rejectedPath: ".wdm.lock",
 		},
 		{
+			name: "env user",
+			files: []render.RenderedFile{
+				{Dest: ".env.user", Mode: "0600", Bytes: []byte("INJECT=1\n")},
+			},
+			rejectedPath: ".env.user",
+		},
+		{
+			name: "compose override",
+			files: []render.RenderedFile{
+				{Dest: "docker-compose.override.yml", Mode: "0644", Bytes: []byte("services: {}\n")},
+			},
+			rejectedPath: "docker-compose.override.yml",
+		},
+		{
 			name: "backup root child",
 			files: []render.RenderedFile{
 				{Dest: ".wdm-backups/snapshot", Mode: "0644", Bytes: []byte("backup\n")},
