@@ -4504,10 +4504,10 @@ func (p *installPlan) resolvePathPlaceholder(ph catalog.Placeholder, value strin
 
 func resolveStringPlaceholder(ph catalog.Placeholder, value string, hasRequestValue bool) (string, error) {
 	if hasRequestValue {
-		return value, nil
+		return value, validateStringPlaceholderValue(ph.Name, value)
 	}
 	if value, ok := stringDefault(ph.Default); ok {
-		return value, nil
+		return value, validateStringPlaceholderValue(ph.Name, value)
 	}
 	if ph.Required {
 		return "", usageValidationError(
@@ -4517,6 +4517,21 @@ func resolveStringPlaceholder(ph catalog.Placeholder, value string, hasRequestVa
 		)
 	}
 	return "", nil
+}
+
+// validateStringPlaceholderValue rejects CR/LF/NUL in a string placeholder
+// value before it reaches the .env template. These control characters have no
+// legitimate place in an env value and a newline would let a single --set value
+// inject extra KEY=VALUE lines (overriding later secrets), so it fails closed.
+func validateStringPlaceholderValue(name, value string) error {
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return usageValidationError(
+			"placeholder value contains control characters",
+			"remove carriage return, newline, or NUL characters from the value",
+			fmt.Errorf("placeholder %q value contains a control character", name),
+		)
+	}
+	return nil
 }
 
 func resolveBoolPlaceholder(ph catalog.Placeholder, value string, hasRequestValue bool) (string, error) {

@@ -142,6 +142,11 @@ func extractMembers(ctx context.Context, bundle []byte, destDir string) error {
 		members   int
 		totalSize int64
 	)
+	// seenFiles guards against a tar carrying two members that normalize to the
+	// same path: a trusted catalog bundle never legitimately repeats a regular
+	// file, and a duplicate would let the last-write win silently diverge from
+	// whatever an earlier manifest peek saw. Fail closed on the duplicate.
+	seenFiles := make(map[string]bool)
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: %w", ErrBundleExtraction, err)
@@ -176,6 +181,10 @@ func extractMembers(ctx context.Context, bundle []byte, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
+			if seenFiles[cleanName] {
+				return fmt.Errorf("%w: duplicate member %q", ErrBundleExtraction, cleanName)
+			}
+			seenFiles[cleanName] = true
 			written, err := extractRegularFile(tr, target, hdr.Name, totalSize)
 			if err != nil {
 				return err

@@ -77,7 +77,16 @@ func (e *Engine) Logs(ctx context.Context, req types.LogsRequest, onLine types.L
 		return err
 	}
 
-	client, err := e.buildDockerClient(security.NewActiveRedactor(nil))
+	// Seed the redactor with the stack's .env VALUES so a bare secret literal
+	// echoed into a log line is scrubbed, mirroring ValidateConfig. Same
+	// fail-closed policy: an absent .env degrades to structural-only redaction;
+	// a present-but-rejected .env propagates rather than streaming with weaker
+	// redaction (PRD §28).
+	redactor, err := validateConfigRedactor(stackPath)
+	if err != nil {
+		return err
+	}
+	client, err := e.buildDockerClient(redactor)
 	if err != nil {
 		return err
 	}

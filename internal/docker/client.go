@@ -237,6 +237,8 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 		return commandSpec{argv: []string{"compose", "version"}}, nil
 	case networkInspectInvocation:
 		return buildNetworkInspectCommand(typedInv.name)
+	case networkManagedLabelInvocation:
+		return buildNetworkManagedLabelCommand(typedInv.name)
 	case networkSubnetInvocation:
 		return buildNetworkSubnetCommand(typedInv.name)
 	case networkCreateInvocation:
@@ -390,6 +392,28 @@ func buildNetworkInspectCommand(name string) (commandSpec, error) {
 			"inspect",
 			"--format",
 			"{{.Internal}}",
+			networkName,
+		},
+	}, nil
+}
+
+// networkManagedLabelFormat prints a network's `wdm.managed` label value, or
+// empty when the label is absent, so the ownership gate can compare it to
+// "true" before a compose-derived removal (PRD §10).
+const networkManagedLabelFormat = `{{index .Labels "wdm.managed"}}`
+
+func buildNetworkManagedLabelCommand(name string) (commandSpec, error) {
+	networkName, err := validateNetworkName(name)
+	if err != nil {
+		return commandSpec{}, err
+	}
+
+	return commandSpec{
+		argv: []string{
+			"network",
+			"inspect",
+			"--format",
+			networkManagedLabelFormat,
 			networkName,
 		},
 	}, nil
@@ -686,7 +710,9 @@ func validateNetworkArgv(argv []string) error {
 	case len(argv) == 5 &&
 		argv[1] == "inspect" &&
 		argv[2] == "--format" &&
-		(argv[3] == "{{.Internal}}" || argv[3] == networkSubnetInspectFormat):
+		(argv[3] == "{{.Internal}}" ||
+			argv[3] == networkSubnetInspectFormat ||
+			argv[3] == networkManagedLabelFormat):
 		_, err := validateNetworkName(argv[4])
 		return err
 	case len(argv) >= 3 && argv[1] == "create":

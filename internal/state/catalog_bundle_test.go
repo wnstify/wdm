@@ -113,6 +113,28 @@ func TestExtractTarGzToDir_HappyPathProducesContainedTree(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o755), rootInfo.Mode().Perm())
 }
 
+// WDM-SEC-002: the original attack is a verified bundle carrying two members
+// that normalize to the same path (e.g. two stable/catalog.yaml entries), so an
+// anti-rollback peek sees one manifest while last-write-wins activates another.
+// ExtractTarGzToDir must fail closed on the duplicate regular-file member. This
+// drives the real ExtractTarGzToDir -> extractMembers seen-files guard (no mock).
+func TestExtractTarGzToDir_WDMSEC002_RejectsDuplicateMember(t *testing.T) {
+	t.Parallel()
+
+	bundle := makeTarGz(t, []tarMember{
+		{Name: "stable/", Dir: true},
+		{Name: "stable/catalog.yaml", Body: "schema_version: 1\n"},
+		{Name: "stable/catalog.yaml", Body: "schema_version: 2\n"},
+	})
+
+	root := secureTempDir(t)
+	dest := filepath.Join(root, "dup")
+
+	err := state.ExtractTarGzToDir(context.Background(), bundle, dest)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, state.ErrBundleExtraction)
+}
+
 func TestExtractTarGzToDir_RejectsExistingDestination(t *testing.T) {
 	t.Parallel()
 

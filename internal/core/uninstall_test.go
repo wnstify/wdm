@@ -39,6 +39,9 @@ type uninstallDockerClient struct {
 	managedNetworks    []string             // names the label-based sweep list returns
 	managedNetworkErr  error                // error to inject from the managed-network list
 	onNetworkRemove    func(name string)    // optional hook fired before each network rm is answered
+	unmanagedNetworks  map[string]bool      // names whose wdm.managed label inspect reports NOT owned
+	networkLabelErr    map[string]error     // network name -> error to inject from the label inspect
+	networkLabelStderr map[string]string    // network name -> stderr to inject alongside the label-inspect error
 }
 
 func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
@@ -47,6 +50,9 @@ func newUninstallDockerClient(t *testing.T) *uninstallDockerClient {
 		downErr:            map[string]error{},
 		networkRemoveErr:   map[string]error{},
 		networkRemoveStder: map[string]string{},
+		unmanagedNetworks:  map[string]bool{},
+		networkLabelErr:    map[string]error{},
+		networkLabelStderr: map[string]string{},
 	}
 }
 
@@ -96,6 +102,18 @@ func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (d
 			return docker.CommandResult{}, err
 		}
 		return docker.CommandResult{}, nil
+	case "docker.networkManagedLabelInvocation":
+		// Ownership gate before a compose-derived network rm: wdm-created
+		// networks carry wdm.managed=true; a name in unmanagedNetworks reports
+		// empty so the removal skips it.
+		name := invocationField(inv, "name:")
+		if err := c.networkLabelErr[name]; err != nil {
+			return docker.CommandResult{Stderr: c.networkLabelStderr[name]}, err
+		}
+		if c.unmanagedNetworks[name] {
+			return docker.CommandResult{Stdout: "\n"}, nil
+		}
+		return docker.CommandResult{Stdout: "true\n"}, nil
 	case "docker.removeNetworkInvocation":
 		name := invocationField(inv, "name:")
 		if c.onNetworkRemove != nil {
@@ -113,7 +131,7 @@ func (c *uninstallDockerClient) Run(_ context.Context, inv docker.Invocation) (d
 		return docker.CommandResult{Stdout: strings.Join(c.managedNetworks, "\n")}, nil
 	default:
 		require.Failf(c.t, "unexpected invocation",
-			"uninstall must only run docker compose down --rmi all, network rm, or network ls; got %T", inv)
+			"uninstall must only run docker compose down --rmi all, network inspect, network rm, or network ls; got %T", inv)
 		return docker.CommandResult{}, nil
 	}
 }
