@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wnstify/wdm/internal/core"
 	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/security"
 )
@@ -259,4 +260,139 @@ func TestValidateStack_ValidatesBaseAndOverride(t *testing.T) {
 	_, err = fx.eng.ValidateStack(t.Context(), fx.appID)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), reconfigureSecretValue, "validate error must be redacted")
+}
+
+// TestUserEdit_ClosedEngineRefusesAllEntries proves every user-edit entry
+// point fails closed on a closed engine: EnsureUserOverride, EnsureUserEnv,
+// ViewEnvRedacted, ValidateStack, and RewireStack each return ErrClosed and do
+// nothing. A closed engine has released its locks, so no state-touching work
+// may proceed.
+func TestUserEdit_ClosedEngineRefusesAllEntries(t *testing.T) {
+	t.Parallel()
+
+	eng, _ := newTestEngine(t)
+	require.NoError(t, eng.Close())
+
+	_, err := eng.EnsureUserOverride(t.Context(), "any-app")
+	require.ErrorIs(t, err, core.ErrClosed)
+
+	_, err = eng.EnsureUserEnv(t.Context(), "any-app")
+	require.ErrorIs(t, err, core.ErrClosed)
+
+	_, err = eng.ViewEnvRedacted(t.Context(), "any-app")
+	require.ErrorIs(t, err, core.ErrClosed)
+
+	_, err = eng.ValidateStack(t.Context(), "any-app")
+	require.ErrorIs(t, err, core.ErrClosed)
+
+	_, _, err = eng.RewireStack(t.Context(), "any-app", &fakeConfirmer{})
+	require.ErrorIs(t, err, core.ErrClosed)
+}
+
+// TestUserEdit_EmptyAppIDRefusesAllEntries proves the shared empty-app-id
+// guard on every user-edit entry point: a blank app id surfaces a
+// usage-validation error before any stack resolution, so a caller is told to
+// pass an app id rather than silently no-op.
+func TestUserEdit_EmptyAppIDRefusesAllEntries(t *testing.T) {
+	t.Parallel()
+
+	fx := newReconfigureFixture(t, reconfigureApp("empty-id-app"), nil)
+
+	_, err := fx.eng.EnsureUserOverride(t.Context(), "")
+	assertUsageValidation(t, err)
+
+	_, err = fx.eng.EnsureUserEnv(t.Context(), "")
+	assertUsageValidation(t, err)
+
+	_, err = fx.eng.ViewEnvRedacted(t.Context(), "")
+	assertUsageValidation(t, err)
+
+	_, err = fx.eng.ValidateStack(t.Context(), "")
+	assertUsageValidation(t, err)
+
+	_, _, err = fx.eng.RewireStack(t.Context(), "", &fakeConfirmer{})
+	assertUsageValidation(t, err)
+}
+
+// TestRewireStack_CorruptComposeRefusesWithGuidance proves the fail-closed
+// parse gate: a pre-feature stack whose on-disk docker-compose.yml is not
+// valid YAML cannot be probed for the env_file overlay, so RewireStack aborts
+// with a usage-validation error pointing the user at reinstall rather than
+// silently rewriting an unparseable compose. No restart runs.
+func TestRewireStack_CorruptComposeRefusesWithGuidance(t *testing.T) {
+	t.Parallel()
+
+	fx := newRewireFixture(t, rewireApp("rewire-corrupt-app"), "services: [this: is: not: valid: yaml")
+
+	rewired, path, err := fx.eng.RewireStack(t.Context(), fx.appID, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.False(t, rewired)
+	assert.Empty(t, path)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "could not be parsed")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeRestartInvocation",
+		"a corrupt compose must not restart the stack")
+}
+
+// TestRewireStack_ImageDriftAbortsBeforeWrite is the binding installed-version
+// invariant: with no historical catalog, the only image guarantee is that the
+// re-rendered image set equals the on-disk one. A pre-feature stack whose
+// on-disk image differs from the current template means the template moved
+// past the installed version, so the rewire aborts (sending the user to
+// `wdm update`) BEFORE any compose write or restart — never silently changing
+// what `docker compose up` pulls.
+func TestRewireStack_ImageDriftAbortsBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	// Same service, DIFFERENT image than the template's docker.io/example/app:1.0.0,
+	// and no env_file (pre-feature) so detection proceeds to the render+drift gate.
+	const driftedCompose = `services:
+  app:
+    image: docker.io/example/app:9.9.9
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+`
+	fx := newRewireFixture(t, rewireApp("rewire-drift-app"), driftedCompose)
+	composePath := filepath.Join(fx.stackPath, "docker-compose.yml")
+
+	rewired, path, err := fx.eng.RewireStack(t.Context(), fx.appID, &fakeConfirmer{})
+	require.Error(t, err)
+	assert.False(t, rewired)
+	assert.Empty(t, path)
+	assert.ErrorContains(t, err, "would change the stack images",
+		"image drift must abort with the installed-version guard message")
+
+	after, err := os.ReadFile(composePath)
+	require.NoError(t, err)
+	assert.Equal(t, driftedCompose, string(after), "an aborted rewire must not rewrite the compose")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeRestartInvocation",
+		"an aborted rewire must not restart the stack")
+	_, statErr := os.Stat(filepath.Join(fx.stackPath, ".env.user"))
+	assert.True(t, os.IsNotExist(statErr), "an aborted rewire must not seed .env.user")
+}
+
+// TestRewireStack_NilConfirmerRefusesBeforeWrite proves a pre-feature stack
+// with a nil confirmer refuses at the confirm gate (after detection and
+// render, before any byte change): no compose rewrite, no .env.user seed, no
+// restart. Rewire rewrites the compose and restarts, so it MUST be authorized.
+func TestRewireStack_NilConfirmerRefusesBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	fx := newRewireFixture(t, rewireApp("rewire-nil-confirm-app"), preFeatureCompose)
+	composePath := filepath.Join(fx.stackPath, "docker-compose.yml")
+
+	rewired, path, err := fx.eng.RewireStack(t.Context(), fx.appID, nil)
+	require.Error(t, err)
+	assert.False(t, rewired)
+	assert.Empty(t, path)
+	assertUsageValidation(t, err)
+	assert.ErrorContains(t, err, "confirmer is required")
+
+	after, err := os.ReadFile(composePath)
+	require.NoError(t, err)
+	assert.Equal(t, preFeatureCompose, string(after), "a nil-confirmer rewire must write nothing")
+	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeRestartInvocation",
+		"a nil-confirmer rewire must not restart the stack")
+	_, statErr := os.Stat(filepath.Join(fx.stackPath, ".env.user"))
+	assert.True(t, os.IsNotExist(statErr), "a nil-confirmer rewire must not seed .env.user")
 }
