@@ -38,6 +38,9 @@ services:
     image: syncthing/syncthing:2.1.1
     container_name: syncthing
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # The entrypoint chowns /var/syncthing and drops to this uid:gid; wdm
       # resolves PUID/PGID to the host user that owns the stack directory.

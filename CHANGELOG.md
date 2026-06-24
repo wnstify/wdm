@@ -41,8 +41,10 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   redeploy applies them — without re-rendering templates from the catalog and
   without changing images, versions, or secrets. The TUI exposes the same
   action as "Apply overlay changes".
-- Wired the overlay into the first three pilot apps (Vaultwarden, Nextcloud,
-  Uptime Kuma); the remaining curated apps land in a follow-up release.
+- Wired the `.env.user` overlay into every curated catalog app: each service in
+  every stack now merges `.env.user` via `env_file`, ordered ahead of any
+  generated-secret env file so the overlay can add knobs without overriding
+  generated secrets.
 
 ## v1.1.0 - 2026-06-23
 

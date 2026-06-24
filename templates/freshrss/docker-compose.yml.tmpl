@@ -31,6 +31,9 @@ services:
     image: freshrss/freshrss:1.29.0-alpine
     container_name: freshrss
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # Built-in cron schedule (minute field of crontab). Default refreshes
       # feeds at HH:03 and HH:33 — staggered to spread network load.

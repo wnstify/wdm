@@ -25,6 +25,9 @@ services:
     image: towfiqi/serpbear:3.1.0
     container_name: serpbear
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     ports:
       - "127.0.0.1:3009:3000" # localhost only — front with a reverse proxy
     environment:

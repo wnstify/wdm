@@ -141,6 +141,15 @@ wdm view-env <app>            # show the effective environment, secrets masked
 
 The editor honors `$VISUAL`, then `$EDITOR`, then `nano`. See [USAGE.md](USAGE.md) for the full flag set.
 
+For example, to add a setting and apply it to a running stack:
+
+```sh
+wdm edit vaultwarden --env        # add e.g. SMTP_PORT=587 to .env.user, then save
+wdm apps redeploy vaultwarden     # recreate the stack so the change takes effect
+```
+
+`wdm apps restart` reuses the running containers and does **not** pick up overlay edits — `redeploy` does. A value `wdm` pins literally in a service's `environment:` cannot be overridden from `.env.user`; change it through `docker-compose.override.yml` instead.
+
 ## Curated apps
 
 `wdm` curates nineteen apps:

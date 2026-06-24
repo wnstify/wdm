@@ -171,7 +171,7 @@ Extend a managed stack without losing your changes on update. Each stack carries
 
 The two overlays follow a simple model: **`.env.user` adds knobs, `docker-compose.override.yml` changes or restructures.**
 
-- `.env.user` (mode `0600`) is a flat env file merged into every service via `env_file`. Use it to add new variables or override non-pinned values. Compose evaluates `environment:` over `env_file:`, so a value `wdm` pins in `environment:` (secrets and hardened config) cannot be overridden from `.env.user` — change a pinned value through the override's `environment:` instead.
+- `.env.user` (mode `0600`) is a flat env file merged into every service via `env_file`. Use it to add new variables or override non-pinned values. Compose evaluates `environment:` over `env_file:`, so a value `wdm` pins in `environment:` (secrets and hardened config) cannot be overridden from `.env.user` — change a pinned value through the override's `environment:` instead. `.env.user` only reaches keys whose `environment:` value is a `${VAR}` / `${VAR:-default}` reference (or that have no `environment:` line at all); a key hardcoded to a literal in `environment:` is fixed and must be changed through the compose override.
 - `docker-compose.override.yml` (mode `0644`) is merged over the `wdm` base by native Compose. Use it for structural changes: adding services, volumes, networks, ports, or labels. A compose override can re-add dropped capabilities, expose ports on `0.0.0.0`, or break `wdm` tracking if it removes the `wdm.managed` labels or the project name; `wdm` prints a one-line warning before opening it.
 
 Both files survive `wdm update` — `wdm` re-renders only its own base files and never touches the overlays.

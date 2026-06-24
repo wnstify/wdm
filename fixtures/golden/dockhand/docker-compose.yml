@@ -50,6 +50,9 @@ services:
     image: postgres:18.4-alpine3.23
     container_name: dockhand-postgresql
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_USER: ${PG_USER}
       POSTGRES_PASSWORD: ${PG_PASS}
@@ -109,6 +112,9 @@ services:
     image: tecnativa/docker-socket-proxy:0.3
     container_name: dockhand-socket-proxy
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # The granular tecnativa flags that realize wdm's abstract allowed_api set
       # (catalog socket_proxy.allowed_api). The read scopes Dockhand's UI needs:
@@ -162,6 +168,9 @@ services:
     image: fnsys/dockhand:v1.0.29
     container_name: dockhand
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # The LSIO-style entrypoint starts as root, chowns /app/data, then drops
       # the server to this uid:gid. wdm resolves PUID/PGID to the host user that

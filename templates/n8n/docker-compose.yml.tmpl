@@ -35,6 +35,9 @@ services:
     image: postgres:18.4
     container_name: n8n-postgres
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -86,6 +89,9 @@ services:
     image: docker.n8n.io/n8nio/n8n:2.21.4
     container_name: n8n
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,6 +177,9 @@ services:
     image: n8nio/runners:2.21.4
     container_name: n8n-runner
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       n8n:
         condition: service_healthy

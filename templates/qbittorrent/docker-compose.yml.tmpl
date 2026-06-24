@@ -36,6 +36,9 @@ services:
     image: qbittorrentofficial/qbittorrent-nox:5.2.1-1
     container_name: qbittorrent
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # The entrypoint chowns /config and drops the qbittorrent-nox process to
       # this uid:gid. wdm resolves PUID/PGID to the host user that owns the
