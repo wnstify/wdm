@@ -62,6 +62,9 @@ services:
     image: mongo:8.3.2
     container_name: stoat-database
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
@@ -112,6 +115,9 @@ services:
     image: redis:8.6.3-alpine
     container_name: stoat-redis
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --loglevel warning
     volumes:
       # Named volume: the redis entrypoint chowns /data and drops to uid 999.
@@ -158,6 +164,9 @@ services:
     image: rabbitmq:4.2.5-alpine
     container_name: stoat-rabbit
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBIT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD}
@@ -211,6 +220,9 @@ services:
     image: dxflrs/garage:v2.3.0
     container_name: stoat-garage
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     volumes:
       # wdm-rendered garage.toml, bind-mounted read-only (config_generation
       # artifact; the catalog mount field names this exact bind).
@@ -256,7 +268,10 @@ services:
     image: ghcr.io/stoatchat/api:v0.12.1
     container_name: stoat-api
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     depends_on:
       database:
         condition: service_healthy
@@ -292,7 +307,10 @@ services:
     image: ghcr.io/stoatchat/events:v0.12.1
     container_name: stoat-events
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     depends_on:
       database:
         condition: service_healthy
@@ -326,7 +344,10 @@ services:
     image: ghcr.io/stoatchat/file-server:v0.12.1
     container_name: stoat-autumn
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     depends_on:
       database:
         condition: service_healthy
@@ -358,7 +379,10 @@ services:
     image: ghcr.io/stoatchat/proxy:v0.12.1
     container_name: stoat-january
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     volumes:
       - ./Revolt.toml:/Revolt.toml:ro
     networks:
@@ -385,7 +409,10 @@ services:
     image: ghcr.io/stoatchat/gifbox:v0.12.1
     container_name: stoat-gifbox
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     volumes:
       - ./Revolt.toml:/Revolt.toml:ro
     networks:
@@ -412,7 +439,10 @@ services:
     image: ghcr.io/stoatchat/crond:v0.12.1
     container_name: stoat-crond
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     depends_on:
       database:
         condition: service_healthy
@@ -444,7 +474,10 @@ services:
     image: ghcr.io/stoatchat/pushd:v0.12.1
     container_name: stoat-pushd
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     depends_on:
       database:
         condition: service_healthy
@@ -479,7 +512,10 @@ services:
     image: ghcr.io/stoatchat/voice-ingress:v0.12.1
     container_name: stoat-voice-ingress
     restart: unless-stopped
-    env_file: secrets.env
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - secrets.env
     depends_on:
       database:
         condition: service_healthy
@@ -517,6 +553,9 @@ services:
     image: ghcr.io/stoatchat/livekit-server:v1.9.13
     container_name: stoat-livekit
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     # livekit.yml is a wdm secret-bearing config artifact written mode 0600 and
     # owned by the installing user, so the process runs as that uid:gid rather
     # than a hard-coded image uid.
@@ -563,7 +602,10 @@ services:
     image: ghcr.io/stoatchat/for-web:0b94704
     container_name: stoat-web
     restart: unless-stopped
-    env_file: .env.web
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - .env.web
     networks:
       - stoat-app
     cap_drop:
@@ -590,7 +632,10 @@ services:
     image: caddy:2.11.3
     container_name: stoat-caddy
     restart: unless-stopped
-    env_file: .env.web
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
+      - .env.web
     ports:
       # localhost only — front with a reverse proxy for public TLS.
       - "127.0.0.1:8880:80"
@@ -645,6 +690,9 @@ services:
     # A mongosh client (user 1000, no volume) with zero added caps.
     image: mongo:8.3.2
     container_name: stoat-mongo-init
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     user: "1000:1000"
     depends_on:
       database:
@@ -700,6 +748,9 @@ services:
     # no nonroot user; it runs apk add and writes its own files).
     image: alpine:3.22.4
     container_name: stoat-garage-init
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       garage:
         condition: service_started

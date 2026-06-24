@@ -36,6 +36,9 @@ services:
     image: postgres:18.3-alpine
     container_name: mira-postgres
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -91,6 +94,9 @@ services:
     image: ghcr.io/miracodeai/mira:0.4.0
     container_name: mira
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       postgres:
         condition: service_healthy

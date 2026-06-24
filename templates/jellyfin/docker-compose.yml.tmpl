@@ -24,6 +24,9 @@ services:
     image: lscr.io/linuxserver/jellyfin:10.11.8
     container_name: jellyfin
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       PUID: ${PUID}
       PGID: ${PGID}
