@@ -198,8 +198,9 @@ func (e *Engine) ViewEnvRedacted(ctx context.Context, appID string) (*types.View
 		AppID:   appID,
 		Entries: make([]types.EnvEntry, 0, len(baseEnv)+len(userEntries)),
 	}
-	for key, value := range baseEnv {
-		result.Entries = append(result.Entries, redactEnvEntry(redactor, key, value))
+	// baseEnv is a map; sort keys so --json Entries order is stable across calls.
+	for _, key := range slices.Sorted(maps.Keys(baseEnv)) {
+		result.Entries = append(result.Entries, redactEnvEntry(redactor, key, baseEnv[key]))
 	}
 	for _, kv := range userEntries {
 		result.Entries = append(result.Entries, redactEnvEntry(redactor, kv.key, kv.value))
