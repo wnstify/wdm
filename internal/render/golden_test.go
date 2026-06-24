@@ -72,6 +72,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -250,6 +251,99 @@ func TestGoldenLabelInjectionCannotBeDropped(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// TestGoldenEveryServiceCarriesUserOverlay re-parses each committed
+// golden docker-compose.yml and asserts every services.* entry lists
+// the per-stack .env.user overlay in its env_file, and that nothing but
+// .env may precede it. Compose applies later env_file entries over
+// earlier ones, so .env.user appearing after a generated-secret file
+// would let a user's overlay silently override a generated secret; the
+// ordering arm is the machine check that keeps .env.user ahead of every
+// secret file (only the literal-default .env is an allowed predecessor).
+func TestGoldenEveryServiceCarriesUserOverlay(t *testing.T) {
+	if *update {
+		t.Skip("golden regeneration in progress (-update)")
+	}
+	t.Parallel()
+
+	cat := loadStableCatalog(t)
+
+	for _, app := range cat.Apps {
+		t.Run(app.AppID, func(t *testing.T) {
+			t.Parallel()
+
+			golden, err := os.ReadFile(filepath.Join(goldenRoot, app.AppID, "docker-compose.yml"))
+			require.NoError(t, err, "read golden compose for %s (run -update first?)", app.AppID)
+
+			services := composeEnvFiles(t, golden)
+			require.NotEmpty(t, services, "golden compose for %s declares no services", app.AppID)
+
+			for serviceName, files := range services {
+				idx := slices.Index(files, ".env.user")
+				require.GreaterOrEqualf(
+					t,
+					idx,
+					0,
+					"service %q in %s golden is missing .env.user in env_file (got %v)", serviceName, app.AppID, files,
+				)
+				for _, before := range files[:idx] {
+					assert.Equalf(
+						t,
+						".env",
+						before,
+						"service %q in %s golden lists %q before .env.user; only .env may precede the overlay", serviceName, app.AppID, before,
+					)
+				}
+			}
+		})
+	}
+}
+
+// composeEnvFiles parses a rendered Compose document and returns each
+// service's env_file entries in order, reading either the scalar form
+// (env_file: file) or the sequence form (env_file: [a, b]) the same way
+// decodeLabels handles labels. Used by the overlay enforcement proof to
+// inspect the golden bytes independently of the renderer.
+func composeEnvFiles(t *testing.T, composeBytes []byte) map[string][]string {
+	t.Helper()
+
+	var doc struct {
+		Services map[string]struct {
+			EnvFile yaml.Node `yaml:"env_file"`
+		} `yaml:"services"`
+	}
+	require.NoError(t, yaml.Unmarshal(composeBytes, &doc), "parse rendered compose")
+
+	out := make(map[string][]string, len(doc.Services))
+	for name, svc := range doc.Services {
+		out[name] = decodeEnvFile(t, svc.EnvFile)
+	}
+
+	return out
+}
+
+// decodeEnvFile reads a Compose service env_file node in either
+// supported form (scalar string or sequence of strings) into an ordered
+// slice.
+func decodeEnvFile(t *testing.T, node yaml.Node) []string {
+	t.Helper()
+
+	switch node.Kind {
+	case 0:
+		return nil
+	case yaml.ScalarNode:
+		var single string
+		require.NoError(t, node.Decode(&single), "decode scalar-form env_file")
+		return []string{single}
+	case yaml.SequenceNode:
+		var files []string
+		require.NoError(t, node.Decode(&files), "decode sequence-form env_file")
+		return files
+	default:
+		t.Fatalf("unexpected env_file node kind %d", node.Kind)
+		return nil
 	}
 }
 
