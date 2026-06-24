@@ -43,6 +43,9 @@ services:
     image: mongo:6
     container_name: meshcentral-mongodb
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       TZ: ${TZ}
     volumes:
@@ -90,6 +93,9 @@ services:
     image: ghcr.io/ylianst/meshcentral:1.2.0
     container_name: meshcentral
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       mongodb:
         condition: service_healthy

@@ -35,11 +35,13 @@ import (
 )
 
 const (
-	installHostMemoryReserveBytes = uint64(1024 * 1024 * 1024)
-	installComposeFilename        = "docker-compose.yml"
-	installEnvFilename            = ".env"
-	installLockFilename           = ".wdm.lock"
-	installComposeFileMode        = os.FileMode(0o644)
+	installHostMemoryReserveBytes  = uint64(1024 * 1024 * 1024)
+	installComposeFilename         = "docker-compose.yml"
+	installComposeOverrideFilename = "docker-compose.override.yml"
+	installEnvFilename             = ".env"
+	installEnvUserFilename         = ".env.user"
+	installLockFilename            = ".wdm.lock"
+	installComposeFileMode         = os.FileMode(0o644)
 )
 
 // installRollbackTimeout bounds the pre-manifest Docker rollback so it
@@ -221,6 +223,14 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 		return nil, err
 	}
 	cleanup := &freshInstallDockerCleanup{client: dockerClient, project: composeProject}
+	// Seed an empty .env.user (create-if-missing, 0600) after the stack
+	// files exist but before `compose up`, so the env_file overlay
+	// resolves on deploy. A fault here unwinds the fresh install.
+	if _, err := ensureUserEnvFile(plan.stackPath); err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "ensure_user_env", err)
+		return nil, failFreshInstall(ctx, err, plan, stackHandle, cleanup)
+	}
+	lg.step(ctx, "user env seeded")
 	lg.debug(ctx, "deploy stack",
 		slog.String("command", "docker compose up -d"),
 		slog.String("compose_project", plan.composeProject),
@@ -682,6 +692,11 @@ func validateRenderedComposeConfig(
 	staged := []installFileWrite{
 		{path: composePath, data: rendered.ComposeBytes, mode: installComposeFileMode},
 		{path: filepath.Join(tempDir, installEnvFilename), data: rendered.EnvBytes, mode: security.SecretFileMode},
+		// Stage an empty .env.user so a template's env_file: [.env.user]
+		// resolves during `compose config`. It is user-owned, not a
+		// rendered artifact, so it is seeded on disk at install (T2) and
+		// staged empty here for pre-write validation only.
+		{path: filepath.Join(tempDir, installEnvUserFilename), data: []byte{}, mode: security.SecretFileMode},
 	}
 	artifactWrites, err := renderedArtifactWrites(rendered, tempDir)
 	if err != nil {
@@ -916,9 +931,9 @@ func installDockerCleanupError(composeProject, stackPath string, cause error) er
 }
 
 // cleanupFreshInstallArtifacts removes exactly the artifacts a fresh
-// install writes: the rendered files, the .wdm.lock created at flock
-// acquisition, the nested additional-file parent directories, and the
-// created stack directory itself. Every file removal is contained to
+// install writes: the rendered files, the seeded .env.user, the .wdm.lock
+// created at flock acquisition, the nested additional-file parent
+// directories, and the created stack directory itself. Every file removal is contained to
 // the stack root via [security.EnsureWithinRoot]; directories use
 // [os.Remove] (which refuses non-empty directories) so user-dropped
 // content can never be deleted, only reported as a leftover. Missing
@@ -951,6 +966,11 @@ func cleanupFreshInstallArtifacts(plan *installPlan) error {
 		}
 	}
 	if err := removeFreshInstallFile(stackRoot, filepath.Join(stackRoot, installLockFilename)); err != nil {
+		faults = append(faults, err)
+	}
+	// The seeded .env.user is not in installFileWrites; remove it too so
+	// the sad-path stack-dir removal does not trip on a leftover file.
+	if err := removeFreshInstallFile(stackRoot, filepath.Join(stackRoot, installEnvUserFilename)); err != nil {
 		faults = append(faults, err)
 	}
 
@@ -1524,6 +1544,42 @@ func installFileWrites(plan *installPlan) ([]installFileWrite, error) {
 	return writes, nil
 }
 
+// ensureUserEnvFile seeds an empty user-owned .env.user (0600) inside
+// stackPath only when it is absent, and returns its resolved path. The
+// file is user-editable env injected into every service via the
+// template env_file: directive; wdm creates it but NEVER regenerates or
+// truncates it, so install, edit, and rewire all share this primitive
+// while `wdm update` leaves the user's content untouched.
+// security.CreateSecretFile's O_EXCL makes the create idempotent: an
+// already-present file surfaces fs.ErrExist, which is treated as "kept
+// as-is" rather than an error. The returned file is empty and closed.
+func ensureUserEnvFile(stackPath string) (string, error) {
+	path, err := security.SafeJoin(stackPath, installEnvUserFilename)
+	if err != nil {
+		return "", usageValidationError(
+			"stack path is unsafe",
+			"choose a stack path under the configured stack base",
+			err,
+		)
+	}
+	f, err := security.CreateSecretFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return path, nil
+		}
+		return "", err
+	}
+	if closeErr := f.Close(); closeErr != nil {
+		return "", types.WrapError(
+			types.ErrCodeGeneric,
+			"user env file could not be finalized",
+			"check stack directory permissions and retry",
+			closeErr,
+		)
+	}
+	return path, nil
+}
+
 // renderedArtifactWrites enumerates the rendered additional_files and
 // config_artifacts as concrete file writes rooted at root, in the stable
 // order additional_files-then-config_artifacts. It is the single source
@@ -1615,10 +1671,12 @@ type installAdditionalDestTracker struct {
 func newInstallAdditionalDestTracker() *installAdditionalDestTracker {
 	return &installAdditionalDestTracker{
 		final: map[string]string{
-			installComposeFilename: installComposeFilename,
-			installEnvFilename:     installEnvFilename,
-			installLockFilename:    installLockFilename,
-			state.BackupDirName:    state.BackupDirName,
+			installComposeFilename:         installComposeFilename,
+			installEnvFilename:             installEnvFilename,
+			installEnvUserFilename:         installEnvUserFilename,
+			installComposeOverrideFilename: installComposeOverrideFilename,
+			installLockFilename:            installLockFilename,
+			state.BackupDirName:            state.BackupDirName,
 		},
 		temp: map[string]string{
 			installComposeFilename + ".tmp": installComposeFilename,
@@ -4504,10 +4562,10 @@ func (p *installPlan) resolvePathPlaceholder(ph catalog.Placeholder, value strin
 
 func resolveStringPlaceholder(ph catalog.Placeholder, value string, hasRequestValue bool) (string, error) {
 	if hasRequestValue {
-		return value, nil
+		return value, validateStringPlaceholderValue(ph.Name, value)
 	}
 	if value, ok := stringDefault(ph.Default); ok {
-		return value, nil
+		return value, validateStringPlaceholderValue(ph.Name, value)
 	}
 	if ph.Required {
 		return "", usageValidationError(
@@ -4517,6 +4575,21 @@ func resolveStringPlaceholder(ph catalog.Placeholder, value string, hasRequestVa
 		)
 	}
 	return "", nil
+}
+
+// validateStringPlaceholderValue rejects CR/LF/NUL in a string placeholder
+// value before it reaches the .env template. These control characters have no
+// legitimate place in an env value and a newline would let a single --set value
+// inject extra KEY=VALUE lines (overriding later secrets), so it fails closed.
+func validateStringPlaceholderValue(name, value string) error {
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return usageValidationError(
+			"placeholder value contains control characters",
+			"remove carriage return, newline, or NUL characters from the value",
+			fmt.Errorf("placeholder %q value contains a control character", name),
+		)
+	}
+	return nil
 }
 
 func resolveBoolPlaceholder(ph catalog.Placeholder, value string, hasRequestValue bool) (string, error) {

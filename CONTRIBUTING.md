@@ -55,6 +55,8 @@ make dev-catalog-seed FORCE=1
 
 Major functional changes must add or update automated tests for the changed behavior. If a change cannot be covered by an automated test, explain the reason in the pull request and describe the manual verification performed.
 
+Every security fix must ship a regression test named after the finding that exercises the real validator, renderer, redactor, or extraction boundary it protects — never a mock of the protected seam. A test that stubs out the seam it is meant to guard does not prove the fix and lets the bug return silently.
+
 ## Project layout
 
 `wdm` exposes a single public Go API in `pkg/engine`, backed by private packages under `internal/`. The UI layers go through `pkg/engine` rather than reaching into the internal packages directly: the CLI lives in `internal/cli`, and the TUI lives in `internal/tui`. Keep that boundary intact when adding features, so both UIs share one engine.

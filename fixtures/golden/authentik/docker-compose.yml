@@ -45,6 +45,9 @@ services:
     image: postgres:18.4
     container_name: authentik-postgres
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -109,6 +112,9 @@ services:
     image: ghcr.io/goauthentik/server:2026.5.3
     container_name: authentik-server
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     command: server
     depends_on:
       postgres:
@@ -182,6 +188,9 @@ services:
     image: ghcr.io/goauthentik/server:2026.5.3
     container_name: authentik-worker
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     command: worker
     depends_on:
       postgres:

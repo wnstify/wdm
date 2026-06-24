@@ -398,3 +398,82 @@ func TestCommandInjection_AllowlistRejectsShellAndInjectedTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestCommandInjection_ManagedLabelInspectAllowlisted drives the real builder
+// and the real validateCommandSpec/validateNetworkArgv path for the ownership
+// gate's `network inspect --format {{index .Labels "wdm.managed"}}` shape.
+// A prior fix added the builder but never extended the inspect-arm allowlist,
+// so every compose-external network was retained instead of removed. This
+// asserts the genuine label-inspect argv is ACCEPTED while a bogus inspect
+// format is still refused (PRD §10).
+func TestCommandInjection_ManagedLabelInspectAllowlisted(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := buildNetworkManagedLabelCommand("wdm_default")
+	require.NoError(t, err)
+	require.NoError(t, validateCommandSpec(cmd))
+
+	bogus := commandSpec{argv: []string{
+		"network", "inspect", "--format", "{{.Driver}}", "wdm_default",
+	}}
+	err = validateCommandSpec(bogus)
+	require.Error(t, err)
+
+	var typedErr *types.Error
+	require.ErrorAs(t, err, &typedErr)
+	assert.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
+}
+
+// TestCommandInjection_AllNetworkInvocationsAllowlisted is the durable
+// WDM-SEC-004-class guard: it enumerates EVERY network invocation and asserts
+// that the argv the real buildCommand produces is ACCEPTED by the real
+// validateCommandSpec/validateNetworkArgv last gate. WDM-SEC-004 regressed once
+// because a builder was added without extending the inspect-arm allowlist, so a
+// label-gated removal was silently dropped. Adding a new network invocation in
+// the future without allowlisting its argv shape must FAIL this test. A bogus
+// inspect --format is kept as a negative control so the allowlist is proven to
+// still reject unknown shapes (PRD §10, PRD §12, PRD §39).
+func TestCommandInjection_AllNetworkInvocationsAllowlisted(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		inv  Invocation
+	}{
+		{name: "inspect internal", inv: networkInspectInvocation{name: "wdm_default"}},
+		{name: "managed label", inv: networkManagedLabelInvocation{name: "wdm_default"}},
+		{name: "subnet", inv: networkSubnetInvocation{name: "wdm_default"}},
+		{name: "create bare", inv: networkCreateInvocation{name: "wdm_default"}},
+		{
+			name: "create internal subnet gateway labels",
+			inv: networkCreateInvocation{
+				name:     "wdm_default",
+				internal: true,
+				subnet:   "172.30.0.0/24",
+				gateway:  "172.30.0.1",
+				appID:    "serpbear",
+			},
+		},
+		{name: "remove", inv: removeNetworkInvocation{name: "wdm_default"}},
+		{name: "managed list", inv: managedNetworkListInvocation{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd, err := buildCommand(tt.inv)
+			require.NoErrorf(t, err, "buildCommand(%T) must build a valid argv", tt.inv)
+			require.NoErrorf(t, validateCommandSpec(cmd),
+				"argv %v from %T must be accepted by the allowlist; allowlist a new network invocation before adding it",
+				cmd.argv, tt.inv)
+		})
+	}
+
+	// Negative control: an inspect --format outside the allowlisted set is still
+	// refused, proving the gate is not blanket-accepting every network argv.
+	bogus := commandSpec{argv: []string{
+		"network", "inspect", "--format", "{{.Driver}}", "wdm_default",
+	}}
+	require.Error(t, validateCommandSpec(bogus))
+}

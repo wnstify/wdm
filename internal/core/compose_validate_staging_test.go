@@ -27,7 +27,9 @@ type stagingProbeClient struct {
 	runCalls     int
 	sawArtifact  bool
 	sawEnvFile   bool
+	sawEnvUser   bool
 	artifactMode os.FileMode
+	envUserMode  os.FileMode
 }
 
 func (c *stagingProbeClient) Run(_ context.Context, _ docker.Invocation) (docker.CommandResult, error) {
@@ -45,6 +47,10 @@ func (c *stagingProbeClient) Run(_ context.Context, _ docker.Invocation) (docker
 	}
 	if _, statErr := os.Stat(filepath.Join(projectDir, ".env")); statErr == nil {
 		c.sawEnvFile = true
+	}
+	if info, statErr := os.Stat(filepath.Join(projectDir, ".env.user")); statErr == nil {
+		c.sawEnvUser = true
+		c.envUserMode = info.Mode().Perm()
 	}
 	return docker.CommandResult{}, nil
 }
@@ -98,6 +104,45 @@ func TestValidateRenderedComposeConfig_StagesConfigArtifacts(t *testing.T) {
 		security.SecretFileMode,
 		client.artifactMode,
 		"a 0600 config artifact must stay 0600 in the hermetic workspace",
+	)
+}
+
+// TestValidateRenderedComposeConfig_StagesEmptyEnvUser proves the
+// pre-deploy validation stages an empty .env.user (0600) into its
+// hermetic project dir even though .env.user is user-owned, not a
+// rendered artifact. A template that lists env_file: [.env.user] would
+// otherwise fail `docker compose config` fail-closed because the file is
+// absent at validation time. The probe asserts it is present on disk in
+// the project dir at the moment validation invokes the docker client.
+func TestValidateRenderedComposeConfig_StagesEmptyEnvUser(t *testing.T) {
+	tmpRoot := t.TempDir()
+	t.Setenv("TMPDIR", tmpRoot)
+
+	rendered := &render.RenderedStack{
+		ComposeBytes: []byte("services:\n" +
+			"  app:\n" +
+			"    image: docker.io/example/app:1.0.0\n" +
+			"    env_file:\n" +
+			"      - .env.user\n"),
+		EnvBytes: []byte("APP_KEY=value\n"),
+	}
+
+	client := &stagingProbeClient{tmpRoot: tmpRoot, t: t}
+
+	err := validateRenderedComposeConfig(t.Context(), client, rendered)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, client.runCalls, "validation must invoke the docker client exactly once")
+	require.True(
+		t,
+		client.sawEnvUser,
+		"an empty .env.user must be staged so env_file: [.env.user] resolves during compose config",
+	)
+	require.Equal(
+		t,
+		security.SecretFileMode,
+		client.envUserMode,
+		"the staged .env.user must be 0600",
 	)
 }
 

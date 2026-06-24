@@ -188,6 +188,50 @@ func RemoveNetworkIfPresent(ctx context.Context, client Client, networkName stri
 	return err
 }
 
+// RemoveNetworkIfManaged removes a single network by name like
+// [RemoveNetworkIfPresent], but ONLY after confirming the network carries the
+// `wdm.managed=true` ownership label (PRD §10). It exists for the compose-
+// derived delete/uninstall cleanup, where a stack's rendered compose declares
+// its networks external by name: that name could, after the stack is gone,
+// resolve to a foreign network an operator created. Inspecting the label before
+// removal keeps the cleanup from deleting a network wdm does not own. A network
+// already absent counts as success (idempotent). A network present but NOT
+// carrying the label is left in place and reported via skipped=true with no
+// error. Any other inspect/removal fault propagates unchanged. removed is true
+// only when an owned network was actually removed.
+func RemoveNetworkIfManaged(ctx context.Context, client Client, networkName string) (removed, skipped bool, err error) {
+	if client == nil {
+		return false, false, types.NewError(
+			types.ErrCodeUsageValidation,
+			"docker client is required",
+			"pass a non-nil docker client",
+		)
+	}
+
+	name, err := validateNetworkName(networkName)
+	if err != nil {
+		return false, false, err
+	}
+
+	res, inspectErr := client.Run(ctx, networkManagedLabelInvocation{name: name})
+	if inspectErr != nil {
+		// An absent network is nothing to remove: idempotent success, not owned.
+		if isMissingNetworkError(res, inspectErr, name) {
+			return false, false, nil
+		}
+		return false, false, inspectErr
+	}
+	if strings.TrimRight(res.Stdout, "\r\n") != "true" {
+		// Present but not wdm-owned: leave it alone.
+		return false, true, nil
+	}
+
+	if removeErr := RemoveNetworkIfPresent(ctx, client, name); removeErr != nil {
+		return false, false, removeErr
+	}
+	return true, false, nil
+}
+
 // ListManagedNetworks returns the names of every Docker network carrying the
 // `wdm.managed=true` label, including ones orphaned by an app whose stack the
 // operator already deleted (its compose file is gone, so the compose-derived
@@ -270,6 +314,15 @@ type networkInspectInvocation struct {
 }
 
 func (networkInspectInvocation) isDockerInvocation() {}
+
+// networkManagedLabelInvocation reads a network's `wdm.managed` label so
+// [RemoveNetworkIfManaged] can gate compose-derived removal on wdm ownership
+// (PRD §10). The format prints the label value or empty when absent.
+type networkManagedLabelInvocation struct {
+	name string
+}
+
+func (networkManagedLabelInvocation) isDockerInvocation() {}
 
 // networkSubnetInvocation reads an existing network's first configured subnet so
 // [EnsureNetworkReport] can reconcile it against the requested spec on the exists path.

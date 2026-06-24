@@ -61,12 +61,17 @@ const (
 	screenSelfUpdate
 	screenSelfUpdateResult
 	screenResources
+	screenViewEnv
 )
 
 var checkAppActions = []string{
 	"View details",
 	"Restart app",
+	"Apply overlay changes",
 	"Manage resources",
+	"Edit compose",
+	"Edit env",
+	"View env (redacted)",
 	"Remove app",
 	"Validate config",
 	"Return to dashboard",
@@ -122,6 +127,9 @@ type model struct {
 	resourceFields      []resourceField
 	resourceFieldCursor int
 	reconfigureResult   *types.ReconfigureResult
+
+	viewEnv    *types.ViewEnvResult
+	viewEnvErr error
 
 	catalogUpdateStatus *types.CatalogUpdateStatus
 	catalogUpdateResult *types.CatalogUpdateResult
@@ -191,6 +199,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if next, ok := m.updateStatusMsg(msg); ok {
 			return next, nil
+		}
+		if next, cmd, ok := m.updateUserEditMsg(msg); ok {
+			return next, cmd
 		}
 		return m.updateFinishedMsg(msg)
 	}
@@ -362,15 +373,9 @@ func (m model) updateStatusMsg(msg tea.Msg) (tea.Model, bool) {
 func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case restartFinishedMsg:
-		m.busy = false
-		m.err = msg.err
-		m.validation = nil
-		if msg.result != nil && msg.result.Status != nil {
-			m.status = msg.result.Status
-		}
-		if msg.err == nil {
-			m.actionMessage = "Restart complete."
-		}
+		return m.applyRecreateResult(msg.result, msg.err, "Restart complete."), nil
+	case redeployFinishedMsg:
+		return m.applyRecreateResult(msg.result, msg.err, "Overlay changes applied."), nil
 	case validationFinishedMsg:
 		m.busy = false
 		m.err = msg.err
@@ -657,6 +662,11 @@ func (m *model) back() {
 		m.resourceService = ""
 		m.resourceFields = nil
 		m.reconfigureResult = nil
+	case screenViewEnv:
+		m.screen = screenAppActions
+		m.err = nil
+		m.viewEnv = nil
+		m.viewEnvErr = nil
 	case screenBackupsList:
 		m.screen = screenBackupsApps
 		m.err = nil
@@ -777,6 +787,11 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.actionMessage = ""
 		return m, m.restartAppCmd(m.activeAppID())
+	case "Apply overlay changes":
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		return m, m.redeployAppCmd(m.activeAppID())
 	case "Manage resources":
 		m.screen = screenResources
 		m.busy = true
@@ -790,6 +805,24 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 		m.reconfigureResult = nil
 		m.progress = progressMsg{}
 		return m, m.loadResourceSettingsCmd(m.activeAppID())
+	case "Edit compose":
+		m.busy = true
+		m.err = nil
+		m.actionMessage = overrideEditWarning
+		return m, m.editComposeCmd(m.activeAppID())
+	case "Edit env":
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		return m, m.editEnvCmd(m.activeAppID())
+	case "View env (redacted)":
+		m.screen = screenViewEnv
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		m.viewEnv = nil
+		m.viewEnvErr = nil
+		return m, m.loadViewEnvCmd(m.activeAppID())
 	case "Remove app":
 		m.screen = screenRemoveActions
 		m.err = nil
@@ -824,6 +857,11 @@ type restartFinishedMsg struct {
 	err    error
 }
 
+type redeployFinishedMsg struct {
+	result *types.RestartResult
+	err    error
+}
+
 type validationFinishedMsg struct {
 	result *types.ValidationResult
 	err    error
@@ -851,6 +889,34 @@ func (m model) restartAppCmd(appID string) tea.Cmd {
 	) tea.Msg {
 		result, err := m.eng.Restart(ctx, types.RestartRequest{AppID: appID}, progress, confirmer)
 		return restartFinishedMsg{result: result, err: err}
+	})
+}
+
+// applyRecreateResult folds a restart or redeploy outcome into the model: it
+// clears busy/validation, records any error, adopts the post-op status snapshot
+// when present, and on success shows successMsg. Restart and redeploy share this
+// because their result handling is identical apart from the message.
+func (m model) applyRecreateResult(result *types.RestartResult, err error, successMsg string) model {
+	m.busy = false
+	m.err = err
+	m.validation = nil
+	if result != nil && result.Status != nil {
+		m.status = result.Status
+	}
+	if err == nil {
+		m.actionMessage = successMsg
+	}
+	return m
+}
+
+func (m model) redeployAppCmd(appID string) tea.Cmd {
+	return engineCommand(m.ctx, m.bridge, func(
+		ctx context.Context,
+		progress types.ProgressFn,
+		confirmer types.Confirmer,
+	) tea.Msg {
+		result, err := m.eng.RedeployStack(ctx, types.RestartRequest{AppID: appID}, progress, confirmer)
+		return redeployFinishedMsg{result: result, err: err}
 	})
 }
 
@@ -950,6 +1016,8 @@ func (m model) screenView() string {
 		return m.settingsView()
 	case screenRuntimeLock:
 		return m.runtimeLockView()
+	case screenViewEnv:
+		return m.viewEnvScreenView()
 	default:
 		if view, ok := m.distributionScreenView(); ok {
 			return view

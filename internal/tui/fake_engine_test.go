@@ -22,6 +22,9 @@ type fakeEngine struct {
 	restartResult          *types.RestartResult
 	restartErr             error
 	restartCalls           []string
+	redeployResult         *types.RestartResult
+	redeployErr            error
+	redeployCalls          []string
 	stopAllResult          *types.StopAllResult
 	stopAllErr             error
 	stopAllCalls           int
@@ -73,6 +76,23 @@ type fakeEngine struct {
 	reconfigureResult     *types.ReconfigureResult
 	reconfigureErr        error
 	reconfigureRequests   []types.ReconfigureRequest
+
+	ensureOverridePath  string
+	ensureOverrideErr   error
+	ensureOverrideCalls []string
+	ensureEnvPath       string
+	ensureEnvErr        error
+	ensureEnvCalls      []string
+	viewEnvResult       *types.ViewEnvResult
+	viewEnvErr          error
+	viewEnvCalls        []string
+	validateStackWarn   []string
+	validateStackErr    error
+	validateStackCalls  []string
+	rewireStackDone     bool
+	rewireStackPath     string
+	rewireStackErr      error
+	rewireStackCalls    []string
 
 	catalogUpdateStatus    *types.CatalogUpdateStatus
 	catalogUpdateStatusErr error
@@ -169,6 +189,16 @@ func (f *fakeEngine) Restart(
 	return f.restartResult, f.restartErr
 }
 
+func (f *fakeEngine) RedeployStack(
+	_ context.Context,
+	req types.RestartRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.RestartResult, error) {
+	f.redeployCalls = append(f.redeployCalls, req.AppID)
+	return f.redeployResult, f.redeployErr
+}
+
 func (f *fakeEngine) StopAll(
 	_ context.Context,
 	_ types.StopAllRequest,
@@ -196,6 +226,36 @@ func (f *fakeEngine) Reconfigure(
 ) (*types.ReconfigureResult, error) {
 	f.reconfigureRequests = append(f.reconfigureRequests, req)
 	return f.reconfigureResult, f.reconfigureErr
+}
+
+// EnsureUserOverride, EnsureUserEnv, ViewEnvRedacted, and ValidateStack back
+// the user-overlay edit/view TUI surface (issue #97): the Ensure* methods
+// return the seeded file path, ViewEnvRedacted returns a pre-redacted view,
+// and ValidateStack returns the warn-but-allow post-edit outcome.
+
+func (f *fakeEngine) EnsureUserOverride(_ context.Context, appID string) (string, error) {
+	f.ensureOverrideCalls = append(f.ensureOverrideCalls, appID)
+	return f.ensureOverridePath, f.ensureOverrideErr
+}
+
+func (f *fakeEngine) EnsureUserEnv(_ context.Context, appID string) (string, error) {
+	f.ensureEnvCalls = append(f.ensureEnvCalls, appID)
+	return f.ensureEnvPath, f.ensureEnvErr
+}
+
+func (f *fakeEngine) ViewEnvRedacted(_ context.Context, appID string) (*types.ViewEnvResult, error) {
+	f.viewEnvCalls = append(f.viewEnvCalls, appID)
+	return f.viewEnvResult, f.viewEnvErr
+}
+
+func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, error) {
+	f.validateStackCalls = append(f.validateStackCalls, appID)
+	return f.validateStackWarn, f.validateStackErr
+}
+
+func (f *fakeEngine) RewireStack(_ context.Context, appID string, _ engine.Confirmer) (bool, string, error) {
+	f.rewireStackCalls = append(f.rewireStackCalls, appID)
+	return f.rewireStackDone, f.rewireStackPath, f.rewireStackErr
 }
 
 func (f *fakeEngine) Uninstall(

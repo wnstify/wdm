@@ -84,5 +84,12 @@ a normal user who belongs to the docker group.`,
 	// alongside the other per-app verbs, and acts on one installed stack.
 	root.AddCommand(newResourcesCmd(newEngine))
 
+	// Top-level user-overlay editing (PRD §29, §37): `edit` opens a managed
+	// app's user-owned compose override or .env overlay in the user's editor,
+	// and `view-env` shows the redacted effective environment. Both sit at the
+	// root alongside the other per-app verbs.
+	root.AddCommand(newEditCmd(newEngine))
+	root.AddCommand(newViewEnvCmd(newEngine))
+
 	return root
 }

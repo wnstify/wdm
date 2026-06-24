@@ -361,11 +361,18 @@ func assertStackOnDisk(t *testing.T, stackPath string) {
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
 		".env must be mode 0600 (secrets live here)")
 
+	envUserInfo, err := os.Stat(filepath.Join(stackPath, ".env.user"))
+	require.NoError(t, err, ".env.user must exist")
+	assert.Equal(t, os.FileMode(0o600), envUserInfo.Mode().Perm(),
+		".env.user must be mode 0600 (user secrets live here)")
+
 	composeBytes, err := os.ReadFile(filepath.Join(stackPath, "docker-compose.yml"))
 	require.NoError(t, err, "docker-compose.yml must exist")
 	compose := string(composeBytes)
 	assert.Contains(t, compose, "wdm.managed", "rendered Compose must inject wdm.managed labels")
 	assert.Contains(t, compose, "wdm.app", "rendered Compose must inject wdm.app labels")
+	assert.Contains(t, compose, "env_file", "rendered Compose must declare env_file for the user overlay")
+	assert.Contains(t, compose, ".env.user", "rendered Compose env_file must reference .env.user")
 
 	lockBytes, err := os.ReadFile(filepath.Join(stackPath, ".wdm.lock"))
 	require.NoError(t, err, ".wdm.lock must exist")

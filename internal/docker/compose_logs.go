@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -73,12 +74,13 @@ type ComposeLogEntry struct {
 type ComposeLogSink func(entry ComposeLogEntry)
 
 type composeLogsInvocation struct {
-	composeFile string
-	envFile     string
-	projectName string
-	follow      bool
-	tail        int
-	services    []string
+	composeFile  string
+	envFile      string
+	projectName  string
+	overridePath string
+	follow       bool
+	tail         int
+	services     []string
 }
 
 func (composeLogsInvocation) isDockerInvocation() {}
@@ -158,13 +160,20 @@ func newComposeLogsInvocation(
 		return composeLogsInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalizedProject.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composeLogsInvocation{}, err
+	}
+
 	return composeLogsInvocation{
-		composeFile: normalizedProject.ComposeFile,
-		envFile:     normalizedProject.EnvFile,
-		projectName: normalizedProject.ProjectName,
-		follow:      normalizedOpts.Follow,
-		tail:        normalizedOpts.Tail,
-		services:    normalizedOpts.Services,
+		composeFile:  normalizedProject.ComposeFile,
+		envFile:      normalizedProject.EnvFile,
+		projectName:  normalizedProject.ProjectName,
+		overridePath: overridePath,
+		follow:       normalizedOpts.Follow,
+		tail:         normalizedOpts.Tail,
+		services:     normalizedOpts.Services,
 	}, nil
 }
 

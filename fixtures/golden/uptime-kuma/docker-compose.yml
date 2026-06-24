@@ -24,6 +24,9 @@ services:
     image: docker.io/mariadb:11.8.6
     container_name: uptime-kuma-mariadb
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
       MARIADB_DATABASE: ${UPTIME_KUMA_DB_NAME}
@@ -80,6 +83,8 @@ services:
     image: docker.io/louislam/uptime-kuma:2.3.2
     container_name: uptime-kuma
     restart: unless-stopped
+    env_file:
+      - .env.user
     depends_on:
       mariadb:
         condition: service_healthy

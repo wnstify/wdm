@@ -249,6 +249,9 @@ func TestDeleteApp_RemovesExternalNetworksAfterDown(t *testing.T) {
 		switch fmt.Sprintf("%T", inv) {
 		case "docker.projectVolumeListInvocation":
 			return volumeListResult("wdm-delete-net-remove-app_data"), nil
+		case "docker.networkManagedLabelInvocation":
+			// Both networks are wdm-created, so the ownership gate sees the label.
+			return docker.CommandResult{Stdout: "true\n"}, nil
 		case "docker.removeNetworkInvocation":
 			name := invocationField(inv, "name:")
 			removeCalls = append(removeCalls, name)
@@ -315,6 +318,10 @@ func TestDeleteApp_RetainedNetworkNeverAbortsDeletion(t *testing.T) {
 		case "docker.removeNamedVolumeInvocation":
 			require.Fail(t, "delete must never remove a named volume")
 			return docker.CommandResult{}, nil
+		case "docker.networkManagedLabelInvocation":
+			// wdm-created network: the ownership gate sees the label, so removal
+			// is attempted and then fails on the active-endpoints error.
+			return docker.CommandResult{Stdout: "true\n"}, nil
 		case "docker.removeNetworkInvocation":
 			return docker.CommandResult{Stderr: "Error: network wdm_busy has active endpoints"},
 				errors.New("network wdm_busy has active endpoints")

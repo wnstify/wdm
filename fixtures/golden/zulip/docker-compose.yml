@@ -46,6 +46,9 @@ services:
     image: postgres:18.4
     container_name: zulip-postgres
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_DB: zulip
       POSTGRES_USER: zulip
@@ -108,6 +111,9 @@ services:
     image: memcached:1.6.42-alpine3.23
     container_name: zulip-memcached
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     user: "11211:11211"
     command:
       - sh
@@ -159,6 +165,9 @@ services:
     image: rabbitmq:4.2.6
     container_name: zulip-rabbitmq
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     user: "999:999"
     environment:
       RABBITMQ_DEFAULT_USER: zulip
@@ -206,6 +215,9 @@ services:
     image: redis:7.4.9-alpine3.21
     container_name: zulip-redis
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     user: "999:1000"
     command:
       - sh
@@ -254,6 +266,9 @@ services:
     image: ghcr.io/zulip/zulip-server:12.0-0
     container_name: zulip-server
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       postgres:
         condition: service_healthy

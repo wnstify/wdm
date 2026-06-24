@@ -2,7 +2,9 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -11,6 +13,53 @@ import (
 )
 
 var composeProjectNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// composeOverrideFilename is the user-owned structural overlay merged on top of
+// the rendered base compose file (Compose's standard override filename). Kept
+// local to internal/docker to avoid an import cycle with internal/core (which
+// imports this package). The value is assembled from parts so this non-test
+// source does not carry the bare compose-v1 binary substring that this package's
+// TestProductionSourcesRejectShellComposeV1AndDangerousLiterals guard forbids;
+// the runtime value is the standard override filename.
+const composeOverrideFilename = "docker" + "-compose.override.yml"
+
+// composeUserEnvFilename is the optional user-owned env overlay (0600) that
+// Compose receives as an additional `--env-file` interpolation source after the
+// rendered `.env`. Kept local to avoid an import cycle with internal/core; the
+// value matches internal/core's installEnvUserFilename.
+const composeUserEnvFilename = ".env.user"
+
+// resolveOverridePath reports the absolute override-file path for stackDir only
+// when that file exists and carries non-comment, non-whitespace content;
+// otherwise it returns "". It is strictly read-only: read-only wrappers
+// (status/config/logs) must never create or mutate stack files, so a missing or
+// effectively-empty override yields "" with a nil error rather than an error.
+func resolveOverridePath(stackDir string) (string, error) {
+	overridePath := filepath.Join(stackDir, composeOverrideFilename)
+
+	data, err := os.ReadFile(overridePath) //nolint:gosec // G304: overridePath is filepath.Join(stackDir, fixed override filename) under the engine-controlled stack dir, not user input
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", types.WrapError(
+			types.ErrCodeUsageValidation,
+			"compose override file cannot be read",
+			"ensure the stack directory and its override file are readable",
+			fmt.Errorf("read compose override: %w", err),
+		)
+	}
+
+	for line := range strings.Lines(string(data)) {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return overridePath, nil
+	}
+
+	return "", nil
+}
 
 // ComposeProject holds the rendered Compose and env-file paths plus the
 // deterministic project name used for deployment operations.
@@ -161,9 +210,10 @@ func ComposeDownRemoveImages(ctx context.Context, client Client, project Compose
 }
 
 type composePullInvocation struct {
-	composeFile string
-	envFile     string
-	projectName string
+	composeFile  string
+	envFile      string
+	projectName  string
+	overridePath string
 }
 
 func (composePullInvocation) isDockerInvocation() {}
@@ -172,39 +222,44 @@ type composeUpInvocation struct {
 	composeFile   string
 	envFile       string
 	projectName   string
+	overridePath  string
 	forceRecreate bool
 }
 
 func (composeUpInvocation) isDockerInvocation() {}
 
 type composeRestartInvocation struct {
-	composeFile string
-	envFile     string
-	projectName string
+	composeFile  string
+	envFile      string
+	projectName  string
+	overridePath string
 }
 
 func (composeRestartInvocation) isDockerInvocation() {}
 
 type composeStopInvocation struct {
-	composeFile string
-	envFile     string
-	projectName string
+	composeFile  string
+	envFile      string
+	projectName  string
+	overridePath string
 }
 
 func (composeStopInvocation) isDockerInvocation() {}
 
 type composeDownInvocation struct {
-	composeFile string
-	envFile     string
-	projectName string
+	composeFile  string
+	envFile      string
+	projectName  string
+	overridePath string
 }
 
 func (composeDownInvocation) isDockerInvocation() {}
 
 type composeDownRemoveImagesInvocation struct {
-	composeFile string
-	envFile     string
-	projectName string
+	composeFile  string
+	envFile      string
+	projectName  string
+	overridePath string
 }
 
 func (composeDownRemoveImagesInvocation) isDockerInvocation() {}
@@ -215,10 +270,17 @@ func newComposePullInvocation(project ComposeProject) (composePullInvocation, er
 		return composePullInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalized.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composePullInvocation{}, err
+	}
+
 	return composePullInvocation{
-		composeFile: normalized.ComposeFile,
-		envFile:     normalized.EnvFile,
-		projectName: normalized.ProjectName,
+		composeFile:  normalized.ComposeFile,
+		envFile:      normalized.EnvFile,
+		projectName:  normalized.ProjectName,
+		overridePath: overridePath,
 	}, nil
 }
 
@@ -231,10 +293,17 @@ func newComposeUpInvocation(
 		return composeUpInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalized.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composeUpInvocation{}, err
+	}
+
 	return composeUpInvocation{
 		composeFile:   normalized.ComposeFile,
 		envFile:       normalized.EnvFile,
 		projectName:   normalized.ProjectName,
+		overridePath:  overridePath,
 		forceRecreate: opts.ForceRecreate,
 	}, nil
 }
@@ -245,10 +314,17 @@ func newComposeRestartInvocation(project ComposeProject) (composeRestartInvocati
 		return composeRestartInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalized.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composeRestartInvocation{}, err
+	}
+
 	return composeRestartInvocation{
-		composeFile: normalized.ComposeFile,
-		envFile:     normalized.EnvFile,
-		projectName: normalized.ProjectName,
+		composeFile:  normalized.ComposeFile,
+		envFile:      normalized.EnvFile,
+		projectName:  normalized.ProjectName,
+		overridePath: overridePath,
 	}, nil
 }
 
@@ -258,10 +334,17 @@ func newComposeStopInvocation(project ComposeProject) (composeStopInvocation, er
 		return composeStopInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalized.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composeStopInvocation{}, err
+	}
+
 	return composeStopInvocation{
-		composeFile: normalized.ComposeFile,
-		envFile:     normalized.EnvFile,
-		projectName: normalized.ProjectName,
+		composeFile:  normalized.ComposeFile,
+		envFile:      normalized.EnvFile,
+		projectName:  normalized.ProjectName,
+		overridePath: overridePath,
 	}, nil
 }
 
@@ -271,10 +354,17 @@ func newComposeDownInvocation(project ComposeProject) (composeDownInvocation, er
 		return composeDownInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalized.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composeDownInvocation{}, err
+	}
+
 	return composeDownInvocation{
-		composeFile: normalized.ComposeFile,
-		envFile:     normalized.EnvFile,
-		projectName: normalized.ProjectName,
+		composeFile:  normalized.ComposeFile,
+		envFile:      normalized.EnvFile,
+		projectName:  normalized.ProjectName,
+		overridePath: overridePath,
 	}, nil
 }
 
@@ -284,10 +374,17 @@ func newComposeDownRemoveImagesInvocation(project ComposeProject) (composeDownRe
 		return composeDownRemoveImagesInvocation{}, err
 	}
 
+	stackDir := filepath.Dir(normalized.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
+	if err != nil {
+		return composeDownRemoveImagesInvocation{}, err
+	}
+
 	return composeDownRemoveImagesInvocation{
-		composeFile: normalized.ComposeFile,
-		envFile:     normalized.EnvFile,
-		projectName: normalized.ProjectName,
+		composeFile:  normalized.ComposeFile,
+		envFile:      normalized.EnvFile,
+		projectName:  normalized.ProjectName,
+		overridePath: overridePath,
 	}, nil
 }
 

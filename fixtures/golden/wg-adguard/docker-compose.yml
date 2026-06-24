@@ -52,6 +52,9 @@ services:
     image: ghcr.io/wg-easy/wg-easy:15
     container_name: wg-easy
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # Public WireGuard endpoint hostname clients dial. INIT_HOST seeds the same
       # value into the generated client configs on first boot.
@@ -134,6 +137,9 @@ services:
     image: adguard/adguardhome:v0.107.77
     container_name: adguard
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     volumes:
       # AdGuard's runtime work dir (filter lists, query log, statistics) and its
       # config dir (AdGuardHome.yaml — written by the first-run wizard). Named

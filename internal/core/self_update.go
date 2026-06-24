@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/wnstify/wdm/internal/release"
 	"github.com/wnstify/wdm/pkg/types"
 )
@@ -130,12 +132,13 @@ func (e *Engine) stageForVerification(
 	return staged, cleanup, nil
 }
 
-// selfUpdateAvailable reports whether latest is a different published release
-// than the running current version. A development build ("dev") is never a
-// release, so no update is offered for it; otherwise an update is available
-// exactly when the latest release tag differs from the running version (a
-// re-run after a successful update reports false, since the versions then
-// match).
+// selfUpdateAvailable reports whether latest is a STRICTLY NEWER published
+// release than the running current version. A development build ("dev") is
+// never a release, so no update is offered for it. When both versions are valid
+// semver the comparison is strict (latest > current), so a self-update can
+// never downgrade or re-install the same version. When either side is not valid
+// semver (an unstamped or dev-flavored build) it falls back to the prior
+// "differs" behavior so those builds still see a published release as available.
 func selfUpdateAvailable(current, latest string) bool {
 	if current == devVersion {
 		return false
@@ -143,5 +146,32 @@ func selfUpdateAvailable(current, latest string) bool {
 	if strings.TrimSpace(latest) == "" {
 		return false
 	}
+	c, l := semver.Canonical(ensureV(current)), semver.Canonical(ensureV(latest))
+	if semver.IsValid(c) && semver.IsValid(l) {
+		return semver.Compare(l, c) > 0
+	}
 	return current != latest
+}
+
+// selfUpdateStrictlyNewer reports whether candidate is acceptable to install over
+// current at apply time: strictly newer when both are valid semver, otherwise
+// (a dev/unstamped build on either side) it permits the apply, matching
+// selfUpdateAvailable's fallback so non-release builds can still self-update.
+// It is the apply-path re-assertion of the check-time downgrade guard.
+func selfUpdateStrictlyNewer(current, candidate string) bool {
+	c, cand := semver.Canonical(ensureV(current)), semver.Canonical(ensureV(candidate))
+	if semver.IsValid(c) && semver.IsValid(cand) {
+		return semver.Compare(cand, c) > 0
+	}
+	return true
+}
+
+// ensureV prepends a leading "v" when missing so a bare version like "1.2.3"
+// is accepted by golang.org/x/mod/semver, which requires the "v" prefix.
+func ensureV(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || strings.HasPrefix(version, "v") {
+		return version
+	}
+	return "v" + version
 }

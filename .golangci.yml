@@ -49,6 +49,10 @@ linters:
         - G104
 
     forbidigo:
+      # analyze-types resolves package-qualified selectors so the
+      # docker.RemoveNetworkIfPresent pattern below matches the real symbol,
+      # not just a bare identifier.
+      analyze-types: true
       forbid:
         - pattern: ^fmt\.Print.*$
           msg: "use slog or the TUI; do not print to stdout from core packages"
@@ -56,6 +60,14 @@ linters:
           msg: "return an error and let cmd/wdm map it to an exit code (PRD §27)"
         - pattern: ^panic$
           msg: "return a typed error instead of panicking"
+        # WDM-SEC-004: compose-derived delete/uninstall must gate network
+        # removal on the wdm.managed label. The two legitimate direct callers
+        # (RemoveNetworkIfManaged in internal/docker/network.go and the
+        # label-discovered orphan sweep in internal/core/uninstall.go) are
+        # allowed via the exclusion list below; every other direct call is
+        # forbidden.
+        - pattern: RemoveNetworkIfPresent
+          msg: "compose-derived delete/uninstall must use RemoveNetworkIfManaged so removal is gated on the wdm.managed label (WDM-SEC-004)."
 
     misspell:
       locale: US
@@ -367,6 +379,21 @@ linters:
       - path: cmd/
         linters:
           - forbidigo
+
+      # WDM-SEC-004 RemoveNetworkIfPresent guard: allow the two legitimate
+      # direct callers and nothing else. RemoveNetworkIfManaged (which gates
+      # on the wdm.managed label) lives in internal/docker/network.go; the
+      # label-discovered orphan sweep (over the already label-filtered
+      # ListManagedNetworks) lives in internal/core/uninstall.go. The
+      # network_test.go suite exercises the function directly and is allowed
+      # too. text: scopes the exclusion to this one symbol so the
+      # NewActiveRedactor guard still applies in these files.
+      - linters: [forbidigo]
+        path: 'internal/docker/network(_test)?\.go'
+        text: RemoveNetworkIfPresent
+      - linters: [forbidigo]
+        path: 'internal/core/uninstall\.go'
+        text: RemoveNetworkIfPresent
 
 formatters:
   enable:
