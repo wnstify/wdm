@@ -111,6 +111,46 @@ type Engine interface {
 	// step_reconfigure_* events.
 	Reconfigure(ctx context.Context, req types.ReconfigureRequest, onProgress ProgressFn, confirmer Confirmer) (*types.ReconfigureResult, error)
 
+	// EnsureUserOverride resolves and create-if-missing seeds the user-owned
+	// docker-compose.override.yml (0644) inside the managed stack, returning
+	// its path. The seeded file carries a documented header and commented
+	// examples; the create is idempotent and never truncates an existing
+	// override, so the user's structural edits (extra services, networks,
+	// ports) survive. Native Compose merges this overlay over the wdm base,
+	// and the content-gate keeps an untouched comment-only override out of the
+	// deploy argv. Read-only commands never create it; this is the explicit
+	// edit-time creation path.
+	EnsureUserOverride(ctx context.Context, appID string) (string, error)
+
+	// EnsureUserEnv resolves and create-if-missing seeds the user-owned
+	// .env.user (empty, 0600) inside the managed stack, returning its path.
+	// It shares the install-time primitive so install, edit, and rewire all
+	// produce a byte-identical empty file; the file stays empty by design so
+	// `wdm update` never has user content to diverge from. The overlay injects
+	// the user's added env into every service via the template env_file.
+	EnsureUserEnv(ctx context.Context, appID string) (string, error)
+
+	// ViewEnvRedacted returns the effective environment of a managed stack —
+	// the base .env merged with the user overlay .env.user — with every secret
+	// value masked before it leaves the engine (PRD §11, §24). It is the
+	// read-only surface behind `wdm view-env <app>` and the TUI view-env
+	// screen. Each entry is masked two ways — by literal secret-value match
+	// (the per-stack active redactor) and by a secret-ish key-name heuristic —
+	// so a user-added secret in .env.user that has no catalog placeholder is
+	// still masked. The result NEVER carries a raw secret. Read-only: it
+	// acquires no runtime.lock and runs no Docker command.
+	ViewEnvRedacted(ctx context.Context, appID string) (*types.ViewEnvResult, error)
+
+	// ValidateStack runs `docker compose config` against the managed stack's
+	// live on-disk files — the base compose plus the content-gated
+	// docker-compose.override.yml — and returns any warnings. It is the
+	// post-edit validation hook for BOTH the compose and env edit flows,
+	// letting the CLI and TUI validate without importing internal/docker
+	// (PRD §29 depguard boundary). A validation failure is a returned error
+	// the caller treats as warn-but-allow; the compose-config output is
+	// discarded so no interpolated secret leaks.
+	ValidateStack(ctx context.Context, appID string) ([]string, error)
+
 	// StopAll stops every managed stack at once (issue #27): it runs
 	// docker compose stop against each stack, which stops the running
 	// containers without removing them, so containers, networks, and

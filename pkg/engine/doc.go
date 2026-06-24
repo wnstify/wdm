@@ -15,9 +15,13 @@
 // via the compile-time type assertion in new.go.
 // Public surface:
 //   - [Engine] — read (List, ListStatus, Status, Logs, ResourceSettings,
-//     LogPath), write (Install, Update, Remove, Restart, Reconfigure,
+//     ViewEnvRedacted, ValidateStack, LogPath), write (Install, Update,
+//     Remove, Restart, Reconfigure, EnsureUserOverride, EnsureUserEnv,
 //     StopAll, Uninstall), settings (Settings, UpdateSettings), lifecycle
 //     (Close)
+//   - [ResolveEditorArgv] — pure helper that resolves the user's editor
+//     ($VISUAL → $EDITOR → nano) into a typed, no-shell argv; usable by
+//     both the CLI and TUI without importing internal/system
 //   - [Confirmer] — authorizes destructive actions (PRD §37); alias of
 //     [types.Confirmer]
 //   - [ProgressFn] — long-running operation progress callback (PRD §37);
