@@ -150,6 +150,39 @@ View or change a managed app's per-service resource limits. This is a top-level 
 - `--yes` — accept the recreate confirmation without prompting.
 - `--stack-path <path>` — assert the managed stack path being reconfigured. It is a fail-closed cross-check against the resolved app, never an alternate path.
 
+### Edit and view environment
+
+Extend a managed stack without losing your changes on update. Each stack carries two user-owned files that `wdm` creates but never regenerates. These are top-level commands, not under `wdm apps`.
+
+| Command | Description |
+|---|---|
+| `wdm edit <app-id> --compose` | Open the stack's `docker-compose.override.yml` in your editor. |
+| `wdm edit <app-id> --env` | Open the stack's `.env.user` in your editor. |
+| `wdm view-env <app-id>` | Show the stack's effective environment with secrets masked. |
+
+The two overlays follow a simple model: **`.env.user` adds knobs, `docker-compose.override.yml` changes or restructures.**
+
+- `.env.user` (mode `0600`) is a flat env file merged into every service via `env_file`. Use it to add new variables or override non-pinned values. Compose evaluates `environment:` over `env_file:`, so a value `wdm` pins in `environment:` (secrets and hardened config) cannot be overridden from `.env.user` — change a pinned value through the override's `environment:` instead.
+- `docker-compose.override.yml` (mode `0644`) is merged over the `wdm` base by native Compose. Use it for structural changes: adding services, volumes, networks, ports, or labels. A compose override can re-add dropped capabilities, expose ports on `0.0.0.0`, or break `wdm` tracking if it removes the `wdm.managed` labels or the project name; `wdm` prints a one-line warning before opening it.
+
+Both files survive `wdm update` — `wdm` re-renders only its own base files and never touches the overlays.
+
+**`wdm edit <app-id>`**
+
+- `--compose` — edit `docker-compose.override.yml`. Mutually exclusive with `--env`; exactly one is required.
+- `--env` — edit `.env.user`. Mutually exclusive with `--compose`.
+- `--print-path` — print the resolved overlay path and exit `0` without opening an editor, for scripting and headless use. This works without a terminal.
+- `wdm` opens the overlay in your editor, choosing `$VISUAL`, then `$EDITOR`, then `nano`. The editor argv is typed (never a shell string), so editor values containing metacharacters stay literal arguments.
+- Without `--print-path`, an editor needs an interactive terminal; a non-interactive stdin/stdout fails with guidance rather than silently doing nothing.
+- After the editor exits, `wdm` validates the stack and reports any warning — the edit is always kept (warn-but-allow), never rejected.
+- Editing `.env.user` on a stack installed before this feature first offers a one-time migration: if the on-disk compose does not yet wire `.env.user`, `wdm` re-renders the compose and restarts the stack so the overlay goes live, leaving images and secrets unchanged. Declining keeps the edit; the overlay activates on the next `wdm update`.
+
+**`wdm view-env <app-id>`**
+
+- Read-only and headless-safe. It shows the effective environment — the base `.env` merged with `.env.user` — with every secret value masked by the redactor before it reaches output, so the view never prints a raw secret.
+- Plain output is one `key<TAB>value` line per entry, with secret rows tagged `(secret)`. The `--json` envelope carries the same entries.
+- `.env.user` may itself hold user secrets (an SMTP password, an API key). `wdm` feeds every `.env.user` value into the active redactor, so those values are also masked in logs, validation, and error output.
+
 ### Uninstall
 
 Remove `wdm` itself and tear down every managed app. This is a top-level command, not under `wdm apps`.
@@ -222,6 +255,20 @@ Raise an app's memory and CPU limits, leaving the PID limit unchanged, and skip 
 wdm resources nextcloud --memory 2g --cpus 2 --yes
 ```
 
+Add an environment variable to a stack and review the effective environment with secrets masked:
+
+```sh
+wdm edit nextcloud --env
+wdm view-env nextcloud
+```
+
+Print the override path for a script to edit directly, then make a structural change:
+
+```sh
+wdm edit nextcloud --compose --print-path
+wdm edit nextcloud --compose
+```
+
 Uninstall `wdm` and tear down every managed app, keeping all volumes and stack data:
 
 ```sh
@@ -256,7 +303,7 @@ wdm uninstall --yes
 | `~/.local/state/wdm/runtime.lock` | The global runtime lock for state-changing operations. |
 | `~/.local/state/wdm/logs/` | Diagnostic logs: the current `latest.log` plus timestamped archives, owner-only (0700/0600), retained to the stricter of 30 days or 50 files. |
 | `~/.local/share/wdm/catalogs/<channel>/` | Verified catalog data, per channel. |
-| `~/docker/<app>/` | Each managed stack: its Compose file, `.env`, `.wdm.lock`, and `.wdm-backups/`. |
+| `~/docker/<app>/` | Each managed stack: its Compose file, `.env`, the user-owned `.env.user` and `docker-compose.override.yml` overlays, `.wdm.lock`, and `.wdm-backups/`. |
 
 ## Diagnostic logs
 
