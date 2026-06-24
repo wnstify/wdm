@@ -74,6 +74,19 @@ type fakeEngine struct {
 	reconfigureErr        error
 	reconfigureRequests   []types.ReconfigureRequest
 
+	ensureOverridePath  string
+	ensureOverrideErr   error
+	ensureOverrideCalls []string
+	ensureEnvPath       string
+	ensureEnvErr        error
+	ensureEnvCalls      []string
+	viewEnvResult       *types.ViewEnvResult
+	viewEnvErr          error
+	viewEnvCalls        []string
+	validateStackWarn   []string
+	validateStackErr    error
+	validateStackCalls  []string
+
 	catalogUpdateStatus    *types.CatalogUpdateStatus
 	catalogUpdateStatusErr error
 	checkCatalogUpdateN    int
@@ -196,6 +209,31 @@ func (f *fakeEngine) Reconfigure(
 ) (*types.ReconfigureResult, error) {
 	f.reconfigureRequests = append(f.reconfigureRequests, req)
 	return f.reconfigureResult, f.reconfigureErr
+}
+
+// EnsureUserOverride, EnsureUserEnv, ViewEnvRedacted, and ValidateStack back
+// the user-overlay edit/view TUI surface (issue #97): the Ensure* methods
+// return the seeded file path, ViewEnvRedacted returns a pre-redacted view,
+// and ValidateStack returns the warn-but-allow post-edit outcome.
+
+func (f *fakeEngine) EnsureUserOverride(_ context.Context, appID string) (string, error) {
+	f.ensureOverrideCalls = append(f.ensureOverrideCalls, appID)
+	return f.ensureOverridePath, f.ensureOverrideErr
+}
+
+func (f *fakeEngine) EnsureUserEnv(_ context.Context, appID string) (string, error) {
+	f.ensureEnvCalls = append(f.ensureEnvCalls, appID)
+	return f.ensureEnvPath, f.ensureEnvErr
+}
+
+func (f *fakeEngine) ViewEnvRedacted(_ context.Context, appID string) (*types.ViewEnvResult, error) {
+	f.viewEnvCalls = append(f.viewEnvCalls, appID)
+	return f.viewEnvResult, f.viewEnvErr
+}
+
+func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, error) {
+	f.validateStackCalls = append(f.validateStackCalls, appID)
+	return f.validateStackWarn, f.validateStackErr
 }
 
 func (f *fakeEngine) Uninstall(

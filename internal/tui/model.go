@@ -61,12 +61,16 @@ const (
 	screenSelfUpdate
 	screenSelfUpdateResult
 	screenResources
+	screenViewEnv
 )
 
 var checkAppActions = []string{
 	"View details",
 	"Restart app",
 	"Manage resources",
+	"Edit compose",
+	"Edit env",
+	"View env (redacted)",
 	"Remove app",
 	"Validate config",
 	"Return to dashboard",
@@ -122,6 +126,9 @@ type model struct {
 	resourceFields      []resourceField
 	resourceFieldCursor int
 	reconfigureResult   *types.ReconfigureResult
+
+	viewEnv    *types.ViewEnvResult
+	viewEnvErr error
 
 	catalogUpdateStatus *types.CatalogUpdateStatus
 	catalogUpdateResult *types.CatalogUpdateResult
@@ -191,6 +198,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if next, ok := m.updateStatusMsg(msg); ok {
 			return next, nil
+		}
+		if next, cmd, ok := m.updateUserEditMsg(msg); ok {
+			return next, cmd
 		}
 		return m.updateFinishedMsg(msg)
 	}
@@ -657,6 +667,11 @@ func (m *model) back() {
 		m.resourceService = ""
 		m.resourceFields = nil
 		m.reconfigureResult = nil
+	case screenViewEnv:
+		m.screen = screenAppActions
+		m.err = nil
+		m.viewEnv = nil
+		m.viewEnvErr = nil
 	case screenBackupsList:
 		m.screen = screenBackupsApps
 		m.err = nil
@@ -790,6 +805,24 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 		m.reconfigureResult = nil
 		m.progress = progressMsg{}
 		return m, m.loadResourceSettingsCmd(m.activeAppID())
+	case "Edit compose":
+		m.busy = true
+		m.err = nil
+		m.actionMessage = overrideEditWarning
+		return m, m.editComposeCmd(m.activeAppID())
+	case "Edit env":
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		return m, m.editEnvCmd(m.activeAppID())
+	case "View env (redacted)":
+		m.screen = screenViewEnv
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		m.viewEnv = nil
+		m.viewEnvErr = nil
+		return m, m.loadViewEnvCmd(m.activeAppID())
 	case "Remove app":
 		m.screen = screenRemoveActions
 		m.err = nil
@@ -950,6 +983,8 @@ func (m model) screenView() string {
 		return m.settingsView()
 	case screenRuntimeLock:
 		return m.runtimeLockView()
+	case screenViewEnv:
+		return m.viewEnvScreenView()
 	default:
 		if view, ok := m.distributionScreenView(); ok {
 			return view
