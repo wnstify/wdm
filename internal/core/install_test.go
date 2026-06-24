@@ -1336,6 +1336,30 @@ func TestInstall_ValidatesComposeConfirmsAndPreCreatesNetworksBeforeDeployment(t
 	assert.Equal(t, security.RedactedPlaceholder, capturedRedactor.Redact(generatedSecret))
 }
 
+// TestInstall_SeedsEmptyEnvUserAt0600 proves a fresh install seeds an
+// empty user-owned .env.user at 0600 inside the stack dir, so the
+// env_file overlay resolves on deploy. The file is NOT a rendered
+// artifact and is never regenerated; it is created create-if-missing.
+func TestInstall_SeedsEmptyEnvUserAt0600(t *testing.T) {
+	t.Parallel()
+
+	app := appFixture("env-user-seed-app", freeLocalTCPPort(t))
+	eng, stackPath := newInstallDeployTestEngine(t, app)
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(&fakeDockerClient{}))
+
+	res, err := eng.Install(t.Context(), types.InstallRequest{AppID: app.AppID}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	envUserPath := filepath.Join(stackPath, ".env.user")
+	require.FileExists(t, envUserPath)
+	data, err := os.ReadFile(envUserPath)
+	require.NoError(t, err)
+	assert.Empty(t, data, "a fresh .env.user must be seeded empty")
+	assert.Equal(t, os.FileMode(0o600), fileModePerm(t, envUserPath),
+		".env.user must be 0600")
+}
+
 func TestInstall_ComposeValidationFailureStopsBeforeFileWrites(t *testing.T) {
 	t.Parallel()
 

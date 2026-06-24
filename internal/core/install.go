@@ -35,11 +35,13 @@ import (
 )
 
 const (
-	installHostMemoryReserveBytes = uint64(1024 * 1024 * 1024)
-	installComposeFilename        = "docker-compose.yml"
-	installEnvFilename            = ".env"
-	installLockFilename           = ".wdm.lock"
-	installComposeFileMode        = os.FileMode(0o644)
+	installHostMemoryReserveBytes  = uint64(1024 * 1024 * 1024)
+	installComposeFilename         = "docker-compose.yml"
+	installComposeOverrideFilename = "docker-compose.override.yml"
+	installEnvFilename             = ".env"
+	installEnvUserFilename         = ".env.user"
+	installLockFilename            = ".wdm.lock"
+	installComposeFileMode         = os.FileMode(0o644)
 )
 
 // installRollbackTimeout bounds the pre-manifest Docker rollback so it
@@ -221,6 +223,14 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 		return nil, err
 	}
 	cleanup := &freshInstallDockerCleanup{client: dockerClient, project: composeProject}
+	// Seed an empty .env.user (create-if-missing, 0600) after the stack
+	// files exist but before `compose up`, so the env_file overlay
+	// resolves on deploy. A fault here unwinds the fresh install.
+	if _, err := ensureUserEnvFile(plan.stackPath); err != nil {
+		lg.failure(ctx, plan.app.AppID, plan.stackPath, "ensure_user_env", err)
+		return nil, failFreshInstall(ctx, err, plan, stackHandle, cleanup)
+	}
+	lg.step(ctx, "user env seeded")
 	lg.debug(ctx, "deploy stack",
 		slog.String("command", "docker compose up -d"),
 		slog.String("compose_project", plan.composeProject),
@@ -916,9 +926,9 @@ func installDockerCleanupError(composeProject, stackPath string, cause error) er
 }
 
 // cleanupFreshInstallArtifacts removes exactly the artifacts a fresh
-// install writes: the rendered files, the .wdm.lock created at flock
-// acquisition, the nested additional-file parent directories, and the
-// created stack directory itself. Every file removal is contained to
+// install writes: the rendered files, the seeded .env.user, the .wdm.lock
+// created at flock acquisition, the nested additional-file parent
+// directories, and the created stack directory itself. Every file removal is contained to
 // the stack root via [security.EnsureWithinRoot]; directories use
 // [os.Remove] (which refuses non-empty directories) so user-dropped
 // content can never be deleted, only reported as a leftover. Missing
@@ -951,6 +961,11 @@ func cleanupFreshInstallArtifacts(plan *installPlan) error {
 		}
 	}
 	if err := removeFreshInstallFile(stackRoot, filepath.Join(stackRoot, installLockFilename)); err != nil {
+		faults = append(faults, err)
+	}
+	// The seeded .env.user is not in installFileWrites; remove it too so
+	// the sad-path stack-dir removal does not trip on a leftover file.
+	if err := removeFreshInstallFile(stackRoot, filepath.Join(stackRoot, installEnvUserFilename)); err != nil {
 		faults = append(faults, err)
 	}
 
@@ -1522,6 +1537,42 @@ func installFileWrites(plan *installPlan) ([]installFileWrite, error) {
 	}
 	writes = append(writes, artifactWrites...)
 	return writes, nil
+}
+
+// ensureUserEnvFile seeds an empty user-owned .env.user (0600) inside
+// stackPath only when it is absent, and returns its resolved path. The
+// file is user-editable env injected into every service via the
+// template env_file: directive; wdm creates it but NEVER regenerates or
+// truncates it, so install, edit, and rewire all share this primitive
+// while `wdm update` leaves the user's content untouched.
+// security.CreateSecretFile's O_EXCL makes the create idempotent: an
+// already-present file surfaces fs.ErrExist, which is treated as "kept
+// as-is" rather than an error. The returned file is empty and closed.
+func ensureUserEnvFile(stackPath string) (string, error) {
+	path, err := security.SafeJoin(stackPath, installEnvUserFilename)
+	if err != nil {
+		return "", usageValidationError(
+			"stack path is unsafe",
+			"choose a stack path under the configured stack base",
+			err,
+		)
+	}
+	f, err := security.CreateSecretFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return path, nil
+		}
+		return "", err
+	}
+	if closeErr := f.Close(); closeErr != nil {
+		return "", types.WrapError(
+			types.ErrCodeGeneric,
+			"user env file could not be finalized",
+			"check stack directory permissions and retry",
+			closeErr,
+		)
+	}
+	return path, nil
 }
 
 // renderedArtifactWrites enumerates the rendered additional_files and
