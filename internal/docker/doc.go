@@ -12,7 +12,11 @@
 //	-: [ValidateComposeConfig] wraps docker compose config.
 //	-: [ComposeProject], [ComposePull], [ComposeUp],
 //	  [ComposeDown], and [ComposeUpOptions] wrap compose deployment
-//	  (down is always run without -v).
+//	  (down is always run without -v). When the stack dir holds a
+//	  non-empty user-owned docker-compose.override.yml, the wrappers append
+//	  a second -f so native Compose merges the overlay over the wdm base;
+//	  an absent or comments-only override leaves the argv unchanged, and the
+//	  read-only resolver never creates the file.
 //	-: [NetworkSpec] and [EnsureNetworkReport] wrap network
 //	  management with create-if-missing and internal-flag handling.
 //	  A spec carrying an app id stamps the PRD §10 ownership labels

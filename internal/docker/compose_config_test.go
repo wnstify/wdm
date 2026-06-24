@@ -160,6 +160,49 @@ func TestRun_ComposeConfigInvocationBuildsExactArgv(t *testing.T) {
 	require.True(t, invoked)
 }
 
+func TestRun_ComposeConfigInvocationWithOverrideBuildsExactArgv(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	composeFile := filepath.Join(projectDir, "docker-compose.yml")
+	overridePath := filepath.Join(projectDir, "docker-compose.override.yml")
+
+	invoked := false
+	execFn := func(_ context.Context, cmd commandSpec) (CommandResult, error) {
+		invoked = true
+		require.Equal(
+			t,
+			[]string{
+				"compose",
+				"--project-directory",
+				projectDir,
+				"-f",
+				composeFile,
+				"-f",
+				overridePath,
+				"config",
+				"--quiet",
+			},
+			cmd.argv,
+		)
+		return CommandResult{}, nil
+	}
+
+	client, err := New(WithCommandExecutor(execFn))
+	require.NoError(t, err)
+
+	_, err = client.Run(
+		t.Context(),
+		composeConfigInvocation{
+			projectDir:   projectDir,
+			composeFile:  composeFile,
+			overridePath: overridePath,
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, invoked)
+}
+
 func TestRun_DefaultExecutorComposeConfigInvocationUsesExpectedArgv(t *testing.T) {
 	fakeDocker := `#!/bin/sh
 printf 'argv='

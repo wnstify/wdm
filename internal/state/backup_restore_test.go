@@ -55,6 +55,51 @@ func TestRestoreConfigBackup_RestoresConfigFilesAndPreservesModes(t *testing.T) 
 	assertFileBytesAndMode(t, unrelatedPath, []byte("app data stays"), 0o600)
 }
 
+// TestBackupRestore_PreservesUserOverlaysRoundTrip is the regression guard for
+// "restore silently drops .env.user": filepath.Ext(".env.user") is ".user", so the
+// restore allowlist's extension catch-all does NOT cover it and the file must be
+// allowlisted by name. docker-compose.override.yml rides the ".yml" catch-all. Both
+// overlays must survive a real CreateConfigBackup -> RestoreConfigBackup round trip.
+func TestBackupRestore_PreservesUserOverlaysRoundTrip(t *testing.T) {
+	stackDir := secureTempStackDir(t)
+
+	envUser := []byte("SMTP_PASSWORD=secret\n")
+	override := []byte("services:\n  app:\n    cpus: \"2\"\n")
+	writeFileWithMode(t, filepath.Join(stackDir, "docker-compose.yml"), []byte("services:\n  app:\n    image: app\n"), 0o600)
+	writeFileWithMode(t, filepath.Join(stackDir, ".env.user"), envUser, 0o600)
+	writeFileWithMode(t, filepath.Join(stackDir, "docker-compose.override.yml"), override, 0o644)
+
+	snapshotPath, err := state.CreateConfigBackup(stackDir, "update", nil)
+	require.NoError(t, err)
+
+	assertFileBytesAndMode(t, filepath.Join(snapshotPath, ".env.user"), envUser, 0o600)
+	assertFileBytesAndMode(t, filepath.Join(snapshotPath, "docker-compose.override.yml"), override, 0o644)
+
+	require.NoError(t, os.Remove(filepath.Join(stackDir, ".env.user")))
+	require.NoError(t, os.Remove(filepath.Join(stackDir, "docker-compose.override.yml")))
+
+	require.NoError(t, state.RestoreConfigBackup(stackDir, filepath.Base(snapshotPath)))
+
+	assertFileBytesAndMode(t, filepath.Join(stackDir, ".env.user"), envUser, 0o600)
+	assertFileBytesAndMode(t, filepath.Join(stackDir, "docker-compose.override.yml"), override, 0o644)
+}
+
+// TestBackupRestore_StackMissingUserOverlaysBacksUpCleanly proves a stack without the
+// overlays still backs up without error: collectBackupCandidate treats os.ErrNotExist
+// as skip, not failure.
+func TestBackupRestore_StackMissingUserOverlaysBacksUpCleanly(t *testing.T) {
+	stackDir := secureTempStackDir(t)
+	writeFileWithMode(t, filepath.Join(stackDir, "docker-compose.yml"), []byte("services:\n  app:\n    image: app\n"), 0o600)
+
+	snapshotPath, err := state.CreateConfigBackup(stackDir, "update", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(snapshotPath, ".env.user"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(filepath.Join(snapshotPath, "docker-compose.override.yml"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestRestoreConfigBackup_AcceptsAbsoluteSnapshotPathInsideBackupRoot(t *testing.T) {
 	stackDir := secureTempStackDir(t)
 	backupRoot := createBackupRoot(t, stackDir)

@@ -145,11 +145,11 @@ func (e *Engine) ValidateConfig(ctx context.Context, appID string) (*types.Valid
 //     context) — ValidateConfig then refuses before constructing the Docker
 //     client.
 func validateConfigRedactor(stackPath string) (security.Redactor, error) {
+	// A missing .env is tolerated (the stack may carry only .env.user), but the
+	// .env.user fold below must still run — returning early here would leak a
+	// bare .env.user secret. Only a present-but-unreadable .env fails closed.
 	env, err := state.ReadStackEnv(stackPath)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return security.NewActiveRedactor(nil), nil
-		}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf(
 			"core.ValidateConfig: cannot establish redaction over the stack .env: %w",
 			err,
@@ -162,5 +162,17 @@ func validateConfigRedactor(stackPath string) (security.Redactor, error) {
 		}
 		values = append(values, value)
 	}
+	// .env.user is user-controlled and MAY hold user secrets (SMTP password,
+	// API keys) that have no catalog placeholder, so fold its on-disk values
+	// into the secret set too — over-redaction is acceptable and fail-closed.
+	// A missing .env.user contributes nothing.
+	userValues, err := readUserEnvValues(stackPath)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"core.ValidateConfig: cannot establish redaction over the stack .env.user: %w",
+			err,
+		)
+	}
+	values = append(values, userValues...)
 	return security.NewActiveRedactor(values), nil
 }

@@ -92,13 +92,17 @@ wdm apps install <app>        # install a curated app
 wdm apps status <app>         # report a stack's health
 wdm apps logs <app>           # view stack logs
 wdm apps update <app>         # update a stack
-wdm apps restart <app>        # restart a stack
+wdm apps restart <app>        # restart a stack in place (does not apply overlay edits)
+wdm apps redeploy <app>       # apply .env.user / override edits by recreating the stack
 wdm apps stop-all             # stop every running managed stack (data preserved)
 wdm apps backups list <app>   # list pre-change config backups
 wdm apps remove <app>         # stop a stack (volumes and networks preserved)
 wdm apps delete <app>         # permanently delete a stack's files (data kept, networks removed)
 
 wdm resources <app>           # view or change a stack's memory/CPU/PID limits
+wdm edit <app> --env          # edit a stack's user environment overlay (.env.user)
+wdm edit <app> --compose      # edit a stack's compose override
+wdm view-env <app>            # view the effective environment, secrets masked
 
 wdm catalog check             # check for catalog updates
 wdm catalog update            # update the local catalog
@@ -119,6 +123,23 @@ Run `wdm <command> --help` for the full flag set of any command.
 - **Your volumes are preserved.** Removing a stack never destroys its data — `wdm` does not run `docker compose down -v`. It does not back up application data, so keep your own backups of stack volumes.
 
 See [SECURITY-DESIGN.md](SECURITY-DESIGN.md) for actors, actions, trust boundaries, external interfaces, and the security assessment.
+
+## Extend a stack
+
+Every managed stack gives you two user-owned files that `wdm` creates but never regenerates, so your changes survive `wdm update`:
+
+- `.env.user` — add environment variables or override non-pinned values. It is merged into every service. Values that `wdm` pins (secrets and hardened config) cannot be overridden here.
+- `docker-compose.override.yml` — add services, volumes, networks, ports, or labels. Native Compose merges it over the `wdm` base, and it can change pinned values.
+
+Edit them through the CLI or the TUI, and view the effective environment with secrets masked:
+
+```sh
+wdm edit <app> --env          # add or override environment (.env.user)
+wdm edit <app> --compose      # structural changes (docker-compose.override.yml)
+wdm view-env <app>            # show the effective environment, secrets masked
+```
+
+The editor honors `$VISUAL`, then `$EDITOR`, then `nano`. See [USAGE.md](USAGE.md) for the full flag set.
 
 ## Curated apps
 

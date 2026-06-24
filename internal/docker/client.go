@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -206,15 +207,15 @@ func buildComposeInvocationCommand(inv Invocation) (cmd commandSpec, handled boo
 	case composeConfigInvocation:
 		cmd, err = buildComposeConfigCommand(typedInv)
 	case composePullInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "pull")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "pull")
 	case composeUpInvocation:
 		cmd, err = buildComposeUpCommand(typedInv)
 	case composeRestartInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "restart")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "restart")
 	case composeStopInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "stop")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "stop")
 	case composeDownInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "down")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "down")
 	case composeDownRemoveImagesInvocation:
 		cmd, err = buildComposeDownRemoveImagesCommand(typedInv)
 	case composeLogsInvocation:
@@ -278,20 +279,22 @@ func buildComposeConfigCommand(inv composeConfigInvocation) (commandSpec, error)
 		return commandSpec{}, err
 	}
 
-	return commandSpec{
-		argv: []string{
-			"compose",
-			"--project-directory",
-			projectDir,
-			"-f",
-			composeFile,
-			"config",
-			"--quiet",
-		},
-	}, nil
+	argv := []string{
+		"compose",
+		"--project-directory",
+		projectDir,
+		"-f",
+		composeFile,
+	}
+	argv = append(argv, overrideFileArgs(inv.overridePath)...)
+	argv = append(argv, "config", "--quiet")
+
+	return commandSpec{argv: argv}, nil
 }
 
-func buildComposeProjectCommand(composeFile, envFile, projectName, command string) (commandSpec, error) {
+func buildComposeProjectCommand(
+	composeFile, envFile, projectName, overridePath, command string,
+) (commandSpec, error) {
 	project, err := validateComposeProject(ComposeProject{
 		ComposeFile: composeFile,
 		EnvFile:     envFile,
@@ -300,18 +303,29 @@ func buildComposeProjectCommand(composeFile, envFile, projectName, command strin
 	if err != nil {
 		return commandSpec{}, err
 	}
-	return commandSpec{
-		argv: []string{
-			"compose",
-			"-f",
-			project.ComposeFile,
-			"--env-file",
-			project.EnvFile,
-			"--project-name",
-			project.ProjectName,
-			command,
-		},
-	}, nil
+	argv := []string{
+		"compose",
+		"-f",
+		project.ComposeFile,
+		"--env-file",
+		project.EnvFile,
+		"--project-name",
+		project.ProjectName,
+	}
+	argv = append(argv, overrideFileArgs(overridePath)...)
+	argv = append(argv, command)
+	return commandSpec{argv: argv}, nil
+}
+
+// overrideFileArgs returns the `-f <override>` pair for a non-empty content-gated
+// override path, or nil. Appending the override after the base `-f` keeps native
+// last-write-wins merge order while leaving the base argv prefix byte-identical
+// when no override is present.
+func overrideFileArgs(overridePath string) []string {
+	if overridePath == "" {
+		return nil
+	}
+	return []string{"-f", overridePath}
 }
 
 func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
@@ -319,6 +333,7 @@ func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
 		inv.composeFile,
 		inv.envFile,
 		inv.projectName,
+		inv.overridePath,
 		"up",
 	)
 	if err != nil {
@@ -341,6 +356,7 @@ func buildComposeDownRemoveImagesCommand(inv composeDownRemoveImagesInvocation) 
 		inv.composeFile,
 		inv.envFile,
 		inv.projectName,
+		inv.overridePath,
 		"down",
 	)
 	if err != nil {
@@ -355,6 +371,7 @@ func buildComposeLogsCommand(inv composeLogsInvocation) (commandSpec, error) {
 		inv.composeFile,
 		inv.envFile,
 		inv.projectName,
+		inv.overridePath,
 		"logs",
 	)
 	if err != nil {
@@ -649,6 +666,11 @@ func validateDockerVersionArgv(argv []string) error {
 }
 
 func validateComposeArgv(argv []string) error {
+	argv, err := stripValidatedComposeOverride(argv)
+	if err != nil {
+		return err
+	}
+
 	switch {
 	case len(argv) == 2 && argv[1] == "version":
 		return nil
@@ -662,6 +684,51 @@ func validateComposeArgv(argv []string) error {
 	default:
 		return unsupportedDockerArgv(argv)
 	}
+}
+
+// stripValidatedComposeOverride detects an optional content-gated override
+// (`-f <override>`) inserted right after the base `-f <compose>` pair, validates
+// the override path, and returns argv with the pair removed so the fixed-position
+// allowlist checks see the same shape they do without an override. The base
+// compose `-f` always precedes the override `-f`, preserving last-write-wins
+// merge order. Returns argv unchanged when no override pair is present.
+func stripValidatedComposeOverride(argv []string) ([]string, error) {
+	// Project shape: compose -f <c> --env-file <e> --project-name <p>
+	// [-f <override>] <cmd>... ; override pair at indices 7,8.
+	if len(argv) >= 10 &&
+		argv[0] == "compose" &&
+		argv[1] == "-f" &&
+		argv[3] == "--env-file" &&
+		argv[5] == "--project-name" &&
+		argv[7] == "-f" {
+		if _, err := validateAbsolutePath(
+			argv[8],
+			"compose override file",
+			"pass a non-empty absolute path for the compose override file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:7], argv[9:]), nil
+	}
+
+	// Config shape: compose --project-directory <d> -f <c> [-f <override>]
+	// config --quiet ; override pair at indices 5,6.
+	if len(argv) >= 9 &&
+		argv[0] == "compose" &&
+		argv[1] == "--project-directory" &&
+		argv[3] == "-f" &&
+		argv[5] == "-f" {
+		if _, err := validateAbsolutePath(
+			argv[6],
+			"compose override file",
+			"pass a non-empty absolute path for the compose override file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:5], argv[7:]), nil
+	}
+
+	return argv, nil
 }
 
 func isComposeConfigArgv(argv []string) bool {

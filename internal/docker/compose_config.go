@@ -36,8 +36,9 @@ func ValidateComposeConfig(
 }
 
 type composeConfigInvocation struct {
-	projectDir  string
-	composeFile string
+	projectDir   string
+	composeFile  string
+	overridePath string
 }
 
 func (composeConfigInvocation) isDockerInvocation() {}
@@ -48,9 +49,15 @@ func newComposeConfigInvocation(projectDir, composeFile string) (composeConfigIn
 		return composeConfigInvocation{}, err
 	}
 
+	overridePath, err := resolveOverridePath(cleanProjectDir)
+	if err != nil {
+		return composeConfigInvocation{}, err
+	}
+
 	return composeConfigInvocation{
-		projectDir:  cleanProjectDir,
-		composeFile: cleanComposeFile,
+		projectDir:   cleanProjectDir,
+		composeFile:  cleanComposeFile,
+		overridePath: overridePath,
 	}, nil
 }
 

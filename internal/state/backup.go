@@ -488,7 +488,9 @@ func cleanupFailedSnapshotDirectory(backupRoot, snapshotPath string, cause error
 func collectBackupCandidates(stackPath string, additionalRelativePaths []string) ([]backupCandidate, error) {
 	standardPaths := []string{
 		"docker-compose.yml",
+		"docker-compose.override.yml",
 		".env",
+		".env.user",
 		stackLockFilename,
 	}
 

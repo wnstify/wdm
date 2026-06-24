@@ -84,6 +84,26 @@ type Engine interface {
 	// onProgress receives the step_restart_* events.
 	Restart(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
 
+	// RedeployStack recreates a managed stack from its EXISTING on-disk files
+	// so edits to the user overlay (.env.user, docker-compose.override.yml)
+	// take effect — the "apply overlay changes" action (issue #97). It runs
+	// docker compose up -d, which re-reads the Compose file plus the
+	// content-gated override and re-evaluates each service's env_file,
+	// recreating only the containers whose effective config changed. Unlike
+	// Restart (plain docker compose restart, which reuses running containers
+	// without re-reading config and so does NOT pick up overlay edits),
+	// RedeployStack applies them. It re-renders NO template, generates NO
+	// secret, changes NO image or version, takes NO backup, and never writes
+	// .wdm.lock — it deploys the on-disk files as they already are. It
+	// fails closed: an invalid override or env surfaces from the compose
+	// layer as a typed (redactor-scrubbed) error and is not swallowed.
+	// Whole-stack only; there is no per-service field. It reuses
+	// [types.RestartRequest] / [types.RestartResult]. As a state-changing op
+	// it holds the global runtime.lock and the per-stack flock and consults
+	// confirmer before the recreate; onProgress receives the step_redeploy_*
+	// events.
+	RedeployStack(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
+
 	// ResourceSettings reports a managed app's per-service resource limits
 	// — the values currently in effect (read from the stack's .env) and
 	// the catalog's allowed bands (min/recommended/max) — for the
@@ -110,6 +130,70 @@ type Engine interface {
 	// proceed past the confirmation step. onProgress receives the
 	// step_reconfigure_* events.
 	Reconfigure(ctx context.Context, req types.ReconfigureRequest, onProgress ProgressFn, confirmer Confirmer) (*types.ReconfigureResult, error)
+
+	// EnsureUserOverride resolves and create-if-missing seeds the user-owned
+	// docker-compose.override.yml (0644) inside the managed stack, returning
+	// its path. The seeded file carries a documented header and commented
+	// examples; the create is idempotent and never truncates an existing
+	// override, so the user's structural edits (extra services, networks,
+	// ports) survive. Native Compose merges this overlay over the wdm base,
+	// and the content-gate keeps an untouched comment-only override out of the
+	// deploy argv. Read-only commands never create it; this is the explicit
+	// edit-time creation path.
+	EnsureUserOverride(ctx context.Context, appID string) (string, error)
+
+	// EnsureUserEnv resolves and create-if-missing seeds the user-owned
+	// .env.user (empty, 0600) inside the managed stack, returning its path.
+	// It shares the install-time primitive so install, edit, and rewire all
+	// produce a byte-identical empty file; the file stays empty by design so
+	// `wdm update` never has user content to diverge from. The overlay injects
+	// the user's added env into every service via the template env_file.
+	EnsureUserEnv(ctx context.Context, appID string) (string, error)
+
+	// ViewEnvRedacted returns the effective environment of a managed stack —
+	// the base .env merged with the user overlay .env.user — with every secret
+	// value masked before it leaves the engine (PRD §11, §24). It is the
+	// read-only surface behind `wdm view-env <app>` and the TUI view-env
+	// screen. Each entry is masked two ways — by literal secret-value match
+	// (the per-stack active redactor) and by a secret-ish key-name heuristic —
+	// so a user-added secret in .env.user that has no catalog placeholder is
+	// still masked. The result NEVER carries a raw secret. Read-only: it
+	// acquires no runtime.lock and runs no Docker command.
+	ViewEnvRedacted(ctx context.Context, appID string) (*types.ViewEnvResult, error)
+
+	// ValidateStack runs `docker compose config` against the managed stack's
+	// live on-disk files — the base compose plus the content-gated
+	// docker-compose.override.yml — and returns any warnings. It is the
+	// post-edit validation hook for BOTH the compose and env edit flows,
+	// letting the CLI and TUI validate without importing internal/docker
+	// (PRD §29 depguard boundary). A validation failure is a returned error
+	// the caller treats as warn-but-allow; the compose-config output is
+	// discarded so no interpolated secret leaks.
+	ValidateStack(ctx context.Context, appID string) ([]string, error)
+
+	// RewireStack migrates a pre-feature managed stack so its user overlay
+	// (.env.user) goes live. A stack installed before the env_file overlay
+	// landed in the catalog templates has an on-disk compose that does not
+	// reference .env.user, so the user's edits never reach the containers.
+	// RewireStack detects that case, re-renders the compose from the
+	// installed catalog version reusing the existing .env values verbatim,
+	// seeds the empty .env.user, writes the new compose atomically, and
+	// restarts the stack so the overlay takes effect. It is the migration
+	// path surfaced behind the edit-env / view-env flows: detect -> confirm
+	// -> rewire -> restart.
+	//
+	// Safety (PRD §3.40, §9, §12, §24): the .env is NEVER rewritten, so
+	// secrets stay byte-identical; the re-render reuses the on-disk resolved
+	// values with no secret regeneration. With no historical catalog, the
+	// installed-version invariant is enforced fail-closed by comparing the
+	// re-rendered service image references against the on-disk ones — any
+	// image drift aborts the rewire and points the user at `wdm update`.
+	//
+	// An already-wired stack is a no-op: rewired is false, nothing is
+	// written, and the confirmer is not consulted. On a successful rewire the
+	// returned path is the resolved .env.user path (empty on a no-op). A nil
+	// confirmer or a decline writes nothing and restarts nothing.
+	RewireStack(ctx context.Context, appID string, confirmer Confirmer) (rewired bool, path string, err error)
 
 	// StopAll stops every managed stack at once (issue #27): it runs
 	// docker compose stop against each stack, which stops the running

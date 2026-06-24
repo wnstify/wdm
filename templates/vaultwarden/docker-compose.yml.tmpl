@@ -38,6 +38,9 @@ services:
     image: postgres:18.4
     container_name: vaultwarden-postgres
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -99,6 +102,8 @@ services:
     image: vaultwarden/server:1.36.0
     container_name: vaultwarden
     restart: unless-stopped
+    env_file:
+      - .env.user
     depends_on:
       postgres:
         condition: service_healthy
