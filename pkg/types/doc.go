@@ -57,7 +57,7 @@
 //     update, remove, and status payloads
 //   - LogsRequest, LogLine — Engine.Logs streaming payloads (PRD §24)
 //   - StepInstall* / StepUpdate* /
-//     StepRemove* / StepRestart* / StepReconfigure* /
+//     StepRemove* / StepRestart* / StepRedeploy* / StepReconfigure* /
 //     StepStopAll* / StepUninstall* /
 //     StepRestore* / StepDelete* /
 //     StepCatalogUpdate* /

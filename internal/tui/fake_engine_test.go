@@ -22,6 +22,9 @@ type fakeEngine struct {
 	restartResult          *types.RestartResult
 	restartErr             error
 	restartCalls           []string
+	redeployResult         *types.RestartResult
+	redeployErr            error
+	redeployCalls          []string
 	stopAllResult          *types.StopAllResult
 	stopAllErr             error
 	stopAllCalls           int
@@ -184,6 +187,16 @@ func (f *fakeEngine) Restart(
 ) (*types.RestartResult, error) {
 	f.restartCalls = append(f.restartCalls, req.AppID)
 	return f.restartResult, f.restartErr
+}
+
+func (f *fakeEngine) RedeployStack(
+	_ context.Context,
+	req types.RestartRequest,
+	_ engine.ProgressFn,
+	_ types.Confirmer,
+) (*types.RestartResult, error) {
+	f.redeployCalls = append(f.redeployCalls, req.AppID)
+	return f.redeployResult, f.redeployErr
 }
 
 func (f *fakeEngine) StopAll(

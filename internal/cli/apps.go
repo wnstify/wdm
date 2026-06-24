@@ -57,6 +57,7 @@ func newAppsCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 	apps.AddCommand(newAppsUpdateCmd(newEngine))
 	apps.AddCommand(newAppsRemoveCmd(newEngine))
 	apps.AddCommand(newAppsRestartCmd(newEngine))
+	apps.AddCommand(newAppsRedeployCmd(newEngine))
 	apps.AddCommand(newAppsStopAllCmd(newEngine))
 	apps.AddCommand(newAppsValidateCmd(newEngine))
 	apps.AddCommand(newAppsBackupsCmd(newEngine))

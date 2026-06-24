@@ -82,6 +82,15 @@ const (
 	// StepRestartStatus reports post-restart status verification.
 	StepRestartStatus = "step_restart_status"
 
+	// StepRedeployPlanning reports redeploy planning.
+	StepRedeployPlanning = "step_redeploy_planning"
+	// StepRedeployConfirm reports redeploy confirmation gating.
+	StepRedeployConfirm = "step_redeploy_confirm"
+	// StepRedeployExecute reports docker compose up -d execution.
+	StepRedeployExecute = "step_redeploy_execute"
+	// StepRedeployStatus reports post-redeploy status verification.
+	StepRedeployStatus = "step_redeploy_status"
+
 	// StepStopAllPlanning reports stop-all managed-stack enumeration.
 	StepStopAllPlanning = "step_stop_all_planning"
 	// StepStopAllConfirm reports stop-all confirmation gating.

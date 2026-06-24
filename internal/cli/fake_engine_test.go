@@ -34,6 +34,7 @@ type fakeEngine struct {
 	listStatusResult    []types.AppRuntimeStatus
 	settings            *types.Settings
 	restartResult       *types.RestartResult
+	redeployResult      *types.RestartResult
 	stopAllResult       *types.StopAllResult
 	uninstallResult     *types.UninstallResult
 	validationResult    *types.ValidationResult
@@ -68,6 +69,7 @@ type fakeEngine struct {
 	removeReq      types.RemoveRequest
 	logsReq        types.LogsRequest
 	statusAppID    string
+	redeployReq    types.RestartRequest
 	reconfigureReq types.ReconfigureRequest
 	resourcesAppID string
 	progressWasNil bool
@@ -211,6 +213,21 @@ func (f *fakeEngine) Restart(
 		return nil, f.err
 	}
 	return f.restartResult, nil
+}
+
+func (f *fakeEngine) RedeployStack(
+	_ context.Context,
+	req types.RestartRequest,
+	onProgress engine.ProgressFn,
+	confirmer types.Confirmer,
+) (*types.RestartResult, error) {
+	f.redeployReq = req
+	f.progressWasNil = onProgress == nil
+	f.confirmer = confirmer
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.redeployResult, nil
 }
 
 func (f *fakeEngine) StopAll(

@@ -67,6 +67,7 @@ const (
 var checkAppActions = []string{
 	"View details",
 	"Restart app",
+	"Apply overlay changes",
 	"Manage resources",
 	"Edit compose",
 	"Edit env",
@@ -372,15 +373,9 @@ func (m model) updateStatusMsg(msg tea.Msg) (tea.Model, bool) {
 func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case restartFinishedMsg:
-		m.busy = false
-		m.err = msg.err
-		m.validation = nil
-		if msg.result != nil && msg.result.Status != nil {
-			m.status = msg.result.Status
-		}
-		if msg.err == nil {
-			m.actionMessage = "Restart complete."
-		}
+		return m.applyRecreateResult(msg.result, msg.err, "Restart complete."), nil
+	case redeployFinishedMsg:
+		return m.applyRecreateResult(msg.result, msg.err, "Overlay changes applied."), nil
 	case validationFinishedMsg:
 		m.busy = false
 		m.err = msg.err
@@ -792,6 +787,11 @@ func (m model) selectAppAction() (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.actionMessage = ""
 		return m, m.restartAppCmd(m.activeAppID())
+	case "Apply overlay changes":
+		m.busy = true
+		m.err = nil
+		m.actionMessage = ""
+		return m, m.redeployAppCmd(m.activeAppID())
 	case "Manage resources":
 		m.screen = screenResources
 		m.busy = true
@@ -857,6 +857,11 @@ type restartFinishedMsg struct {
 	err    error
 }
 
+type redeployFinishedMsg struct {
+	result *types.RestartResult
+	err    error
+}
+
 type validationFinishedMsg struct {
 	result *types.ValidationResult
 	err    error
@@ -884,6 +889,34 @@ func (m model) restartAppCmd(appID string) tea.Cmd {
 	) tea.Msg {
 		result, err := m.eng.Restart(ctx, types.RestartRequest{AppID: appID}, progress, confirmer)
 		return restartFinishedMsg{result: result, err: err}
+	})
+}
+
+// applyRecreateResult folds a restart or redeploy outcome into the model: it
+// clears busy/validation, records any error, adopts the post-op status snapshot
+// when present, and on success shows successMsg. Restart and redeploy share this
+// because their result handling is identical apart from the message.
+func (m model) applyRecreateResult(result *types.RestartResult, err error, successMsg string) model {
+	m.busy = false
+	m.err = err
+	m.validation = nil
+	if result != nil && result.Status != nil {
+		m.status = result.Status
+	}
+	if err == nil {
+		m.actionMessage = successMsg
+	}
+	return m
+}
+
+func (m model) redeployAppCmd(appID string) tea.Cmd {
+	return engineCommand(m.ctx, m.bridge, func(
+		ctx context.Context,
+		progress types.ProgressFn,
+		confirmer types.Confirmer,
+	) tea.Msg {
+		result, err := m.eng.RedeployStack(ctx, types.RestartRequest{AppID: appID}, progress, confirmer)
+		return redeployFinishedMsg{result: result, err: err}
 	})
 }
 

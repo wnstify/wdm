@@ -187,6 +187,47 @@ func TestModel_CheckMyAppsRestartAndValidateUseEngine(t *testing.T) {
 	assert.Contains(t, m.View(), "services.app.image is required")
 }
 
+// TestModel_CheckMyAppsApplyOverlayChangesUsesEngine proves the "Apply
+// overlay changes" action triggers the redeploy Cmd, which calls
+// RedeployStack via the engine bridge, and the resulting status is shown.
+func TestModel_CheckMyAppsApplyOverlayChangesUsesEngine(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{
+		listStatusApps: []types.AppRuntimeStatus{
+			{
+				AppInfo: types.AppInfo{AppID: "uptime-kuma", TemplateName: "Uptime Kuma", NeedsAttention: true},
+				State:   "needs_attention",
+			},
+		},
+		statuses: map[string]*types.AppStatus{
+			"uptime-kuma": {
+				AppID:          "uptime-kuma",
+				State:          "needs attention",
+				NeedsAttention: true,
+			},
+		},
+		redeployResult: &types.RestartResult{
+			AppID:             "uptime-kuma",
+			RestartedServices: []string{"app"},
+			Status:            &types.AppStatus{AppID: "uptime-kuma", State: "running"},
+		},
+	}
+	m := loadCheckAppsStatusScreen(t, fake)
+
+	for checkAppActions[m.actionCursor] != "Apply overlay changes" {
+		m = updateModel(t, m, downKey())
+	}
+	next, cmd := m.Update(enterKey())
+	m = assertModel(t, next)
+	require.NotNil(t, cmd)
+
+	m = updateModel(t, m, cmd())
+	assert.Equal(t, []string{"uptime-kuma"}, fake.redeployCalls)
+	assert.Contains(t, m.View(), "Overlay changes applied")
+	assert.Contains(t, m.View(), "running")
+}
+
 func TestModel_CheckAppsViewRendersLoadingErrorAndEmptyStates(t *testing.T) {
 	t.Parallel()
 

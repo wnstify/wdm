@@ -307,6 +307,15 @@ func (c *crossoverCountingEngine) Restart(
 	return nil, nil
 }
 
+func (c *crossoverCountingEngine) RedeployStack(
+	context.Context,
+	types.RestartRequest,
+	engine.ProgressFn,
+	types.Confirmer,
+) (*types.RestartResult, error) {
+	return nil, nil
+}
+
 func (c *crossoverCountingEngine) ResourceSettings(context.Context, string) (*types.ResourceSettings, error) {
 	return nil, nil
 }

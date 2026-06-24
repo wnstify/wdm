@@ -84,6 +84,26 @@ type Engine interface {
 	// onProgress receives the step_restart_* events.
 	Restart(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
 
+	// RedeployStack recreates a managed stack from its EXISTING on-disk files
+	// so edits to the user overlay (.env.user, docker-compose.override.yml)
+	// take effect — the "apply overlay changes" action (issue #97). It runs
+	// docker compose up -d, which re-reads the Compose file plus the
+	// content-gated override and re-evaluates each service's env_file,
+	// recreating only the containers whose effective config changed. Unlike
+	// Restart (plain docker compose restart, which reuses running containers
+	// without re-reading config and so does NOT pick up overlay edits),
+	// RedeployStack applies them. It re-renders NO template, generates NO
+	// secret, changes NO image or version, takes NO backup, and never writes
+	// .wdm.lock — it deploys the on-disk files as they already are. It
+	// fails closed: an invalid override or env surfaces from the compose
+	// layer as a typed (redactor-scrubbed) error and is not swallowed.
+	// Whole-stack only; there is no per-service field. It reuses
+	// [types.RestartRequest] / [types.RestartResult]. As a state-changing op
+	// it holds the global runtime.lock and the per-stack flock and consults
+	// confirmer before the recreate; onProgress receives the step_redeploy_*
+	// events.
+	RedeployStack(ctx context.Context, req types.RestartRequest, onProgress ProgressFn, confirmer Confirmer) (*types.RestartResult, error)
+
 	// ResourceSettings reports a managed app's per-service resource limits
 	// — the values currently in effect (read from the stack's .env) and
 	// the catalog's allowed bands (min/recommended/max) — for the
