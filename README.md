@@ -92,7 +92,8 @@ wdm apps install <app>        # install a curated app
 wdm apps status <app>         # report a stack's health
 wdm apps logs <app>           # view stack logs
 wdm apps update <app>         # update a stack
-wdm apps restart <app>        # restart a stack
+wdm apps restart <app>        # restart a stack in place (does not apply overlay edits)
+wdm apps redeploy <app>       # apply .env.user / override edits by recreating the stack
 wdm apps stop-all             # stop every running managed stack (data preserved)
 wdm apps backups list <app>   # list pre-change config backups
 wdm apps remove <app>         # stop a stack (volumes and networks preserved)

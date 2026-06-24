@@ -31,6 +31,16 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   environment (base `.env` merged with `.env.user`) with every secret value
   masked by the active redactor. `.env.user` may hold user secrets, so its
   values are also redacted in logs, validation, and error output.
+- Added `wdm apps redeploy <app> [--yes] [--stack-path <path>]`, which applies
+  your overlay edits by recreating the stack from its on-disk files
+  (`docker compose up -d`): it re-reads the Compose file and your
+  `docker-compose.override.yml` and re-evaluates each service's `.env.user`,
+  recreating only the containers whose effective config changed. Unlike
+  `wdm apps restart` (plain `docker compose restart`, which reuses the running
+  containers without re-reading config and so does not pick up overlay edits),
+  redeploy applies them — without re-rendering templates from the catalog and
+  without changing images, versions, or secrets. The TUI exposes the same
+  action as "Apply overlay changes".
 - Wired the overlay into the first three pilot apps (Vaultwarden, Nextcloud,
   Uptime Kuma); the remaining curated apps land in a follow-up release.
 

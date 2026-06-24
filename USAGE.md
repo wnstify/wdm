@@ -29,6 +29,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 | `wdm apps logs <app-id>` | Stream redacted logs from a stack. |
 | `wdm apps update <app-id>` | Update a stack to the current catalog version. |
 | `wdm apps restart <app-id>` | Restart a stack's containers in place. |
+| `wdm apps redeploy <app-id>` | Apply overlay changes by recreating a stack (`docker compose up -d`). |
 | `wdm apps stop-all` | Stop every running managed stack at once, preserving all data. |
 | `wdm apps remove <app-id>` | Remove a stack, keeping its files and volumes. |
 | `wdm apps delete <app-id>` | Permanently delete a stack's files and directory. |
@@ -60,6 +61,14 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 
 - `--yes` — accept safe confirmations.
 - `--stack-path <path>` — override the default stack path.
+- Runs plain `docker compose restart`: it reuses the running containers without re-reading config, so it does **not** apply edits to `.env.user` or `docker-compose.override.yml`. To apply those, use `wdm apps redeploy`.
+
+**`wdm apps redeploy <app-id>`**
+
+- Recreates the stack from its on-disk files (`docker compose up -d`) to apply your overlay edits: it re-reads the Compose file and your `docker-compose.override.yml` and re-evaluates each service's `.env.user`, recreating only the containers whose effective config changed. It never re-renders templates from the catalog and never changes images, versions, or secrets.
+- Use this after editing `.env.user` or `docker-compose.override.yml`.
+- `--yes` — accept the safe redeploy confirmation without prompting.
+- `--stack-path <path>` — assert the managed stack path (verified against the app).
 
 **`wdm apps stop-all`**
 
