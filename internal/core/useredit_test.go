@@ -378,7 +378,7 @@ func TestRewireStack_ImageDriftAbortsBeforeWrite(t *testing.T) {
 func TestRewireStack_NilConfirmerRefusesBeforeWrite(t *testing.T) {
 	t.Parallel()
 
-	fx := newRewireFixture(t, rewireApp("rewire-nil-confirm-app"), preFeatureCompose)
+	fx := newRewireFixture(t, rewireApp("rewire-app"), preFeatureCompose)
 	composePath := filepath.Join(fx.stackPath, "docker-compose.yml")
 
 	rewired, path, err := fx.eng.RewireStack(t.Context(), fx.appID, nil)
