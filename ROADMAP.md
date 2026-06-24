@@ -2,11 +2,11 @@
 
 This roadmap describes what `wdm` intends to do, and explicitly not do, over roughly the next year. It is a statement of direction, not a commitment to dates; priorities shift with maintainer capacity and security needs. Live planning happens in [GitHub issues](https://github.com/wnstify/wdm/issues); this file is the higher-level summary.
 
-The current stable release is `v1.0.6`. See [CHANGELOG.md](CHANGELOG.md) for shipped work and [GOVERNANCE.md](GOVERNANCE.md) for how decisions are made.
+The current stable release is `v1.1.0`. See [CHANGELOG.md](CHANGELOG.md) for shipped work and [GOVERNANCE.md](GOVERNANCE.md) for how decisions are made.
 
-## Next release — v1.1.0
+## Next release — v1.2.0
 
-- **Add Mira to the catalog** ([#49](https://github.com/wnstify/wdm/issues/49)) — an open-source, self-hosted AI code reviewer (Apache 2.0) that runs as a GitHub App and reviews pull requests with a model of the operator's choice. Curated template, localhost-by-default, and the same render/verification gates as every other catalog app.
+- **User-editable stack overlays** ([#97](https://github.com/wnstify/wdm/issues/97)) — every managed stack gains two user-owned files that `wdm` creates but never regenerates and that survive `wdm update`: `.env.user` for adding environment variables and `docker-compose.override.yml` for structural changes. Wired across every curated catalog app, with `wdm edit`, `wdm view-env`, and `wdm apps redeploy` to manage overlay changes and apply them without re-rendering from the catalog.
 
 ## Ongoing (continuous, every release)
 
