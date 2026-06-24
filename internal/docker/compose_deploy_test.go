@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -417,6 +418,70 @@ func TestRun_ComposeDeploymentInvocationsBuildExactArgv(t *testing.T) {
 				"all",
 			},
 		},
+		{
+			name: "pull with override",
+			inv: composePullInvocation{
+				composeFile:  project.ComposeFile,
+				envFile:      project.EnvFile,
+				projectName:  project.ProjectName,
+				overridePath: overridePathFor(project),
+			},
+			wantArg: []string{
+				"compose",
+				"-f",
+				project.ComposeFile,
+				"--env-file",
+				project.EnvFile,
+				"--project-name",
+				project.ProjectName,
+				"-f",
+				overridePathFor(project),
+				"pull",
+			},
+		},
+		{
+			name: "up with override",
+			inv: composeUpInvocation{
+				composeFile:  project.ComposeFile,
+				envFile:      project.EnvFile,
+				projectName:  project.ProjectName,
+				overridePath: overridePathFor(project),
+			},
+			wantArg: []string{
+				"compose",
+				"-f",
+				project.ComposeFile,
+				"--env-file",
+				project.EnvFile,
+				"--project-name",
+				project.ProjectName,
+				"-f",
+				overridePathFor(project),
+				"up",
+				"-d",
+			},
+		},
+		{
+			name: "down with override",
+			inv: composeDownInvocation{
+				composeFile:  project.ComposeFile,
+				envFile:      project.EnvFile,
+				projectName:  project.ProjectName,
+				overridePath: overridePathFor(project),
+			},
+			wantArg: []string{
+				"compose",
+				"-f",
+				project.ComposeFile,
+				"--env-file",
+				project.EnvFile,
+				"--project-name",
+				project.ProjectName,
+				"-f",
+				overridePathFor(project),
+				"down",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -773,5 +838,65 @@ func validComposeProjectForDeployTests(t *testing.T) ComposeProject {
 		ComposeFile: filepath.Join(stackDir, "docker-compose.yml"),
 		EnvFile:     filepath.Join(stackDir, ".env"),
 		ProjectName: "wdm-freshrss",
+	}
+}
+
+// overridePathFor returns the override file path inside a project's stack dir.
+func overridePathFor(project ComposeProject) string {
+	return filepath.Join(
+		filepath.Dir(project.ComposeFile),
+		"docker-compose.override.yml",
+	)
+}
+
+func TestResolveOverridePath_ContentGate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		content     string
+		write       bool
+		wantPresent bool
+	}{
+		{name: "absent file", write: false, wantPresent: false},
+		{name: "empty file", content: "", write: true, wantPresent: false},
+		{
+			name:        "whitespace only",
+			content:     "   \n\t\n  \n",
+			write:       true,
+			wantPresent: false,
+		},
+		{
+			name:        "comments only",
+			content:     "# just a comment\n   # indented comment\n",
+			write:       true,
+			wantPresent: false,
+		},
+		{
+			name:        "real content",
+			content:     "# header\nservices:\n  extra:\n    image: alpine\n",
+			write:       true,
+			wantPresent: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stackDir := t.TempDir()
+			overridePath := filepath.Join(stackDir, "docker-compose.override.yml")
+			if tt.write {
+				require.NoError(t, os.WriteFile(overridePath, []byte(tt.content), 0o644))
+			}
+
+			got, err := resolveOverridePath(stackDir)
+			require.NoError(t, err)
+			if tt.wantPresent {
+				require.Equal(t, overridePath, got)
+			} else {
+				require.Empty(t, got)
+			}
+		})
 	}
 }
