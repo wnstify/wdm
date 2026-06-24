@@ -151,6 +151,30 @@ type Engine interface {
 	// discarded so no interpolated secret leaks.
 	ValidateStack(ctx context.Context, appID string) ([]string, error)
 
+	// RewireStack migrates a pre-feature managed stack so its user overlay
+	// (.env.user) goes live. A stack installed before the env_file overlay
+	// landed in the catalog templates has an on-disk compose that does not
+	// reference .env.user, so the user's edits never reach the containers.
+	// RewireStack detects that case, re-renders the compose from the
+	// installed catalog version reusing the existing .env values verbatim,
+	// seeds the empty .env.user, writes the new compose atomically, and
+	// restarts the stack so the overlay takes effect. It is the migration
+	// path surfaced behind the edit-env / view-env flows: detect -> confirm
+	// -> rewire -> restart.
+	//
+	// Safety (PRD §3.40, §9, §12, §24): the .env is NEVER rewritten, so
+	// secrets stay byte-identical; the re-render reuses the on-disk resolved
+	// values with no secret regeneration. With no historical catalog, the
+	// installed-version invariant is enforced fail-closed by comparing the
+	// re-rendered service image references against the on-disk ones — any
+	// image drift aborts the rewire and points the user at `wdm update`.
+	//
+	// An already-wired stack is a no-op: rewired is false, nothing is
+	// written, and the confirmer is not consulted. On a successful rewire the
+	// returned path is the resolved .env.user path (empty on a no-op). A nil
+	// confirmer or a decline writes nothing and restarts nothing.
+	RewireStack(ctx context.Context, appID string, confirmer Confirmer) (rewired bool, path string, err error)
+
 	// StopAll stops every managed stack at once (issue #27): it runs
 	// docker compose stop against each stack, which stops the running
 	// containers without removing them, so containers, networks, and

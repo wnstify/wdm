@@ -86,6 +86,10 @@ type fakeEngine struct {
 	validateStackWarn   []string
 	validateStackErr    error
 	validateStackCalls  []string
+	rewireStackDone     bool
+	rewireStackPath     string
+	rewireStackErr      error
+	rewireStackCalls    []string
 
 	catalogUpdateStatus    *types.CatalogUpdateStatus
 	catalogUpdateStatusErr error
@@ -234,6 +238,11 @@ func (f *fakeEngine) ViewEnvRedacted(_ context.Context, appID string) (*types.Vi
 func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, error) {
 	f.validateStackCalls = append(f.validateStackCalls, appID)
 	return f.validateStackWarn, f.validateStackErr
+}
+
+func (f *fakeEngine) RewireStack(_ context.Context, appID string, _ engine.Confirmer) (bool, string, error) {
+	f.rewireStackCalls = append(f.rewireStackCalls, appID)
+	return f.rewireStackDone, f.rewireStackPath, f.rewireStackErr
 }
 
 func (f *fakeEngine) Uninstall(

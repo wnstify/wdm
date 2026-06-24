@@ -388,6 +388,10 @@ func (c *crossoverCountingEngine) ValidateStack(context.Context, string) ([]stri
 	return nil, nil
 }
 
+func (c *crossoverCountingEngine) RewireStack(context.Context, string, types.Confirmer) (bool, string, error) {
+	return false, "", nil
+}
+
 func (c *crossoverCountingEngine) RuntimeLockStatus(context.Context) (*types.RuntimeLockStatus, error) {
 	return nil, nil
 }

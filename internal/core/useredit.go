@@ -5,16 +5,78 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/wnstify/wdm/internal/docker"
+	"github.com/wnstify/wdm/internal/render"
 	"github.com/wnstify/wdm/internal/security"
 	"github.com/wnstify/wdm/internal/state"
 	"github.com/wnstify/wdm/pkg/types"
 )
+
+// composeEnvFileProjection is the minimal slice of a rendered
+// docker-compose.yml needed to read each service's env_file entries.
+// yaml.v3 accepts both the scalar (env_file: .env.user) and sequence
+// (env_file: [.env.user]) Compose forms because the field is decoded as
+// a []string with a permissive UnmarshalYAML on the alias type below.
+type composeEnvFileProjection struct {
+	Services map[string]struct {
+		EnvFile composeEnvFileList `yaml:"env_file"`
+	} `yaml:"services"`
+}
+
+// composeEnvFileList accepts either a single scalar or a sequence for a
+// service's env_file, normalizing both into a string slice so the
+// detection gate is form-agnostic.
+type composeEnvFileList []string
+
+func (l *composeEnvFileList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		*l = composeEnvFileList{value.Value}
+		return nil
+	}
+	var seq []string
+	if err := value.Decode(&seq); err != nil {
+		return err
+	}
+	*l = seq
+	return nil
+}
+
+// composeWiresUserEnv reports whether every service in the rendered
+// compose lists installEnvUserFilename in its env_file. A stack already
+// wired this way needs no rewire; a pre-feature stack (rendered before
+// the env_file overlay was added to the templates) reports false. A parse
+// failure is surfaced so a corrupt compose never silently rewires.
+func composeWiresUserEnv(composeBytes []byte) (bool, error) {
+	var projection composeEnvFileProjection
+	if err := yaml.Unmarshal(composeBytes, &projection); err != nil {
+		return false, fmt.Errorf("parse compose for env_file detection: %w", err)
+	}
+	if len(projection.Services) == 0 {
+		return false, nil
+	}
+	for _, service := range projection.Services {
+		wired := false
+		for _, entry := range service.EnvFile {
+			if strings.TrimSpace(entry) == installEnvUserFilename {
+				wired = true
+				break
+			}
+		}
+		if !wired {
+			return false, nil
+		}
+	}
+	return true, nil
+}
 
 // userOverrideHeader seeds a freshly-created docker-compose.override.yml so
 // the user sees a documented, ready-to-edit starting point. Native Compose
@@ -197,6 +259,366 @@ func (e *Engine) ValidateStack(ctx context.Context, appID string) ([]string, err
 		return nil, fmt.Errorf("%s", redactor.Redact(validateErr.Error()))
 	}
 	return nil, nil
+}
+
+// RewireStack migrates a pre-feature managed stack so its user overlay
+// (.env.user) goes live. A stack installed before the env_file overlay
+// landed in the catalog templates has an on-disk compose that does not
+// reference .env.user, so the user's edits never reach the containers.
+// RewireStack detects that case, re-renders the compose from the INSTALLED
+// catalog version reusing the existing .env values verbatim, seeds the
+// empty .env.user, writes the new compose atomically, and restarts the
+// stack so the overlay takes effect.
+//
+// Safety: the .env is NEVER rewritten, so secrets stay byte-identical;
+// the re-render reuses the on-disk resolved values (no secret regeneration,
+// no input prompt). Because no historical catalog exists, "installed
+// version" is enforced fail-closed by comparing the re-rendered service
+// image references against the on-disk ones — any image change means the
+// catalog template moved past the installed version, so RewireStack aborts
+// and points the user at `wdm update` rather than silently changing images.
+//
+// Flow: detect -> confirm (destructive: rewrites compose + restarts) ->
+// rewire -> restart. An already-wired stack is a no-op: rewired is false,
+// nothing is written, and no confirmation is requested. The returned path
+// is the resolved .env.user path on a successful rewire (empty on a no-op).
+func (e *Engine) RewireStack(
+	ctx context.Context,
+	appID string,
+	confirmer types.Confirmer,
+) (rewired bool, path string, err error) {
+	if e.isClosed() {
+		return false, "", ErrClosed
+	}
+	if err := requireAppID(appID); err != nil {
+		return false, "", err
+	}
+
+	lg := e.newOpLogger(e.logger, "rewire")
+	lg.start(ctx, appID)
+
+	handle, err := e.acquireRuntimeLock(ctx, "rewire")
+	if err != nil {
+		lg.failure(ctx, appID, "", "acquire_runtime_lock", err)
+		return false, "", err
+	}
+	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
+
+	stackPath, lock, err := e.resolveManagedStack(ctx, appID)
+	if err != nil {
+		lg.failure(ctx, appID, "", "resolve_managed_stack", err)
+		return false, "", err
+	}
+	if err := requireComposeProject(lock.ComposeProject, appID); err != nil {
+		lg.failure(ctx, appID, stackPath, "require_compose_project", err)
+		return false, "", err
+	}
+
+	onDiskCompose, err := readStackFile(stackPath, installComposeFilename)
+	if err != nil {
+		lg.failure(ctx, appID, stackPath, "read_compose", err)
+		return false, "", err
+	}
+	alreadyWired, err := composeWiresUserEnv(onDiskCompose)
+	if err != nil {
+		lg.failure(ctx, appID, stackPath, "detect_env_file", err)
+		return false, "", usageValidationError(
+			"stack compose could not be parsed for overlay detection",
+			"the stack docker-compose.yml is corrupt; reinstall the app to restore managed state",
+			err,
+		)
+	}
+	if alreadyWired {
+		lg.success(ctx, appID, stackPath)
+		return false, "", nil
+	}
+
+	newCompose, err := e.rewireRenderCompose(ctx, appID, stackPath, onDiskCompose)
+	if err != nil {
+		lg.failure(ctx, appID, stackPath, "render_compose", err)
+		return false, "", err
+	}
+
+	if err := confirmRewire(ctx, confirmer, appID, stackPath); err != nil {
+		lg.failure(ctx, appID, stackPath, "confirm_rewire", err)
+		return false, "", err
+	}
+
+	envUserPath, err := e.applyRewire(ctx, appID, stackPath, lock.ComposeProject, newCompose)
+	if err != nil {
+		lg.failure(ctx, appID, stackPath, "apply_rewire", err)
+		return false, "", err
+	}
+
+	lg.success(ctx, appID, stackPath)
+	return true, envUserPath, nil
+}
+
+// rewireRenderCompose re-renders the stack's compose from the installed
+// catalog version, reusing the on-disk .env values, and returns the new
+// compose bytes. It runs the same render + input-assembly + catalog-vs-
+// compose guards the update path uses (resolveUpdateRewritePlan ->
+// installRenderInput -> render.RenderLabels), so the only intended
+// difference from the on-disk compose is the added env_file overlay.
+//
+// The installed-version invariant is enforced fail-closed: the re-rendered
+// service image references are compared against the on-disk ones, and any
+// drift aborts the rewire (the user must `wdm update` to adopt the newer
+// template). The .env is never re-rendered to disk, so secrets stay
+// byte-identical regardless of any regenerable-secret handling in the
+// shared render plan.
+func (e *Engine) rewireRenderCompose(
+	ctx context.Context,
+	appID, stackPath string,
+	onDiskCompose []byte,
+) ([]byte, error) {
+	rewrite, err := e.resolveUpdateRewritePlan(&updateCheckPlan{appID: appID, stackPath: stackPath})
+	if err != nil {
+		return nil, err
+	}
+
+	cat, err := e.loadInstallCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	app, err := selectCatalogApp(cat, appID)
+	if err != nil {
+		return nil, err
+	}
+	rewrite.app = app
+
+	secretLiterals := append(slices.Clone(rewrite.generatedValues), rewrite.reusedSecretValues...)
+	redactor := security.NewActiveRedactor(secretLiterals)
+
+	input, err := e.installRenderInput(ctx, rewrite)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return nil, redactedVerificationError(
+			redactor,
+			"rewire templates could not be loaded",
+			"refresh the catalog and retry",
+			err,
+		)
+	}
+	composeStack, err := render.RenderLabels(input)
+	if err != nil {
+		return nil, redactedVerificationError(
+			redactor,
+			"compose template could not be rendered",
+			"refresh the catalog and retry",
+			err,
+		)
+	}
+	rewrite.rendered = render.RenderedStack{
+		ComposeBytes:  composeStack.ComposeBytes,
+		ServiceLabels: composeStack.ServiceLabels,
+	}
+
+	// The re-rendered compose deploys the stack, so re-run the install-arc
+	// catalog-vs-compose guards against it before it can be written.
+	if err := verifyImagePinsMatchTemplate(redactor, app, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyPublicBindsMatchCatalog(redactor, app, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyContainerPrivilegeMatchCatalog(redactor, app, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifySocketPolicyMatchCatalog(redactor, app, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyHostModuleMountMatchCatalog(redactor, app, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyNetworkIPAMMatchCatalog(redactor, app, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	if err := verifyRenderedNonSecretArtifacts(redactor, secretLiterals, rewrite.rendered, nil); err != nil {
+		return nil, err
+	}
+
+	// Fail-closed installed-version gate: with no historical catalog, the
+	// only way to guarantee the re-render did not change images is to compare
+	// the re-rendered image references against the on-disk ones. Any drift
+	// means the template moved past the installed version; abort and send the
+	// user to `wdm update` rather than silently changing images.
+	if err := verifyRewireImagesUnchanged(redactor, appID, onDiskCompose, rewrite.rendered.ComposeBytes); err != nil {
+		return nil, err
+	}
+	return rewrite.rendered.ComposeBytes, nil
+}
+
+// verifyRewireImagesUnchanged refuses the rewire if any service's image
+// reference in the re-rendered compose differs from the on-disk one. This
+// is the byte-for-byte image guarantee: the rewire may add the env_file
+// overlay but must never change what `docker compose up` pulls. A new or
+// removed service is also drift. Image references are non-secret, so the
+// diagnostic names them; the cause is redacted defensively for parity with
+// the sibling render-stage errors.
+func verifyRewireImagesUnchanged(redactor security.Redactor, appID string, onDisk, rerendered []byte) error {
+	oldImages, err := projectComposeImages(onDisk)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"on-disk compose could not be parsed for image comparison",
+			"the stack docker-compose.yml is corrupt; reinstall the app to restore managed state",
+			fmt.Errorf("app %q: parse on-disk compose: %w", appID, err),
+		)
+	}
+	newImages, err := projectComposeImages(rerendered)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"re-rendered compose could not be parsed for image comparison",
+			"refresh the catalog and retry",
+			fmt.Errorf("app %q: parse re-rendered compose: %w", appID, err),
+		)
+	}
+	if !maps.Equal(oldImages, newImages) {
+		return redactedVerificationError(
+			redactor,
+			"re-rendering would change the stack images",
+			"the catalog template is newer than the installed version; run `wdm update "+appID+"` to adopt it",
+			fmt.Errorf("app %q: rewire image set drifted from the installed compose", appID),
+		)
+	}
+	return nil
+}
+
+// projectComposeImages decodes the per-service image references from a
+// rendered compose into a service->image map, reusing the minimal
+// [composeImageProjection] projection (only the image field is read).
+func projectComposeImages(composeBytes []byte) (map[string]string, error) {
+	var projection composeImageProjection
+	if err := yaml.Unmarshal(composeBytes, &projection); err != nil {
+		return nil, err
+	}
+	images := make(map[string]string, len(projection.Services))
+	for service, def := range projection.Services {
+		images[service] = def.Image
+	}
+	return images, nil
+}
+
+// confirmRewire gates the compose rewrite + restart on the [types.Confirmer]
+// after detection and render and before any byte change, mirroring the
+// lifecycle confirm posture: a nil confirmer refuses with
+// [types.ErrCodeUsageValidation], a decline maps to
+// [types.ErrCodeUserCanceled], and a confirmer error propagates wrapped. A
+// decline writes nothing and restarts nothing.
+func confirmRewire(ctx context.Context, confirmer types.Confirmer, appID, stackPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if confirmer == nil {
+		return types.NewError(
+			types.ErrCodeUsageValidation,
+			"confirmer is required before rewire",
+			"pass a confirmer that can authorize the compose rewrite and restart",
+		)
+	}
+	confirmed, err := confirmer.Confirm(ctx, types.Confirmation{
+		Kind:  "rewire_overlay",
+		Title: "activate user overlay for " + appID,
+		Message: strings.Join([]string{
+			"app: " + appID,
+			"stack path: " + stackPath,
+			"re-renders docker-compose.yml to inject the .env.user overlay",
+			"keeps your .env and secrets unchanged",
+			"restarts the stack (brief downtime)",
+		}, "\n"),
+	})
+	if err != nil {
+		return fmt.Errorf("core.rewire: confirming rewire: %w", err)
+	}
+	if !confirmed {
+		return types.NewError(
+			types.ErrCodeUserCanceled,
+			"rewire canceled before any change",
+			"re-run the rewire and confirm the prompt to activate the overlay",
+		)
+	}
+	return nil
+}
+
+// applyRewire performs the byte-changing span under a freshly-taken
+// per-stack flock: it reconfirms managed identity through the held fd,
+// writes the re-rendered compose atomically, seeds the empty .env.user, and
+// restarts the stack so the overlay takes effect. The compose write and
+// .env.user seed are both inside the stack dir via SafeJoin; the .env is
+// never touched. It returns the resolved .env.user path.
+func (e *Engine) applyRewire(
+	ctx context.Context,
+	appID, stackPath, composeProject string,
+	newCompose []byte,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	handle, err := acquireInstallStackLock(ctx, stackPath)
+	if err != nil {
+		return "", err
+	}
+	defer handle.Release() //nolint:errcheck // best-effort cleanup; kernel releases on process exit regardless
+
+	if _, err := reconfirmManagedStack(handle, appID); err != nil {
+		return "", err
+	}
+
+	composePath, err := security.SafeJoin(stackPath, installComposeFilename)
+	if err != nil {
+		return "", usageValidationError(
+			"stack path is unsafe",
+			"remove symlinks from the stack path and retry",
+			err,
+		)
+	}
+	if err := validateInstallWritePath(stackPath, composePath); err != nil {
+		return "", usageValidationError(
+			"rewire compose path is unsafe",
+			"remove symlinks from the stack path and retry",
+			err,
+		)
+	}
+	if err := state.WriteFileAtomic(composePath, newCompose, installComposeFileMode); err != nil {
+		return "", types.WrapError(
+			types.ErrCodeGeneric,
+			"rewired compose could not be written",
+			"check stack directory permissions and retry",
+			err,
+		)
+	}
+
+	envUserPath, err := ensureUserEnvFile(stackPath)
+	if err != nil {
+		return "", err
+	}
+
+	// .env.user may now carry user secrets; fold its values into the restart
+	// redactor (over-redaction acceptable, fail-closed).
+	userValues, err := readUserEnvValues(stackPath)
+	if err != nil {
+		return "", err
+	}
+	client, err := e.buildDockerClient(security.NewActiveRedactor(userValues))
+	if err != nil {
+		return "", err
+	}
+	project := docker.ComposeProject{
+		ComposeFile: composePath,
+		ProjectName: composeProject,
+	}
+	if envPath, joinErr := security.SafeJoin(stackPath, installEnvFilename); joinErr == nil {
+		project.EnvFile = envPath
+	}
+	if err := docker.ComposeRestart(ctx, client, project); err != nil {
+		return "", err
+	}
+	return envUserPath, nil
 }
 
 // resolveUserEditStack resolves appID to its managed stack path for the

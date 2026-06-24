@@ -351,6 +351,10 @@ func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, e
 	return f.validateStackWarn, f.validateStackErr
 }
 
+func (f *fakeEngine) RewireStack(_ context.Context, _ string, _ types.Confirmer) (bool, string, error) {
+	return false, "", nil
+}
+
 func (f *fakeEngine) RuntimeLockStatus(_ context.Context) (*types.RuntimeLockStatus, error) {
 	if f.err != nil {
 		return nil, f.err

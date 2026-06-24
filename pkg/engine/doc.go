@@ -17,7 +17,7 @@
 //   - [Engine] — read (List, ListStatus, Status, Logs, ResourceSettings,
 //     ViewEnvRedacted, ValidateStack, LogPath), write (Install, Update,
 //     Remove, Restart, Reconfigure, EnsureUserOverride, EnsureUserEnv,
-//     StopAll, Uninstall), settings (Settings, UpdateSettings), lifecycle
+//     RewireStack, StopAll, Uninstall), settings (Settings, UpdateSettings), lifecycle
 //     (Close)
 //   - [ResolveEditorArgv] — pure helper that resolves the user's editor
 //     ($VISUAL → $EDITOR → nano) into a typed, no-shell argv; usable by
