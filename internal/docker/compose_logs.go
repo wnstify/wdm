@@ -160,7 +160,8 @@ func newComposeLogsInvocation(
 		return composeLogsInvocation{}, err
 	}
 
-	overridePath, err := resolveOverridePath(filepath.Dir(normalizedProject.ComposeFile))
+	stackDir := filepath.Dir(normalizedProject.ComposeFile)
+	overridePath, err := resolveOverridePath(stackDir)
 	if err != nil {
 		return composeLogsInvocation{}, err
 	}

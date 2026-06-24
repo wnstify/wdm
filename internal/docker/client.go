@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -279,12 +280,23 @@ func buildComposeConfigCommand(inv composeConfigInvocation) (commandSpec, error)
 		return commandSpec{}, err
 	}
 
+	userArgs, err := userEnvFileArgs(inv.envFile)
+	if err != nil {
+		return commandSpec{}, err
+	}
 	argv := []string{
 		"compose",
 		"--project-directory",
 		projectDir,
 		"-f",
 		composeFile,
+	}
+	if userArgs != nil {
+		// Re-bind base .env then the user overlay (last wins): any --env-file
+		// disables Compose auto-discovery. Absent overlay omits both, keeping the
+		// auto-discovery shape byte-identical.
+		argv = append(argv, "--env-file", inv.envFile)
+		argv = append(argv, userArgs...)
 	}
 	argv = append(argv, overrideFileArgs(inv.overridePath)...)
 	argv = append(argv, "config", "--quiet")
@@ -303,15 +315,19 @@ func buildComposeProjectCommand(
 	if err != nil {
 		return commandSpec{}, err
 	}
+	userArgs, err := userEnvFileArgs(project.EnvFile)
+	if err != nil {
+		return commandSpec{}, err
+	}
 	argv := []string{
 		"compose",
 		"-f",
 		project.ComposeFile,
 		"--env-file",
 		project.EnvFile,
-		"--project-name",
-		project.ProjectName,
 	}
+	argv = append(argv, userArgs...)
+	argv = append(argv, "--project-name", project.ProjectName)
 	argv = append(argv, overrideFileArgs(overridePath)...)
 	argv = append(argv, command)
 	return commandSpec{argv: argv}, nil
@@ -326,6 +342,33 @@ func overrideFileArgs(overridePath string) []string {
 		return nil
 	}
 	return []string{"-f", overridePath}
+}
+
+// userEnvFileArgs returns the additional `--env-file <.env.user>` interpolation
+// pair when the sibling .env.user of envFile exists, else nil. Appended after the
+// base `--env-file <.env>` for Compose last-wins; absent overlay keeps the argv
+// byte-identical to the single-env-file shape. Read-only: a stat error other than
+// not-exist fails closed.
+func userEnvFileArgs(envFile string) ([]string, error) {
+	userEnvPath := filepath.Join(filepath.Dir(envFile), composeUserEnvFilename)
+
+	info, err := os.Stat(userEnvPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, types.WrapError(
+			types.ErrCodeUsageValidation,
+			"user env file cannot be read",
+			"ensure the stack directory and its .env.user file are readable",
+			fmt.Errorf("stat user env file: %w", err),
+		)
+	}
+	if info.IsDir() {
+		return nil, nil
+	}
+
+	return []string{"--env-file", userEnvPath}, nil
 }
 
 func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
@@ -666,7 +709,12 @@ func validateDockerVersionArgv(argv []string) error {
 }
 
 func validateComposeArgv(argv []string) error {
-	argv, err := stripValidatedComposeOverride(argv)
+	argv, err := stripValidatedComposeUserEnv(argv)
+	if err != nil {
+		return err
+	}
+
+	argv, err = stripValidatedComposeOverride(argv)
 	if err != nil {
 		return err
 	}
@@ -684,6 +732,62 @@ func validateComposeArgv(argv []string) error {
 	default:
 		return unsupportedDockerArgv(argv)
 	}
+}
+
+// stripValidatedComposeUserEnv detects the optional second `--env-file
+// <.env.user>` interpolation pair inserted right after the base `--env-file`,
+// validates the path(s) as absolute, and returns argv with the user-env pair
+// removed so the fixed-position allowlist checks see the canonical single-env
+// shape. The base `--env-file` always precedes the user pair, preserving
+// last-wins interpolation. Returns argv unchanged when no user-env pair is
+// present. This runs before [stripValidatedComposeOverride] so override
+// detection sees the already-canonicalized env section.
+func stripValidatedComposeUserEnv(argv []string) ([]string, error) {
+	// Project/logs shape: compose -f <c> --env-file <e> --env-file <u>
+	// --project-name ... ; user-env pair at indices 5,6.
+	if len(argv) >= 8 &&
+		argv[0] == "compose" &&
+		argv[1] == "-f" &&
+		argv[3] == "--env-file" &&
+		argv[5] == "--env-file" {
+		if _, err := validateAbsolutePath(
+			argv[6],
+			"user env file",
+			"pass a non-empty absolute path for the user env file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:5], argv[7:]), nil
+	}
+
+	// Config shape: compose --project-directory <d> -f <c> --env-file <e>
+	// --env-file <u> [-f override] config --quiet ; both env-file pairs at
+	// indices 5..8. Strip both so the config allowlist sees the no-env-file
+	// auto-discovery shape it was written for.
+	if len(argv) >= 10 &&
+		argv[0] == "compose" &&
+		argv[1] == "--project-directory" &&
+		argv[3] == "-f" &&
+		argv[5] == "--env-file" &&
+		argv[7] == "--env-file" {
+		if _, err := validateAbsolutePath(
+			argv[6],
+			"env file",
+			"pass a non-empty absolute path for the base env file",
+		); err != nil {
+			return nil, err
+		}
+		if _, err := validateAbsolutePath(
+			argv[8],
+			"user env file",
+			"pass a non-empty absolute path for the user env file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:5], argv[9:]), nil
+	}
+
+	return argv, nil
 }
 
 // stripValidatedComposeOverride detects an optional content-gated override

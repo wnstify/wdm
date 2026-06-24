@@ -38,6 +38,7 @@ func ValidateComposeConfig(
 type composeConfigInvocation struct {
 	projectDir   string
 	composeFile  string
+	envFile      string
 	overridePath string
 }
 
@@ -57,6 +58,7 @@ func newComposeConfigInvocation(projectDir, composeFile string) (composeConfigIn
 	return composeConfigInvocation{
 		projectDir:   cleanProjectDir,
 		composeFile:  cleanComposeFile,
+		envFile:      filepath.Join(cleanProjectDir, ".env"),
 		overridePath: overridePath,
 	}, nil
 }
