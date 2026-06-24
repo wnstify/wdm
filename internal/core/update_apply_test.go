@@ -287,6 +287,33 @@ func TestUpdate_ApplyBacksUpThenRewrites(t *testing.T) {
 		".env must keep 0o600 after the rewrite")
 }
 
+// TestUpdate_ApplyPreservesUserEnv proves a non-empty user-owned
+// .env.user survives a full apply byte-for-byte. The user file is
+// seeded create-if-missing at install and deliberately excluded from the
+// rewrite write-set, so update — which overwrites every rendered path —
+// must never clobber it. Regression for the env_file-overlay contract:
+// "edits survive wdm update."
+func TestUpdate_ApplyPreservesUserEnv(t *testing.T) {
+	t.Parallel()
+
+	fx := newUpdateApplyFixture(t, updateApplyApp("apply-preserve-userenv-app"), false, nil, nil)
+
+	userEnvPath := filepath.Join(fx.stackPath, ".env.user")
+	const userEnv = "SMTP_HOST=mail.example.com\nSMTP_PASSWORD=user-secret\n"
+	require.NoError(t, os.WriteFile(userEnvPath, []byte(userEnv), 0o600))
+
+	res, err := fx.eng.Update(t.Context(), types.UpdateRequest{AppID: fx.appID}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	after, err := os.ReadFile(userEnvPath)
+	require.NoError(t, err)
+	assert.Equal(t, userEnv, string(after),
+		"wdm update must preserve the user's .env.user byte-for-byte")
+	assert.Equal(t, os.FileMode(0o600), fileModePerm(t, userEnvPath),
+		".env.user must keep 0o600 across update")
+}
+
 // TestUpdate_ApplyReusesNonPlaceholderEnvKeys proves the rewrite reuses
 // every install-written.env key that is neither a catalog placeholder
 // nor a wdm built-in — resource-limit vars and

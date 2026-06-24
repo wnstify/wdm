@@ -12,13 +12,20 @@
 //	-: [ValidateComposeConfig] wraps docker compose config.
 //	-: [ComposeProject], [ComposePull], [ComposeUp],
 //	  [ComposeDown], and [ComposeUpOptions] wrap compose deployment
-//	  (down is always run without -v).
+//	  (down is always run without -v). When the stack dir holds a
+//	  non-empty user-owned docker-compose.override.yml, the wrappers append
+//	  a second -f so native Compose merges the overlay over the wdm base;
+//	  an absent or comments-only override leaves the argv unchanged, and the
+//	  read-only resolver never creates the file.
 //	-: [NetworkSpec] and [EnsureNetworkReport] wrap network
 //	  management with create-if-missing and internal-flag handling.
 //	  A spec carrying an app id stamps the PRD §10 ownership labels
 //	  (wdm.managed=true, wdm.app=<app>) on newly-created networks;
 //	  [RemoveNetworkIfPresent] is the idempotent, not-found-tolerant
-//	  removal used by destructive delete and self-uninstall.
+//	  removal used by install rollback and the label-discovered uninstall
+//	  sweep, while [RemoveNetworkIfManaged] gates compose-derived delete and
+//	  uninstall removal on the wdm.managed=true ownership label so a foreign
+//	  network reached only by name is never deleted.
 //	-: [InspectProjectContainers], [InspectImageDigest], and
 //	  [ListProjectNamedVolumes] wrap inspection for labels, ports, image
 //	  digests, and named volume listing.

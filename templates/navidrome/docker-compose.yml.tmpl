@@ -29,6 +29,9 @@ services:
     image: deluan/navidrome:0.61.2
     container_name: navidrome
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       # /music and /data are fixed container paths matched by the volumes
       # below — never templated.

@@ -46,6 +46,7 @@ services:
       # OPENAI_API_KEY, …) a user uncomments in .env without needing a
       # corresponding `environment:` line here.
       - .env
+      - .env.user
     volumes:
       - openwebui_data:/app/backend/data
     networks:

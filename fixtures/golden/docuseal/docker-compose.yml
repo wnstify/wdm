@@ -31,6 +31,9 @@ services:
     image: postgres:18.4
     container_name: docuseal-postgres
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -94,6 +97,9 @@ services:
     image: docuseal/docuseal:3.0.3
     container_name: docuseal
     restart: unless-stopped
+    # user-editable overlay (added knobs; never regenerated)
+    env_file:
+      - .env.user
     depends_on:
       postgres:
         condition: service_healthy

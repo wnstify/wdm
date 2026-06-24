@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -206,15 +208,15 @@ func buildComposeInvocationCommand(inv Invocation) (cmd commandSpec, handled boo
 	case composeConfigInvocation:
 		cmd, err = buildComposeConfigCommand(typedInv)
 	case composePullInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "pull")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "pull")
 	case composeUpInvocation:
 		cmd, err = buildComposeUpCommand(typedInv)
 	case composeRestartInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "restart")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "restart")
 	case composeStopInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "stop")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "stop")
 	case composeDownInvocation:
-		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, "down")
+		cmd, err = buildComposeProjectCommand(typedInv.composeFile, typedInv.envFile, typedInv.projectName, typedInv.overridePath, "down")
 	case composeDownRemoveImagesInvocation:
 		cmd, err = buildComposeDownRemoveImagesCommand(typedInv)
 	case composeLogsInvocation:
@@ -237,6 +239,8 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 		return commandSpec{argv: []string{"compose", "version"}}, nil
 	case networkInspectInvocation:
 		return buildNetworkInspectCommand(typedInv.name)
+	case networkManagedLabelInvocation:
+		return buildNetworkManagedLabelCommand(typedInv.name)
 	case networkSubnetInvocation:
 		return buildNetworkSubnetCommand(typedInv.name)
 	case networkCreateInvocation:
@@ -276,20 +280,33 @@ func buildComposeConfigCommand(inv composeConfigInvocation) (commandSpec, error)
 		return commandSpec{}, err
 	}
 
-	return commandSpec{
-		argv: []string{
-			"compose",
-			"--project-directory",
-			projectDir,
-			"-f",
-			composeFile,
-			"config",
-			"--quiet",
-		},
-	}, nil
+	userArgs, err := userEnvFileArgs(inv.envFile)
+	if err != nil {
+		return commandSpec{}, err
+	}
+	argv := []string{
+		"compose",
+		"--project-directory",
+		projectDir,
+		"-f",
+		composeFile,
+	}
+	if userArgs != nil {
+		// Re-bind base .env then the user overlay (last wins): any --env-file
+		// disables Compose auto-discovery. Absent overlay omits both, keeping the
+		// auto-discovery shape byte-identical.
+		argv = append(argv, "--env-file", inv.envFile)
+		argv = append(argv, userArgs...)
+	}
+	argv = append(argv, overrideFileArgs(inv.overridePath)...)
+	argv = append(argv, "config", "--quiet")
+
+	return commandSpec{argv: argv}, nil
 }
 
-func buildComposeProjectCommand(composeFile, envFile, projectName, command string) (commandSpec, error) {
+func buildComposeProjectCommand(
+	composeFile, envFile, projectName, overridePath, command string,
+) (commandSpec, error) {
 	project, err := validateComposeProject(ComposeProject{
 		ComposeFile: composeFile,
 		EnvFile:     envFile,
@@ -298,18 +315,60 @@ func buildComposeProjectCommand(composeFile, envFile, projectName, command strin
 	if err != nil {
 		return commandSpec{}, err
 	}
-	return commandSpec{
-		argv: []string{
-			"compose",
-			"-f",
-			project.ComposeFile,
-			"--env-file",
-			project.EnvFile,
-			"--project-name",
-			project.ProjectName,
-			command,
-		},
-	}, nil
+	userArgs, err := userEnvFileArgs(project.EnvFile)
+	if err != nil {
+		return commandSpec{}, err
+	}
+	argv := []string{
+		"compose",
+		"-f",
+		project.ComposeFile,
+		"--env-file",
+		project.EnvFile,
+	}
+	argv = append(argv, userArgs...)
+	argv = append(argv, "--project-name", project.ProjectName)
+	argv = append(argv, overrideFileArgs(overridePath)...)
+	argv = append(argv, command)
+	return commandSpec{argv: argv}, nil
+}
+
+// overrideFileArgs returns the `-f <override>` pair for a non-empty content-gated
+// override path, or nil. Appending the override after the base `-f` keeps native
+// last-write-wins merge order while leaving the base argv prefix byte-identical
+// when no override is present.
+func overrideFileArgs(overridePath string) []string {
+	if overridePath == "" {
+		return nil
+	}
+	return []string{"-f", overridePath}
+}
+
+// userEnvFileArgs returns the additional `--env-file <.env.user>` interpolation
+// pair when the sibling .env.user of envFile exists, else nil. Appended after the
+// base `--env-file <.env>` for Compose last-wins; absent overlay keeps the argv
+// byte-identical to the single-env-file shape. Read-only: a stat error other than
+// not-exist fails closed.
+func userEnvFileArgs(envFile string) ([]string, error) {
+	userEnvPath := filepath.Join(filepath.Dir(envFile), composeUserEnvFilename)
+
+	info, err := os.Stat(userEnvPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, types.WrapError(
+			types.ErrCodeUsageValidation,
+			"user env file cannot be read",
+			"ensure the stack directory and its .env.user file are readable",
+			fmt.Errorf("stat user env file: %w", err),
+		)
+	}
+	if info.IsDir() {
+		return nil, nil
+	}
+
+	return []string{"--env-file", userEnvPath}, nil
 }
 
 func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
@@ -317,6 +376,7 @@ func buildComposeUpCommand(inv composeUpInvocation) (commandSpec, error) {
 		inv.composeFile,
 		inv.envFile,
 		inv.projectName,
+		inv.overridePath,
 		"up",
 	)
 	if err != nil {
@@ -339,6 +399,7 @@ func buildComposeDownRemoveImagesCommand(inv composeDownRemoveImagesInvocation) 
 		inv.composeFile,
 		inv.envFile,
 		inv.projectName,
+		inv.overridePath,
 		"down",
 	)
 	if err != nil {
@@ -353,6 +414,7 @@ func buildComposeLogsCommand(inv composeLogsInvocation) (commandSpec, error) {
 		inv.composeFile,
 		inv.envFile,
 		inv.projectName,
+		inv.overridePath,
 		"logs",
 	)
 	if err != nil {
@@ -390,6 +452,28 @@ func buildNetworkInspectCommand(name string) (commandSpec, error) {
 			"inspect",
 			"--format",
 			"{{.Internal}}",
+			networkName,
+		},
+	}, nil
+}
+
+// networkManagedLabelFormat prints a network's `wdm.managed` label value, or
+// empty when the label is absent, so the ownership gate can compare it to
+// "true" before a compose-derived removal (PRD §10).
+const networkManagedLabelFormat = `{{index .Labels "wdm.managed"}}`
+
+func buildNetworkManagedLabelCommand(name string) (commandSpec, error) {
+	networkName, err := validateNetworkName(name)
+	if err != nil {
+		return commandSpec{}, err
+	}
+
+	return commandSpec{
+		argv: []string{
+			"network",
+			"inspect",
+			"--format",
+			networkManagedLabelFormat,
 			networkName,
 		},
 	}, nil
@@ -625,6 +709,16 @@ func validateDockerVersionArgv(argv []string) error {
 }
 
 func validateComposeArgv(argv []string) error {
+	argv, err := stripValidatedComposeUserEnv(argv)
+	if err != nil {
+		return err
+	}
+
+	argv, err = stripValidatedComposeOverride(argv)
+	if err != nil {
+		return err
+	}
+
 	switch {
 	case len(argv) == 2 && argv[1] == "version":
 		return nil
@@ -638,6 +732,107 @@ func validateComposeArgv(argv []string) error {
 	default:
 		return unsupportedDockerArgv(argv)
 	}
+}
+
+// stripValidatedComposeUserEnv detects the optional second `--env-file
+// <.env.user>` interpolation pair inserted right after the base `--env-file`,
+// validates the path(s) as absolute, and returns argv with the user-env pair
+// removed so the fixed-position allowlist checks see the canonical single-env
+// shape. The base `--env-file` always precedes the user pair, preserving
+// last-wins interpolation. Returns argv unchanged when no user-env pair is
+// present. This runs before [stripValidatedComposeOverride] so override
+// detection sees the already-canonicalized env section.
+func stripValidatedComposeUserEnv(argv []string) ([]string, error) {
+	// Project/logs shape: compose -f <c> --env-file <e> --env-file <u>
+	// --project-name ... ; user-env pair at indices 5,6.
+	if len(argv) >= 8 &&
+		argv[0] == "compose" &&
+		argv[1] == "-f" &&
+		argv[3] == "--env-file" &&
+		argv[5] == "--env-file" {
+		if _, err := validateAbsolutePath(
+			argv[6],
+			"user env file",
+			"pass a non-empty absolute path for the user env file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:5], argv[7:]), nil
+	}
+
+	// Config shape: compose --project-directory <d> -f <c> --env-file <e>
+	// --env-file <u> [-f override] config --quiet ; both env-file pairs at
+	// indices 5..8. Strip both so the config allowlist sees the no-env-file
+	// auto-discovery shape it was written for.
+	if len(argv) >= 10 &&
+		argv[0] == "compose" &&
+		argv[1] == "--project-directory" &&
+		argv[3] == "-f" &&
+		argv[5] == "--env-file" &&
+		argv[7] == "--env-file" {
+		if _, err := validateAbsolutePath(
+			argv[6],
+			"env file",
+			"pass a non-empty absolute path for the base env file",
+		); err != nil {
+			return nil, err
+		}
+		if _, err := validateAbsolutePath(
+			argv[8],
+			"user env file",
+			"pass a non-empty absolute path for the user env file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:5], argv[9:]), nil
+	}
+
+	return argv, nil
+}
+
+// stripValidatedComposeOverride detects an optional content-gated override
+// (`-f <override>`) inserted right after the base `-f <compose>` pair, validates
+// the override path, and returns argv with the pair removed so the fixed-position
+// allowlist checks see the same shape they do without an override. The base
+// compose `-f` always precedes the override `-f`, preserving last-write-wins
+// merge order. Returns argv unchanged when no override pair is present.
+func stripValidatedComposeOverride(argv []string) ([]string, error) {
+	// Project shape: compose -f <c> --env-file <e> --project-name <p>
+	// [-f <override>] <cmd>... ; override pair at indices 7,8.
+	if len(argv) >= 10 &&
+		argv[0] == "compose" &&
+		argv[1] == "-f" &&
+		argv[3] == "--env-file" &&
+		argv[5] == "--project-name" &&
+		argv[7] == "-f" {
+		if _, err := validateAbsolutePath(
+			argv[8],
+			"compose override file",
+			"pass a non-empty absolute path for the compose override file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:7], argv[9:]), nil
+	}
+
+	// Config shape: compose --project-directory <d> -f <c> [-f <override>]
+	// config --quiet ; override pair at indices 5,6.
+	if len(argv) >= 9 &&
+		argv[0] == "compose" &&
+		argv[1] == "--project-directory" &&
+		argv[3] == "-f" &&
+		argv[5] == "-f" {
+		if _, err := validateAbsolutePath(
+			argv[6],
+			"compose override file",
+			"pass a non-empty absolute path for the compose override file",
+		); err != nil {
+			return nil, err
+		}
+		return slices.Concat(argv[:5], argv[7:]), nil
+	}
+
+	return argv, nil
 }
 
 func isComposeConfigArgv(argv []string) bool {
@@ -686,7 +881,9 @@ func validateNetworkArgv(argv []string) error {
 	case len(argv) == 5 &&
 		argv[1] == "inspect" &&
 		argv[2] == "--format" &&
-		(argv[3] == "{{.Internal}}" || argv[3] == networkSubnetInspectFormat):
+		(argv[3] == "{{.Internal}}" ||
+			argv[3] == networkSubnetInspectFormat ||
+			argv[3] == networkManagedLabelFormat):
 		_, err := validateNetworkName(argv[4])
 		return err
 	case len(argv) >= 3 && argv[1] == "create":

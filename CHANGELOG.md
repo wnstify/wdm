@@ -3,6 +3,73 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.2.0 - 2026-06-24
+
+### Added
+- User-editable stacks: every managed stack now carries two user-owned files
+  that wdm creates but never regenerates, so your changes survive `wdm update`.
+  `.env.user` (0600) is a flat env file for adding new variables or overriding
+  non-pinned values; it is merged into every service via `env_file`.
+  `docker-compose.override.yml` (0644) is merged over the wdm base by native
+  Compose, for structural changes such as adding services, volumes, networks,
+  ports, or labels. The mental model is `.env.user` to add knobs,
+  `docker-compose.override.yml` to change or restructure. Compose precedence
+  (`environment:` over `env_file:`) means a value wdm pins in `environment:`
+  (secrets and hardened config) cannot be overridden from `.env.user`; change a
+  pinned value through the override's `environment:` instead.
+- Added `wdm edit <app> --compose|--env [--print-path]`. It resolves the chosen
+  overlay (creating it if absent) and opens it in your editor, honoring
+  `$VISUAL`, then `$EDITOR`, then `nano`, with a typed argv (no shell). The
+  stack is validated on return, warn-but-allow. `--print-path` prints the
+  resolved path and exits for scripting; without it, a non-interactive terminal
+  fails with guidance. `--compose` prints a one-line warning that an override
+  can re-add capabilities, expose ports, or break wdm tracking. Editing
+  `.env.user` on a stack installed before this feature offers a one-time
+  migration that re-renders the compose to activate the overlay, leaving images
+  and secrets unchanged.
+- Added `wdm view-env <app> [--json]`, a read-only view of a stack's effective
+  environment (base `.env` merged with `.env.user`) with every secret value
+  masked by the active redactor. `.env.user` may hold user secrets, so its
+  values are also redacted in logs, validation, and error output.
+- Added `wdm apps redeploy <app> [--yes] [--stack-path <path>]`, which applies
+  your overlay edits by recreating the stack from its on-disk files
+  (`docker compose up -d`): it re-reads the Compose file and your
+  `docker-compose.override.yml` and re-evaluates each service's `.env.user`,
+  recreating only the containers whose effective config changed. Unlike
+  `wdm apps restart` (plain `docker compose restart`, which reuses the running
+  containers without re-reading config and so does not pick up overlay edits),
+  redeploy applies them — without re-rendering templates from the catalog and
+  without changing images, versions, or secrets. The TUI exposes the same
+  action as "Apply overlay changes".
+- Wired the `.env.user` overlay into every curated catalog app: each service in
+  every stack now merges `.env.user` via `env_file`, ordered ahead of any
+  generated-secret env file so the overlay can add knobs without overriding
+  generated secrets.
+
+### Fixed
+- `wdm apps update vaultwarden` no longer fails closed with `placeholder
+  "VAULTWARDEN_DOMAIN" is absent from the existing .env`. The vaultwarden
+  template now persists `VAULTWARDEN_DOMAIN` as its own `.env` key (matching
+  nextcloud, meshcentral, and stoat), so the update precheck can re-resolve it.
+
+### Security
+- Self-update refuses any release that is not strictly newer than the running
+  binary, in both the check and apply paths, so a validly signed but older
+  release can no longer downgrade `wdm` (from-source/unstamped builds keep the
+  prior "differs" behavior).
+- String placeholder values are rejected when they contain control characters
+  (CR/LF/NUL) before they reach the `.env` template, so a `--set` or default
+  value cannot inject extra `KEY=VALUE` lines or override a generated secret.
+- Removing or uninstalling a stack deletes a compose-declared external network
+  only when it carries the `wdm.managed=true` label, so an operator's
+  pre-existing network adopted at install is left in place while `wdm`'s own
+  networks are still removed.
+- `wdm apps logs` scrubs bare secret literals from `.env` out of container log
+  output, mirroring config validation, and fails closed when `.env` is present
+  but unreadable.
+- Catalog bundle extraction fails closed on a duplicate normalized member, so a
+  verified bundle cannot pass checks on one manifest while activating another.
+
 ## v1.1.0 - 2026-06-23
 
 ### Added

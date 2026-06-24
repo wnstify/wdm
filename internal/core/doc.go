@@ -37,7 +37,10 @@
 //     guidance, validates the rendered Compose via `docker compose config
 //     --quiet` against a private tempdir copy before exposure (PRD §13),
 //     and writes docker-compose.yml,.env, and additional_files under the
-//     per-stack flock via internal/state atomic writes. The flock stays
+//     per-stack flock via internal/state atomic writes. It also seeds an
+//     empty user-owned.env.user (0o600) create-if-missing so the
+//     env_file overlay resolves; the seed never truncates an existing file
+//     and wdm update never rewrites it (PRD §3.40). The flock stays
 //     held across confirm → networks → deploy → manifest write →
 //     release. It calls the [types.Confirmer] with the ports, volumes,
 //     and networks the deployment will touch (PRD §17 step 11; a nil

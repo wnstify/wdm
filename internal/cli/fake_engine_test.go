@@ -34,6 +34,7 @@ type fakeEngine struct {
 	listStatusResult    []types.AppRuntimeStatus
 	settings            *types.Settings
 	restartResult       *types.RestartResult
+	redeployResult      *types.RestartResult
 	stopAllResult       *types.StopAllResult
 	uninstallResult     *types.UninstallResult
 	validationResult    *types.ValidationResult
@@ -68,11 +69,36 @@ type fakeEngine struct {
 	removeReq      types.RemoveRequest
 	logsReq        types.LogsRequest
 	statusAppID    string
+	redeployReq    types.RestartRequest
 	reconfigureReq types.ReconfigureRequest
 	resourcesAppID string
 	progressWasNil bool
 	confirmer      types.Confirmer
 	logLineWasNil  bool
+
+	// User-overlay edit/view doubles (T9). The Ensure* methods return a
+	// canned path and record the app id; ViewEnvRedacted returns a canned
+	// redacted view; ValidateStack returns canned warnings/err and records
+	// that it was called, so the edit leaf's post-edit validation is testable.
+	viewEnvResult       *types.ViewEnvResult
+	ensureOverridePath  string
+	ensureEnvPath       string
+	validateStackWarn   []string
+	validateStackErr    error
+	ensureOverrideAppID string
+	ensureEnvAppID      string
+	viewEnvAppID        string
+	validateStackAppID  string
+	validateStackCalled bool
+
+	// RewireStack double (T8 edit-env migration). rewireCalled records that
+	// the edit-env path consulted the migration; rewireAppID the target;
+	// rewireDone/rewireErr the canned (rewired, err) outcome a test drives to
+	// exercise the rewired / declined / hard-error branches.
+	rewireCalled bool
+	rewireAppID  string
+	rewireDone   bool
+	rewireErr    error
 }
 
 // Compile-time proof the double satisfies the full surface; if the
@@ -187,6 +213,21 @@ func (f *fakeEngine) Restart(
 		return nil, f.err
 	}
 	return f.restartResult, nil
+}
+
+func (f *fakeEngine) RedeployStack(
+	_ context.Context,
+	req types.RestartRequest,
+	onProgress engine.ProgressFn,
+	confirmer types.Confirmer,
+) (*types.RestartResult, error) {
+	f.redeployReq = req
+	f.progressWasNil = onProgress == nil
+	f.confirmer = confirmer
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.redeployResult, nil
 }
 
 func (f *fakeEngine) StopAll(
@@ -304,6 +345,42 @@ func (f *fakeEngine) Reconfigure(
 		return nil, f.err
 	}
 	return f.reconfigureResult, nil
+}
+
+func (f *fakeEngine) EnsureUserOverride(_ context.Context, appID string) (string, error) {
+	f.ensureOverrideAppID = appID
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.ensureOverridePath, nil
+}
+
+func (f *fakeEngine) EnsureUserEnv(_ context.Context, appID string) (string, error) {
+	f.ensureEnvAppID = appID
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.ensureEnvPath, nil
+}
+
+func (f *fakeEngine) ViewEnvRedacted(_ context.Context, appID string) (*types.ViewEnvResult, error) {
+	f.viewEnvAppID = appID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.viewEnvResult, nil
+}
+
+func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, error) {
+	f.validateStackAppID = appID
+	f.validateStackCalled = true
+	return f.validateStackWarn, f.validateStackErr
+}
+
+func (f *fakeEngine) RewireStack(_ context.Context, appID string, _ types.Confirmer) (bool, string, error) {
+	f.rewireCalled = true
+	f.rewireAppID = appID
+	return f.rewireDone, "", f.rewireErr
 }
 
 func (f *fakeEngine) RuntimeLockStatus(_ context.Context) (*types.RuntimeLockStatus, error) {
