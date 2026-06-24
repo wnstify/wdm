@@ -73,6 +73,21 @@ type fakeEngine struct {
 	progressWasNil bool
 	confirmer      types.Confirmer
 	logLineWasNil  bool
+
+	// User-overlay edit/view doubles (T9). The Ensure* methods return a
+	// canned path and record the app id; ViewEnvRedacted returns a canned
+	// redacted view; ValidateStack returns canned warnings/err and records
+	// that it was called, so the edit leaf's post-edit validation is testable.
+	viewEnvResult       *types.ViewEnvResult
+	ensureOverridePath  string
+	ensureEnvPath       string
+	validateStackWarn   []string
+	validateStackErr    error
+	ensureOverrideAppID string
+	ensureEnvAppID      string
+	viewEnvAppID        string
+	validateStackAppID  string
+	validateStackCalled bool
 }
 
 // Compile-time proof the double satisfies the full surface; if the
@@ -304,6 +319,36 @@ func (f *fakeEngine) Reconfigure(
 		return nil, f.err
 	}
 	return f.reconfigureResult, nil
+}
+
+func (f *fakeEngine) EnsureUserOverride(_ context.Context, appID string) (string, error) {
+	f.ensureOverrideAppID = appID
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.ensureOverridePath, nil
+}
+
+func (f *fakeEngine) EnsureUserEnv(_ context.Context, appID string) (string, error) {
+	f.ensureEnvAppID = appID
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.ensureEnvPath, nil
+}
+
+func (f *fakeEngine) ViewEnvRedacted(_ context.Context, appID string) (*types.ViewEnvResult, error) {
+	f.viewEnvAppID = appID
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.viewEnvResult, nil
+}
+
+func (f *fakeEngine) ValidateStack(_ context.Context, appID string) ([]string, error) {
+	f.validateStackAppID = appID
+	f.validateStackCalled = true
+	return f.validateStackWarn, f.validateStackErr
 }
 
 func (f *fakeEngine) RuntimeLockStatus(_ context.Context) (*types.RuntimeLockStatus, error) {

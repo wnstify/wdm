@@ -372,6 +372,22 @@ func (c *crossoverCountingEngine) DeleteApp(
 	return nil, nil
 }
 
+func (c *crossoverCountingEngine) EnsureUserOverride(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (c *crossoverCountingEngine) EnsureUserEnv(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (c *crossoverCountingEngine) ViewEnvRedacted(context.Context, string) (*types.ViewEnvResult, error) {
+	return nil, nil
+}
+
+func (c *crossoverCountingEngine) ValidateStack(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 func (c *crossoverCountingEngine) RuntimeLockStatus(context.Context) (*types.RuntimeLockStatus, error) {
 	return nil, nil
 }
