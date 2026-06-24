@@ -398,6 +398,95 @@ func TestInstall_RedactsSensitiveSetValueFromLogSink(t *testing.T) {
 		"an unflagged string --set value must NOT be redacted (proves value path, not name pattern)")
 }
 
+// TestInstall_RedactsVAPIDPrivateKeyFromLogSink is the issue #109 regression:
+// the stoat VAPID_PRIVATE_KEY placeholder is sensitive: true, so a user-supplied
+// value must be value-redacted from logs/view-env/errors, while the paired
+// public VAPID_PUBLIC_KEY (plain string) survives verbatim. Both --set values
+// are BARE tokens (no KEY= context), so only value registration — not the
+// structural name-pattern redactor — can scrub the private key. The unredacted
+// public key proves this is the value path, not a name pattern.
+func TestInstall_RedactsVAPIDPrivateKeyFromLogSink(t *testing.T) {
+	t.Parallel()
+
+	const (
+		privateKeyValue = "Vp9Kx2Lq7Wm4Rt8Bn3Hd6Fy1Gc5Js0Zr"
+		publicKeyValue  = "Pb1Cc3Dd5Ee7Ff9Gg2Hh4Ii6Jj8Kk0Lm"
+	)
+
+	app := appFixture("stoat-vapid-app", freeLocalTCPPort(t))
+	app.ComposeTemplate = "templates/stoat-vapid-app/docker-compose.yml.tmpl"
+	app.EnvTemplate = "templates/stoat-vapid-app/.env.tmpl"
+	app.Placeholders = []catalog.Placeholder{
+		{Name: "VAPID_PRIVATE_KEY", Type: "string", Required: true, Sensitive: true},
+		{Name: "VAPID_PUBLIC_KEY", Type: "string", Required: true},
+	}
+
+	tmp := coreTestTempDir(t)
+	stateDir := filepath.Join(tmp, "state")
+	dataDir := filepath.Join(tmp, "data")
+	stackBase := filepath.Join(tmp, "stacks")
+	require.NoError(t, os.MkdirAll(stackBase, 0o755))
+	configPath := filepath.Join(tmp, "nonexistent.toml")
+
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: "services:\n  app:\n    image: docker.io/example/app:1.0.0\n",
+		app.EnvTemplate:     "VAPID_PRIVATE_KEY={{ .VAPID_PRIVATE_KEY }}\nVAPID_PUBLIC_KEY={{ .VAPID_PUBLIC_KEY }}\n",
+	}, app)
+
+	eng, err := core.New(
+		core.WithStateDir(stateDir),
+		core.WithDataDir(dataDir),
+		core.WithStackBaseDir(stackBase),
+		core.WithConfigPath(configPath),
+		core.WithCatalog(catalogFS),
+		core.WithVersion("9.9.9-test"),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = eng.Close() })
+
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+	// Fail the first docker call (compose config validate) with an error that
+	// echoes both bare tokens, so the secret-aware failure logger must scrub
+	// the registered sensitive private key while leaving the public key intact.
+	fake := &fakeDockerClient{
+		runFn: func(call int, _ docker.Invocation) (docker.CommandResult, error) {
+			if call == 1 {
+				return docker.CommandResult{}, fmt.Errorf(
+					"compose config rejected values %s and %s",
+					privateKeyValue, publicKeyValue,
+				)
+			}
+			return docker.CommandResult{}, nil
+		},
+	}
+	core.SetInstallDockerClientFactoryForTest(eng, fakeDockerClientFactory(fake))
+
+	_, err = eng.Install(
+		t.Context(),
+		types.InstallRequest{
+			AppID: app.AppID,
+			PlaceholderValues: map[string]string{
+				"VAPID_PRIVATE_KEY": privateKeyValue,
+				"VAPID_PUBLIC_KEY":  publicKeyValue,
+			},
+		},
+		nil,
+		&fakeConfirmer{},
+	)
+	require.Error(t, err)
+	require.NoError(t, eng.Close())
+
+	all := string(readLogBytes(t, filepath.Join(stateDir, "logs")))
+	assert.NotContains(t, all, privateKeyValue,
+		"sensitive VAPID_PRIVATE_KEY value must be value-redacted from the log sink")
+	assert.Contains(t, all, security.RedactedPlaceholder,
+		"the scrubbed private key must surface as the redaction placeholder")
+	assert.Contains(t, all, publicKeyValue,
+		"the public VAPID_PUBLIC_KEY value must NOT be redacted (proves value path, not name pattern)")
+}
+
 // TestInstall_FailsClosedOnSensitiveValueInlinedIntoCompose proves the install
 // leak verifier treats a sensitive --set value like a secret: when the compose
 // template inlines the value literally (not via ${VAR}), install refuses before
