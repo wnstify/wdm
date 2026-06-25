@@ -83,13 +83,19 @@ func TestInstall_RedactorScrubsGeneratedSecretsFromLogs(t *testing.T) {
 	// Collect the real generated values straight off the rendered plan, then
 	// bind them into the production redactor + slog redaction handler exactly as
 	// install wires its log sink.
+	// Per-field binding is load-bearing: each placeholder must resolve to the
+	// secret minted for its encoding, not merely to "one of the two" secrets.
+	require.Equal(t, base64Secret, snapshot.ResolvedValues["DB_PASSWORD"],
+		"DB_PASSWORD must resolve to the base64url generated secret")
+	require.Equal(t, hexSecret, snapshot.ResolvedValues["API_TOKEN"],
+		"API_TOKEN must resolve to the hex generated secret")
+
 	secrets := make([]string, 0, len(snapshot.GeneratedFields))
 	for _, field := range snapshot.GeneratedFields {
 		value := snapshot.ResolvedValues[field]
 		require.NotEmpty(t, value, "generated field %q must resolve to a value", field)
 		secrets = append(secrets, value)
 	}
-	require.ElementsMatch(t, []string{base64Secret, hexSecret}, secrets)
 
 	var buf bytes.Buffer
 	logger := slog.New(logging.NewRedactingHandler(
