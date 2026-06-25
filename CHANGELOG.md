@@ -3,6 +3,25 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.2.1 - 2026-06-25
+
+### Fixed
+- `wdm apps update` for baserow, serpbear, and docuseal no longer fails closed
+  with `placeholder "<APP>_DOMAIN" is absent from the existing .env`. Each
+  template now persists its `*_DOMAIN` value as its own `.env` key (it was
+  previously consumed only inside a derived URL line), so the update precheck
+  can re-resolve it — the same class of fix already applied to vaultwarden in
+  v1.2.0. stoat's `VAPID_PRIVATE_KEY`/`VAPID_PUBLIC_KEY` are persisted for the
+  same reason.
+
+### Security
+- The stoat `VAPID_PRIVATE_KEY` placeholder is now marked `sensitive: true`, so
+  a user-supplied web-push private key is value-redacted from logs, `view-env`,
+  and error output and is covered by the non-secret leak-check. It stays a
+  persisted `.env` string (the public key remains plain) so the update precheck
+  still resolves it. The key is empty by default, so no prior release exposed
+  one.
+
 ## v1.2.0 - 2026-06-24
 
 ### Added
