@@ -136,7 +136,11 @@ services:
     volumes:
       # The SOLE Docker-socket mount in this stack, read-only. The proxy filters
       # every call against the flags above; no other service binds the socket.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Source is the active rootless daemon socket ($XDG_RUNTIME_DIR/docker.sock,
+      # e.g. /run/user/<uid>/docker.sock) resolved by wdm at install time (PRD
+      # §11, issue #134); the in-container target stays the proxy's default
+      # /var/run/docker.sock backend.
+      - ${DOCKER_SOCKET_SOURCE}:/var/run/docker.sock:ro
     networks:
       - dockhand-socket
     cap_drop:

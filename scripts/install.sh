@@ -60,6 +60,15 @@ require_platform() {
 	esac
 }
 
+require_rootless_docker() {
+	command -v docker >/dev/null 2>&1 ||
+		die "docker is required and must run rootless; set up rootless Docker first (see scripts/ops/provision-rootless-docker-user.sh)"
+
+	if ! docker info --format '{{json .SecurityOptions}}' 2>/dev/null | grep -q 'name=rootless'; then
+		die "wdm requires rootless Docker; the active daemon is not running rootless (see scripts/ops/provision-rootless-docker-user.sh)"
+	fi
+}
+
 resolve_data_dir() {
 	case "${XDG_DATA_HOME:-}" in
 	/*)
@@ -418,10 +427,12 @@ need_cmd rm
 need_cmd mv
 need_cmd id
 need_cmd uname
+need_cmd grep
 need_any_install_method
 
 require_non_root
 require_platform
+require_rootless_docker
 
 [ -n "${HOME:-}" ] || die "HOME is not set"
 install_dir=${WDM_INSTALL_DIR:-"$HOME/.local/bin"}

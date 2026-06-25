@@ -40,6 +40,14 @@ write_base_fakes() {
 		'if [ "${WDM_INSTALL_TEST_SCENARIO:-}" = "binary_install_failure" ]; then exit 1; fi' \
 		'cp "$1" "$2" || exit 1' \
 		'[ -z "$mode" ] || chmod "$mode" "$2"'
+
+	write_fake "$bin_dir/docker" \
+		'[ "${1:-}" = "info" ] || exit 0' \
+		'if [ "${WDM_INSTALL_TEST_SCENARIO:-}" = "rootful_docker" ]; then' \
+		'	printf "%s\n" "[\"name=seccomp\"]"' \
+		'else' \
+		'	printf "%s\n" "[\"name=rootless\",\"name=seccomp\"]"' \
+		'fi'
 }
 
 write_sha256sum_fake() {
@@ -832,6 +840,9 @@ run_template_failure_rolls_back_case
 run_template_failure_removes_partial_catalog_case
 run_manifest_failure_rolls_back_case
 run_binary_install_failure_preserves_catalog_case
+run_case "rootful docker fails closed" \
+	"rootful_docker" \
+	"wdm requires rootless Docker; the active daemon is not running rootless"
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \
 	"checksum manifest missing required asset: catalog-stable.tar.gz"
