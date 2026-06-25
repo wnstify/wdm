@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-25T09:45:00Z"
+generated_at: "2026-06-25T10:15:00Z"
 
 apps:
 
@@ -4444,6 +4444,15 @@ apps:
             - SETGID
             - DAC_OVERRIDE
             - FOWNER
+      # dragonfly's entrypoint chowns /data then setpriv-drops root to an
+      # unprivileged uid; CHOWN/SETUID/SETGID are required under cap_drop: ALL
+      # or the drop fails with "setresuid failed: Operation not permitted".
+      - service: dragonfly
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
       - service: angie
         capabilities:
           add:

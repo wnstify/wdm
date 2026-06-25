@@ -93,7 +93,9 @@ services:
       wdm.app: "appflowy"
   dragonfly:
     # Dragonfly — Redis-compatible cache, password-protected via --requirepass.
-    # Binds the unprivileged port 6379, needs no added caps.
+    # The image entrypoint chowns /data then setpriv-drops root to an
+    # unprivileged uid, so CHOWN/SETUID/SETGID are required under cap_drop: ALL
+    # (no-new-privileges does not block setresuid when the cap is present).
     image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.36.0
     container_name: appflowy-dragonfly
     restart: unless-stopped
@@ -113,6 +115,10 @@ services:
       - appflowy-cache
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     ipc: private
