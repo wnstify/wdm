@@ -13,6 +13,10 @@
 // the factory is handed off — because PRD §11 gates on invocation context,
 // not the requested action: `sudo wdm --version` must exit 6, not print
 // the version.
+// PRD §11's rootless-daemon refusal runs inside the engine factories via
+// [engine.RequireRootlessDaemon], so every real command and the TUI entry
+// refuse a rootful or indeterminate Docker daemon before the engine is built,
+// while --version/--help never reach the factory and so never contact Docker.
 // This is the only package permitted to call [os.Exit]; every other layer
 // returns typed errors that [exitCodeFor] maps to PRD §27 exit codes. The
 // depguard "cmd-wires-app" rule enforces the import allow list from here
@@ -105,6 +109,9 @@ func defaultRunOptions(args []string) runOptions {
 		stdinIsTTY:  func() bool { return fileIsTerminal(os.Stdin) },
 		stdoutIsTTY: func() bool { return fileIsTerminal(os.Stdout) },
 		newEngine: func() (engine.Engine, error) {
+			if err := engine.RequireRootlessDaemon(context.Background()); err != nil {
+				return nil, err
+			}
 			return engine.New(
 				engine.WithVersion(version),
 				engine.WithFallbackLogWriter(io.Discard),
@@ -112,6 +119,9 @@ func defaultRunOptions(args []string) runOptions {
 			)
 		},
 		newCLIEngine: func() (engine.Engine, error) {
+			if err := engine.RequireRootlessDaemon(context.Background()); err != nil {
+				return nil, err
+			}
 			return engine.New(
 				engine.WithVersion(version),
 				engine.WithFallbackLogWriter(os.Stderr),
