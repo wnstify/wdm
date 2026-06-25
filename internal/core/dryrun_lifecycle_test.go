@@ -457,14 +457,17 @@ func assertInstalledStackOnDisk(t *testing.T, app catalog.App, stackPath string,
 	assert.Equal(t, "install", lock.LastSuccessfulOperation.Kind)
 	assert.Equal(t, "dev", lock.LastSuccessfulOperation.WDMVersion)
 
-	// Every curated app declares resources, so the manifest records the
-	// recommended totals.
-	require.NotNil(t, lock.RecommendedResources,
-		"every curated app declares resources, so recommended totals must be recorded")
-	assert.Positive(t, lock.RecommendedResources.MemoryBytes,
-		"recommended memory total must be the sum of the catalog recommended bands")
-	assert.Positive(t, lock.RecommendedResources.CPUs,
-		"recommended cpu total must be the sum of the catalog recommended bands")
+	// Apps that declare resource bands record the recommended totals in the
+	// manifest. Apps that hardcode deploy limits in their template (e.g.
+	// appflowy) declare no resources[] block and record no totals.
+	if len(app.Resources) > 0 {
+		require.NotNil(t, lock.RecommendedResources,
+			"a resource-declaring app must record recommended totals")
+		assert.Positive(t, lock.RecommendedResources.MemoryBytes,
+			"recommended memory total must be the sum of the catalog recommended bands")
+		assert.Positive(t, lock.RecommendedResources.CPUs,
+			"recommended cpu total must be the sum of the catalog recommended bands")
+	}
 }
 
 // loadRealStableCatalogApps loads and validates the real stable catalog from
@@ -479,7 +482,7 @@ func loadRealStableCatalogApps(t *testing.T) []catalog.App {
 	cat, err := catalog.LoadCatalog(context.Background(), abs)
 	require.NoError(t, err, "load real stable catalog")
 	require.NotNil(t, cat)
-	require.Len(t, cat.Apps, 20, "stable catalog must carry the twenty curated apps")
+	require.Len(t, cat.Apps, 21, "stable catalog must carry the twenty-one curated apps")
 
 	return cat.Apps
 }

@@ -61,6 +61,15 @@ import (
 //     resolves to a suspiciously shallow path. The running binary and its
 //     .previous sibling are removed via os.Remove (single file), never
 //     RemoveAll.
+//   - internal/core/recover.go — the opt-in orphan-recovery removal
+//     (issue #114, `apps install --force`); the os.RemoveAll in
+//     removeOrphanStackDir runs ONLY after state.ClearStaleStackLock proved
+//     the directory is a wdm-owned interrupted-install orphan (its .wdm.lock
+//     was empty/corrupt and removed under a held flock), AND the target is
+//     rejected as an unsafe root, with symlinked ancestors, proven within the
+//     user home via security.EnsureWithinRoot, and rejected when it resolves
+//     to a suspiciously shallow path. A directory with no .wdm.lock is removed
+//     only via os.Remove (empty-dir only), never RemoveAll.
 //
 // way 's forbidigo criterion was ticked at with its
 // own reconciliation note. The scan walks every production (non-_test.go)
@@ -68,6 +77,7 @@ import (
 var removeAllAllowedFiles = map[string]struct{}{
 	filepath.Join("internal", "core", "delete.go"):            {},
 	filepath.Join("internal", "core", "install.go"):           {},
+	filepath.Join("internal", "core", "recover.go"):           {},
 	filepath.Join("internal", "core", "self_update.go"):       {},
 	filepath.Join("internal", "core", "self_update_apply.go"): {},
 	filepath.Join("internal", "core", "uninstall.go"):         {},

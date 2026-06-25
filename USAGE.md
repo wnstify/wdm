@@ -43,6 +43,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 - `--stack-path <path>` — override the default `~/docker/<app>` stack path.
 - `--set KEY=VALUE` — set a catalog placeholder. Repeatable. Secret placeholders are generated and cannot be set.
 - `--yes` — accept safe confirmations. This never accepts the database-risk warning.
+- `--force` — recover a provably-orphaned interrupted install before installing. Use it only when a previous install was hard-killed (for example the machine lost power) and left the stack directory behind, blocking a reinstall. It is fail-closed: it refuses a stack that is still running (use `wdm apps uninstall` instead), refuses a directory whose `.wdm.lock` manifest is valid (the stack is properly managed — uninstall it instead), and refuses a non-`wdm` directory that is not empty. It never deletes named Docker volumes, so your data survives the recovery.
 
 **`wdm apps logs <app-id>`**
 

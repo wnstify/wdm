@@ -50,6 +50,12 @@ type InstallRequest struct {
 
 	// ResourceOverrides provides optional per-service resource overrides.
 	ResourceOverrides []ResourceOverride `json:"resource_overrides,omitempty"`
+
+	// Force opts in to recovering a provably-orphaned interrupted install
+	// before installing: the stack directory left behind by a hard-killed
+	// (SIGKILL) install is removed so a fresh install can proceed. It
+	// refuses a managed or running stack and never deletes named volumes.
+	Force bool `json:"force,omitempty"`
 }
 
 // InstallResult summarizes a completed install. reserved the
