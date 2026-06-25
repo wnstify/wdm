@@ -179,7 +179,10 @@ func FuzzValidateStringPlaceholderValue(f *testing.F) {
 // resolveBoolPlaceholder is the only bool-typed placeholder resolver and no
 // catalog app currently declares one, so it carries no install-path coverage.
 // These cases pin its three arms: default fallback, required-missing refusal,
-// and ParseBool normalization/rejection.
+// and ParseBool normalization/rejection. The "optional and missing" case pins
+// a surprising-but-current behavior: with no request value, no default, and
+// Required=false, the resolver falls through to strconv.ParseBool("") and so
+// always errors, unlike the string/port resolvers which short-circuit to "".
 func TestResolveBoolPlaceholder(t *testing.T) {
 	t.Parallel()
 
@@ -195,6 +198,7 @@ func TestResolveBoolPlaceholder(t *testing.T) {
 		{name: "request value normalized false", value: "FALSE", hasRequestValue: true, want: "false"},
 		{name: "default applied when unset", ph: catalog.Placeholder{Default: true}, hasRequestValue: false, want: "true"},
 		{name: "required and missing", ph: catalog.Placeholder{Name: "FLAG", Required: true}, hasRequestValue: false, wantErr: true},
+		{name: "optional and missing always errors", ph: catalog.Placeholder{Name: "FLAG"}, hasRequestValue: false, wantErr: true},
 		{name: "invalid request value", value: "maybe", hasRequestValue: true, wantErr: true},
 	}
 
@@ -429,6 +433,16 @@ func TestResolveTimezone(t *testing.T) {
 	notExist := func(string) ([]byte, error) { return nil, fs.ErrNotExist }
 	notExistLink := func(string) (string, error) { return "", fs.ErrNotExist }
 	hardErr := errors.New("permission denied")
+	// Fail-loud stubs for deps a case must never reach: if a future control-flow
+	// change calls them, the test fails instead of silently hitting the host FS.
+	failLink := func(string) (string, error) {
+		t.Errorf("ReadLink must not be called")
+		return "", fs.ErrNotExist
+	}
+	failLoad := func(string) (*time.Location, error) {
+		t.Errorf("LoadLocation must not be called")
+		return nil, errors.New("unexpected LoadLocation call")
+	}
 
 	tests := []struct {
 		name    string
@@ -485,17 +499,20 @@ func TestResolveTimezone(t *testing.T) {
 		{
 			name: "etc timezone hard error",
 			deps: timezoneLookupDeps{
-				LookupEnv: func(string) (string, bool) { return "", false },
-				ReadFile:  func(string) ([]byte, error) { return nil, hardErr },
+				LookupEnv:    func(string) (string, bool) { return "", false },
+				ReadFile:     func(string) ([]byte, error) { return nil, hardErr },
+				ReadLink:     failLink,
+				LoadLocation: failLoad,
 			},
 			wantErr: true,
 		},
 		{
 			name: "localtime link hard error",
 			deps: timezoneLookupDeps{
-				LookupEnv: func(string) (string, bool) { return "", false },
-				ReadFile:  notExist,
-				ReadLink:  func(string) (string, error) { return "", hardErr },
+				LookupEnv:    func(string) (string, bool) { return "", false },
+				ReadFile:     notExist,
+				ReadLink:     func(string) (string, error) { return "", hardErr },
+				LoadLocation: failLoad,
 			},
 			wantErr: true,
 		},
