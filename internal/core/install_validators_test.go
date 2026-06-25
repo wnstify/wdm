@@ -178,11 +178,9 @@ func FuzzValidateStringPlaceholderValue(f *testing.F) {
 
 // resolveBoolPlaceholder is the only bool-typed placeholder resolver and no
 // catalog app currently declares one, so it carries no install-path coverage.
-// These cases pin its three arms: default fallback, required-missing refusal,
-// and ParseBool normalization/rejection. The "optional and missing" case pins
-// a surprising-but-current behavior: with no request value, no default, and
-// Required=false, the resolver falls through to strconv.ParseBool("") and so
-// always errors, unlike the string/port resolvers which short-circuit to "".
+// These cases pin its arms: default fallback, required-missing refusal,
+// ParseBool normalization/rejection, and the optional-missing short-circuit to
+// "" (consistent with the string and port resolvers).
 func TestResolveBoolPlaceholder(t *testing.T) {
 	t.Parallel()
 
@@ -198,7 +196,7 @@ func TestResolveBoolPlaceholder(t *testing.T) {
 		{name: "request value normalized false", value: "FALSE", hasRequestValue: true, want: "false"},
 		{name: "default applied when unset", ph: catalog.Placeholder{Default: true}, hasRequestValue: false, want: "true"},
 		{name: "required and missing", ph: catalog.Placeholder{Name: "FLAG", Required: true}, hasRequestValue: false, wantErr: true},
-		{name: "optional and missing always errors", ph: catalog.Placeholder{Name: "FLAG"}, hasRequestValue: false, wantErr: true},
+		{name: "optional and missing short-circuits to empty", ph: catalog.Placeholder{Name: "FLAG"}, hasRequestValue: false, want: ""},
 		{name: "invalid request value", value: "maybe", hasRequestValue: true, wantErr: true},
 	}
 

@@ -557,6 +557,11 @@ func resolveBoolPlaceholder(ph catalog.Placeholder, value string, hasRequestValu
 				"pass true or false",
 				fmt.Errorf("placeholder %q is required", ph.Name),
 			)
+		} else {
+			// Optional bool, no default, no request value: short-circuit to ""
+			// like the string and port resolvers, rather than falling through to
+			// ParseBool("") which would always error.
+			return "", nil
 		}
 	}
 	parsed, err := strconv.ParseBool(value)
