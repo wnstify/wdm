@@ -14,6 +14,12 @@ import (
 	"github.com/wnstify/wdm/pkg/types"
 )
 
+// ResolveDockerSocketSourceForTest exposes the rootless socket-source
+// resolver (issue #134) so its env/uid behavior can be exercised directly.
+func ResolveDockerSocketSourceForTest() string {
+	return resolveDockerSocketSource()
+}
+
 // SetRootlessDaemonClientFactoryForTest overrides the daemon-mode probe's
 // Docker client (PRD §11, issue #135) so the refusal runs against canned
 // `docker info` output without shelling out. It returns a restore func.
