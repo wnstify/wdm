@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.3.1 - 2026-06-25
+
+### Changed
+- Internal-only maintenance release: no change to installed stacks or commands.
+  The install pipeline was refactored into named, individually testable phases
+  behind a thin orchestrator, and install, update, and reconfigure now freeze
+  their plan into a read-only value before the shared write and deploy helpers
+  run. Behavior is unchanged; the change adds substantial unit-test coverage and
+  hardens the code against future regressions.
+
+### Fixed
+- An optional `bool` or `port` placeholder with no default and no supplied value
+  now resolves to an empty value instead of failing, matching the existing
+  string placeholder behavior. No catalog template currently uses such a
+  placeholder, so this affects no installed app today.
+
 ## v1.3.0 - 2026-06-25
 
 ### Added
