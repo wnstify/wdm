@@ -585,6 +585,11 @@ func resolvePortPlaceholder(ph catalog.Placeholder, value string, hasRequestValu
 				"pass a port between 1 and 65535",
 				fmt.Errorf("placeholder %q is required", ph.Name),
 			)
+		} else {
+			// Optional port, no default, no request value: short-circuit to ""
+			// like resolveStringPlaceholder, rather than falling through to
+			// Atoi("") which would always error.
+			return "", nil
 		}
 	}
 	port, err := strconv.Atoi(value)
