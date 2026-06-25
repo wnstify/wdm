@@ -92,10 +92,11 @@ func (e *Engine) recoverOrphanedStack(
 			if errors.Is(err, os.ErrNotExist) {
 				break
 			}
-			return types.NewError(
+			return types.WrapError(
 				types.ErrCodeUsageValidation,
 				"stack path exists and is not a recoverable wdm stack",
-				"this directory has no wdm lock and is not empty; remove it manually if it is safe to delete",
+				"this directory has no wdm lock; if it is safe to delete, remove it manually",
+				err,
 			)
 		}
 		lg.step(ctx, "recover: removed empty non-wdm stack directory")
