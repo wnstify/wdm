@@ -385,8 +385,15 @@ services:
     security_opt:
       - no-new-privileges:true
     ipc: private
+    # The image's nginx + supervisord need writable log/cache/run dirs. tmpfs
+    # is root-owned and shadows the image's pre-baked uid33 mode-640 log files,
+    # so the root master can create fresh logs (no DAC_OVERRIDE/FOWNER needed).
     tmpfs:
       - /tmp:size=256m
+      - /var/log/nginx:size=64m
+      - /var/log/supervisor:size=16m
+      - /var/run:size=16m
+      - /var/cache/nginx:size=64m
     deploy:
       resources:
         limits:
