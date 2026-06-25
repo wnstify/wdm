@@ -224,6 +224,12 @@ func (e *Engine) rewriteReconfigureStack(
 	if err := verifyRenderedNonSecretArtifacts(redactor, secretLiterals, rewrite.rendered, nil); err != nil {
 		return nil, err
 	}
+	// End of the reconfigure plan's producing region: the edited .env and
+	// unchanged on-disk compose are bound and guarded. Freeze so the shared
+	// write and recreate helpers consume a read-only plan (issue #120).
+	if err := rewrite.freeze(); err != nil {
+		return nil, err
+	}
 	return rewrite, nil
 }
 

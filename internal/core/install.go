@@ -83,6 +83,34 @@ type installPlan struct {
 	// catalog-fixed public port (which a localhost-port rewrite cannot make
 	// ephemeral) does not flake on a busy host.
 	probePort func(context.Context, types.PortBinding) error
+
+	// frozen marks the end of the plan's producing region (issue #120). A
+	// plan is mutated only while it is built — placeholders, ports,
+	// resources, secrets, and the render output — after which [freeze] flips
+	// this and every later phase (validate/write/deploy/verify) is expected
+	// to consume the plan read-only. The flag is a boundary marker, not an
+	// enforced lock: it does not block field writes, it fail-closes a
+	// producer that re-runs over an already-built plan. The producing region
+	// binds the redactor over the completed generated-secret set and renders
+	// before freezing, so the load-bearing order (all secrets generated ->
+	// redactor bound -> render -> freeze) holds by construction.
+	frozen bool
+}
+
+// freeze closes the plan's producing region. It is the single transition
+// from "being built" to "read-only"; calling it twice is a producer-logic
+// bug and fails closed rather than silently re-freezing, so a future edit
+// that runs a producer over an already-frozen plan is caught at the seam.
+func (p *installPlan) freeze() error {
+	if p.frozen {
+		return types.NewError(
+			types.ErrCodeGeneric,
+			"install plan was already produced",
+			"this is a wdm bug: report it with the failing operation",
+		)
+	}
+	p.frozen = true
+	return nil
 }
 
 type timezoneLookupDeps struct {
@@ -424,10 +452,13 @@ func (e *Engine) renderInstall(
 	if onProgress != nil {
 		onProgress(types.StepInstallRender, 25, "rendering install")
 	}
-	if err := plan.generateInstallSecrets(e.generateSecret, e.generateArgon2idCredential); err != nil {
+	// Generate-then-bind is one inseparable step: the redactor is built from
+	// the generated-secret set the same call mints, so it cannot be bound
+	// before generation completes (issue #120 ordering invariant).
+	redactor, err := plan.generateSecretsAndBindRedactor(e.generateSecret, e.generateArgon2idCredential)
+	if err != nil {
 		return err
 	}
-	redactor := security.NewActiveRedactor(plan.generatedValues)
 
 	input, err := e.installRenderInput(ctx, plan)
 	if err != nil {
@@ -506,7 +537,13 @@ func (e *Engine) renderInstall(
 	// one-time plaintexts are deliberately excluded here (they never enter
 	// generatedValues), keeping the leak-check scope unchanged for every app.
 	leakSecrets := append(slices.Clone(plan.generatedValues), sensitiveSetValues(plan)...)
-	return verifyRenderedNonSecretArtifacts(redactor, leakSecrets, plan.rendered, guidance)
+	if err := verifyRenderedNonSecretArtifacts(redactor, leakSecrets, plan.rendered, guidance); err != nil {
+		return err
+	}
+	// End of the producing region: secrets are minted, the redactor is
+	// bound, the stack is rendered and leak-checked. Freeze so every later
+	// install phase consumes a read-only plan (issue #120).
+	return plan.freeze()
 }
 
 // buildInstallGuidance assembles the post-install guidance from the
@@ -2000,6 +2037,21 @@ func parseRenderedFileMode(mode string) (os.FileMode, error) {
 // re-derived from the persisted PHC hash, so the operator must record it
 // at install time.
 const generatedCredentialNote = "Store this now — it cannot be recovered."
+
+// generateSecretsAndBindRedactor mints the install's secrets and returns a
+// redactor bound to the resulting generated-secret set in one step, so the
+// redactor is never constructed before generation completes (issue #120).
+// generateInstallSecrets stays the single atomic generation step; this only
+// orders generation and binding inseparably.
+func (p *installPlan) generateSecretsAndBindRedactor(
+	generate func(security.Encoding) (string, error),
+	generateArgon2id func() (plaintext, phc string, err error),
+) (security.Redactor, error) {
+	if err := p.generateInstallSecrets(generate, generateArgon2id); err != nil {
+		return nil, err
+	}
+	return security.NewActiveRedactor(p.generatedValues), nil
+}
 
 func (p *installPlan) generateInstallSecrets(
 	generate func(security.Encoding) (string, error),

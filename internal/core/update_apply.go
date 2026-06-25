@@ -363,6 +363,12 @@ func (e *Engine) rewriteUpdateStack(
 	if err := verifyRenderedNonSecretArtifacts(redactor, secretLiterals, rewrite.rendered, nil); err != nil {
 		return nil, err
 	}
+	// End of the update plan's producing region: secrets resolved, redactor
+	// bound, stack rendered and leak-checked. Freeze so the shared write and
+	// deploy helpers consume a read-only plan (issue #120).
+	if err := rewrite.freeze(); err != nil {
+		return nil, err
+	}
 	return rewrite, nil
 }
 

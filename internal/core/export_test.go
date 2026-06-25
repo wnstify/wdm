@@ -60,6 +60,7 @@ type InstallRenderSnapshotForTest struct {
 	ConfigArtifacts []render.RenderedFile
 	ServiceLabels   map[string]map[string]string
 	Guidance        *types.PostInstallGuidance
+	Frozen          bool
 }
 
 // TimezoneLookupDepsForTest is a test seam for timezone resolution.
@@ -126,6 +127,14 @@ func RenderInstallForTest(
 		return nil, err
 	}
 	return snapshotInstallRenderForTest(plan), nil
+}
+
+// DoubleFreezeInstallPlanForTest exercises the produce-then-freeze guard:
+// it freezes a fresh plan once (must succeed) then again (must fail closed),
+// returning both errors so the test can assert the second is non-nil.
+func DoubleFreezeInstallPlanForTest() (first, second error) {
+	plan := &installPlan{}
+	return plan.freeze(), plan.freeze()
 }
 
 // WriteInstallFilesForTest is a temporary test seam for install artifact writes.
@@ -324,6 +333,7 @@ func snapshotInstallRenderForTest(plan *installPlan) *InstallRenderSnapshotForTe
 		ConfigArtifacts: append([]render.RenderedFile(nil), plan.rendered.ConfigArtifacts...),
 		ServiceLabels:   serviceLabels,
 		Guidance:        plan.guidance,
+		Frozen:          plan.frozen,
 	}
 }
 
