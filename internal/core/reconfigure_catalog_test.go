@@ -48,7 +48,7 @@ func TestReconfigure_StableCatalogInPlaceEditEveryApp(t *testing.T) {
 	cat, err := catalog.LoadCatalog(context.Background(), abs)
 	require.NoError(t, err, "load stable catalog")
 	require.NotNil(t, cat)
-	require.Len(t, cat.Apps, 20, "stable catalog must carry the twenty curated apps")
+	require.Len(t, cat.Apps, 21, "stable catalog must carry the twenty-one curated apps")
 
 	for _, app := range cat.Apps {
 		t.Run(app.AppID, func(t *testing.T) {
@@ -103,7 +103,7 @@ func TestReconfigure_StableCatalogGuardsPassCleanEveryApp(t *testing.T) {
 	cat, err := catalog.LoadCatalog(context.Background(), abs)
 	require.NoError(t, err, "load stable catalog")
 	require.NotNil(t, cat)
-	require.Len(t, cat.Apps, 20, "stable catalog must carry the twenty curated apps")
+	require.Len(t, cat.Apps, 21, "stable catalog must carry the twenty-one curated apps")
 
 	for _, app := range cat.Apps {
 		t.Run(app.AppID, func(t *testing.T) {

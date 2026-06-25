@@ -1,0 +1,490 @@
+# AppFlowy Cloud — Hardened Docker Compose (wdm template, self-hosted workspace)
+# Nine services: a Postgres + pgvector backend, a Dragonfly (Redis-compatible)
+# cache, MinIO object storage, GoTrue auth, the AppFlowy Cloud API/WebSocket
+# server, an AppFlowy worker, the AppFlowy web UI, the admin frontend, and an
+# Angie reverse proxy that fronts them all.
+#
+# Security baseline:
+#   - Every service runs cap_drop: ALL + security_opt: no-new-privileges +
+#     ipc: private. Services keep the image-default user (container root); wdm
+#     has no non-root mandate, and root-inside-the-container lets the image
+#     entrypoints self-chown their named volumes on first boot.
+#   - cap_add only where genuinely needed: postgres adds the init / chown caps
+#     (CHOWN/SETUID/SETGID/DAC_OVERRIDE/FOWNER); angie and appflowy_web add
+#     NET_BIND_SERVICE because cap_drop: ALL strips it even for root and both
+#     bind container port 80. The remaining services add nothing.
+#   - Four-network isolation (wdm creates the internal networks at install):
+#       appflowy-frontend (external) — angie publishes here and reaches the
+#         upstreams; minio joins for presigned-URL serving
+#       appflowy-database (internal) — postgres + the API/worker/auth services
+#       appflowy-cache    (internal) — dragonfly + the API/worker
+#       appflowy-storage  (internal) — minio + the API/worker
+#   - deploy.resources limits incl. pids on every container (hardcoded,
+#     lowered for a small VPS — no wdm resource bands).
+#   - Named volumes for the three stateful services (postgres/dragonfly/minio);
+#     root entrypoints self-chown them on first boot. No host bind data dirs.
+#   - tmpfs kept only where the read-only / temp-path layout needs it.
+#   - Single published port: 127.0.0.1:8025 on angie. Front it with a reverse
+#     proxy for TLS.
+#
+# SMTP and OAuth are intentionally omitted from every service: enable them by
+# adding the relevant keys to ~/docker/appflowy/.env.user (see README).
+# GOTRUE_MAILER_AUTOCONFIRM defaults to true so admin login + signup work with
+# no SMTP configured.
+#
+# wdm renders this template into ~/docker/appflowy/docker-compose.yml at install
+# time and binds ${VAR} references at `docker compose up -d` via
+# --env-file ~/docker/appflowy/.env (mode 0600). angie.conf and nginx.conf are
+# shipped as catalog additional_files, written verbatim alongside the rendered
+# compose + env files.
+
+name: appflowy
+
+services:
+
+  postgres:
+    # Postgres 18 + pgvector. Runs the image's container-root entrypoint, which
+    # self-chowns the named data volume on first boot; CHOWN/SETUID/SETGID let it
+    # drop to postgres for the server process.
+    image: pgvector/pgvector:pg18
+    container_name: appflowy-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      PGPORT: ${POSTGRES_PORT}
+    command: ["postgres", "-c", "port=${POSTGRES_PORT}"]
+    volumes:
+      - appflowy_pg_data:/var/lib/postgresql
+    networks:
+      - appflowy-database
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+      - /run/postgresql:size=16m
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}", "-p", "${POSTGRES_PORT}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2"
+          pids: 200
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+
+  dragonfly:
+    # Dragonfly — Redis-compatible cache, password-protected via --requirepass.
+    # Binds the unprivileged port 6379, needs no added caps.
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.36.0
+    container_name: appflowy-dragonfly
+    restart: unless-stopped
+    command:
+      - --requirepass=${DRAGONFLY_PASSWORD}
+      - --maxmemory=768mb
+      - --logtostdout
+      - --dir=/data
+      - --proactor_threads=2
+    env_file:
+      - .env.user
+    environment:
+      DRAGONFLY_PASSWORD: ${DRAGONFLY_PASSWORD}
+    volumes:
+      - appflowy_dragonfly_data:/data
+    networks:
+      - appflowy-cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'AUTH %s\\r\\nPING\\r\\n' \"$$DRAGONFLY_PASSWORD\" | nc localhost 6379 | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1"
+          pids: 100
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+
+  minio:
+    # MinIO — S3-compatible object storage. Joins the frontend network so angie
+    # can proxy presigned-URL downloads. Self-chowns its named volume.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: appflowy-minio
+    restart: unless-stopped
+    command: server /data
+    env_file:
+      - .env.user
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - appflowy_minio_data:/data
+    networks:
+      - appflowy-storage
+      - appflowy-frontend
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1"
+          pids: 150
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+
+  gotrue:
+    # GoTrue — authentication service. Reads the auth schema on postgres and is
+    # fronted by angie at /gotrue. SMTP + OAuth keys are intentionally absent;
+    # add them via .env.user. GOTRUE_MAILER_AUTOCONFIRM defaults true so login
+    # and signup work with no mail server.
+    image: appflowyinc/gotrue:0.12.0
+    container_name: appflowy-gotrue
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    environment:
+      GOTRUE_DB_DRIVER: postgres
+      DATABASE_URL: ${GOTRUE_DATABASE_URL}
+      PORT: 9999
+      GOTRUE_JWT_SECRET: ${GOTRUE_JWT_SECRET}
+      GOTRUE_JWT_EXP: ${GOTRUE_JWT_EXP}
+      GOTRUE_JWT_ADMIN_GROUP_NAME: supabase_admin
+      GOTRUE_SITE_URL: appflowy-flutter://
+      GOTRUE_URI_ALLOW_LIST: "**"
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+      GOTRUE_ADMIN_EMAIL: ${GOTRUE_ADMIN_EMAIL}
+      GOTRUE_ADMIN_PASSWORD: ${GOTRUE_ADMIN_PASSWORD}
+      GOTRUE_DISABLE_SIGNUP: ${GOTRUE_DISABLE_SIGNUP}
+      GOTRUE_MAILER_AUTOCONFIRM: ${GOTRUE_MAILER_AUTOCONFIRM}
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /gotrue/verify
+      GOTRUE_MAILER_URLPATHS_INVITE: /gotrue/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /gotrue/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /gotrue/verify
+    networks:
+      - appflowy-database
+      - appflowy-frontend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:9999/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1"
+          pids: 100
+        reservations:
+          memory: 64m
+          cpus: "0.25"
+
+  appflowy_cloud:
+    # AppFlowy Cloud — the backend API + WebSocket server. SMTP keys omitted;
+    # add them via .env.user.
+    image: appflowyinc/appflowy_cloud:0.12.0
+    container_name: appflowy-cloud
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    environment:
+      RUST_LOG: ${RUST_LOG}
+      APPFLOWY_ENVIRONMENT: production
+      APPFLOWY_DATABASE_URL: ${APPFLOWY_DATABASE_URL}
+      APPFLOWY_DATABASE_MAX_CONNECTIONS: ${APPFLOWY_DATABASE_MAX_CONNECTIONS}
+      APPFLOWY_REDIS_URI: ${APPFLOWY_REDIS_URI}
+      APPFLOWY_GOTRUE_BASE_URL: ${APPFLOWY_GOTRUE_BASE_URL}
+      APPFLOWY_GOTRUE_JWT_SECRET: ${GOTRUE_JWT_SECRET}
+      APPFLOWY_S3_USE_MINIO: ${APPFLOWY_S3_USE_MINIO}
+      APPFLOWY_S3_MINIO_URL: ${APPFLOWY_S3_MINIO_URL}
+      APPFLOWY_S3_CREATE_BUCKET: ${APPFLOWY_S3_CREATE_BUCKET}
+      APPFLOWY_S3_ACCESS_KEY: ${APPFLOWY_S3_ACCESS_KEY}
+      APPFLOWY_S3_SECRET_KEY: ${APPFLOWY_S3_SECRET_KEY}
+      APPFLOWY_S3_BUCKET: ${APPFLOWY_S3_BUCKET}
+      APPFLOWY_S3_REGION: ${APPFLOWY_S3_REGION}
+      APPFLOWY_S3_PRESIGNED_URL_ENDPOINT: ${APPFLOWY_S3_PRESIGNED_URL_ENDPOINT}
+      APPFLOWY_ACCESS_CONTROL: ${APPFLOWY_ACCESS_CONTROL}
+      APPFLOWY_WEB_URL: ${APPFLOWY_WEB_URL}
+      APPFLOWY_BASE_URL: ${APPFLOWY_BASE_URL}
+    networks:
+      - appflowy-database
+      - appflowy-cache
+      - appflowy-storage
+      - appflowy-frontend
+    depends_on:
+      gotrue:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:8000/api/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2"
+          pids: 300
+        reservations:
+          memory: 256m
+          cpus: "0.25"
+
+  appflowy_worker:
+    # AppFlowy worker — background tasks (imports, etc.). SMTP keys omitted; add
+    # them via .env.user.
+    image: appflowyinc/appflowy_worker:0.12.0
+    container_name: appflowy-worker
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    environment:
+      RUST_LOG: ${RUST_LOG}
+      APPFLOWY_ENVIRONMENT: production
+      APPFLOWY_WORKER_ENVIRONMENT: production
+      APPFLOWY_WORKER_REDIS_URL: ${APPFLOWY_WORKER_REDIS_URL}
+      APPFLOWY_WORKER_DATABASE_URL: ${APPFLOWY_WORKER_DATABASE_URL}
+      APPFLOWY_WORKER_DATABASE_NAME: ${APPFLOWY_WORKER_DATABASE_NAME}
+      APPFLOWY_WORKER_IMPORT_TICK_INTERVAL: 30
+      APPFLOWY_S3_USE_MINIO: ${APPFLOWY_S3_USE_MINIO}
+      APPFLOWY_S3_MINIO_URL: ${APPFLOWY_S3_MINIO_URL}
+      APPFLOWY_S3_ACCESS_KEY: ${APPFLOWY_S3_ACCESS_KEY}
+      APPFLOWY_S3_SECRET_KEY: ${APPFLOWY_S3_SECRET_KEY}
+      APPFLOWY_S3_BUCKET: ${APPFLOWY_S3_BUCKET}
+      APPFLOWY_S3_REGION: ${APPFLOWY_S3_REGION}
+    networks:
+      - appflowy-database
+      - appflowy-cache
+      - appflowy-storage
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1"
+          pids: 200
+        reservations:
+          memory: 128m
+          cpus: "0.25"
+
+  appflowy_web:
+    # AppFlowy web UI. The bundled nginx.conf (additional_files) keeps the temp
+    # paths under /tmp; the container-root entrypoint adjusts its served assets
+    # on first boot. NET_BIND_SERVICE is needed because cap_drop: ALL strips it
+    # and the server binds container port 80.
+    image: appflowyinc/appflowy_web:0.10.5
+    container_name: appflowy-web
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    environment:
+      APPFLOWY_BASE_URL: ${APPFLOWY_BASE_URL}
+      APPFLOWY_GOTRUE_BASE_URL: ${API_EXTERNAL_URL}
+      APPFLOWY_WS_BASE_URL: ${APPFLOWY_WEBSOCKET_BASE_URL}
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - appflowy-frontend
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "1"
+          pids: 100
+        reservations:
+          memory: 64m
+          cpus: "0.25"
+
+  admin_frontend:
+    # Admin dashboard, fronted by angie at /console.
+    image: appflowyinc/admin_frontend:0.12.0
+    container_name: appflowy-admin
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    environment:
+      APPFLOWY_GOTRUE_BASE_URL: ${API_EXTERNAL_URL}
+      APPFLOWY_BASE_URL: ${APPFLOWY_BASE_URL}
+    networks:
+      - appflowy-frontend
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "1"
+          pids: 100
+        reservations:
+          memory: 64m
+          cpus: "0.25"
+
+  angie:
+    # Angie — the internal reverse proxy (nginx-compatible) that fronts every
+    # upstream and publishes the single localhost port. NET_BIND_SERVICE is
+    # needed because cap_drop: ALL strips it and angie binds container port 80.
+    image: docker.angie.software/angie:1.11.3-alpine
+    container_name: appflowy-angie
+    restart: unless-stopped
+    env_file:
+      - .env.user
+    ports:
+      - "127.0.0.1:8025:80"  # localhost only — front with a reverse proxy
+    volumes:
+      - ./angie.conf:/etc/angie/angie.conf:ro
+    networks:
+      - appflowy-frontend
+    depends_on:
+      appflowy_cloud:
+        condition: service_healthy
+      appflowy_web:
+        condition: service_started
+      gotrue:
+        condition: service_healthy
+      admin_frontend:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ipc: private
+    tmpfs:
+      - /tmp:size=256m
+      - /var/cache/angie:size=128m
+      - /var/log/angie:size=64m
+      - /run:size=16m
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://127.0.0.1:80/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "1"
+          pids: 100
+        reservations:
+          memory: 32m
+          cpus: "0.25"
+
+networks:
+  # Front: angie publishes here and reaches the upstreams; minio joins for
+  # presigned-URL serving. wdm creates this without --internal.
+  appflowy-frontend:
+    external: true
+  # Backend DB: postgres + the API/worker/auth services. wdm creates this with
+  # --internal at install time.
+  appflowy-database:
+    external: true
+  # Cache: dragonfly + the API/worker. Created --internal.
+  appflowy-cache:
+    external: true
+  # Storage: minio + the API/worker. Created --internal.
+  appflowy-storage:
+    external: true
+
+volumes:
+  # Postgres data dir. Named volume so wdm need not pre-create a host bind dir;
+  # the container-root entrypoint self-chowns it on init. Preserved on remove
+  # (wdm never runs `docker compose down -v`).
+  appflowy_pg_data:
+  # Dragonfly persistence (cache snapshots).
+  appflowy_dragonfly_data:
+  # MinIO object storage.
+  appflowy_minio_data:
