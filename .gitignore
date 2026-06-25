@@ -55,11 +55,8 @@ CLAUDE.md
 PHASE*.md
 p*-execution.md
 v1*.md
-docs/golang-skills.md
-docs/dev-log.md
-docs/archive/
-docs/engineering/
-docs/evidence/
+docs/
+CONTEXT.md
 
 # graphify knowledge-graph output
 graphify-out/
