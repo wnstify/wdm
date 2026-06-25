@@ -355,9 +355,10 @@ services:
       wdm.app: "appflowy"
   appflowy_web:
     # AppFlowy web UI. The bundled nginx.conf (additional_files) keeps the temp
-    # paths under /tmp; the container-root entrypoint adjusts its served assets
-    # on first boot. NET_BIND_SERVICE is needed because cap_drop: ALL strips it
-    # and the server binds container port 80.
+    # paths under /tmp. The nginx master runs container root: it chowns the /tmp
+    # buffer dirs to the worker uid and setuid-drops the workers, so it needs
+    # CHOWN/SETUID/SETGID under cap_drop: ALL, plus NET_BIND_SERVICE because the
+    # server binds container port 80.
     image: appflowyinc/appflowy_web:0.10.5
     container_name: appflowy-web
     restart: unless-stopped
@@ -377,6 +378,9 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
       - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
@@ -431,8 +435,10 @@ services:
       wdm.app: "appflowy"
   angie:
     # Angie — the internal reverse proxy (nginx-compatible) that fronts every
-    # upstream and publishes the single localhost port. NET_BIND_SERVICE is
-    # needed because cap_drop: ALL strips it and angie binds container port 80.
+    # upstream and publishes the single localhost port. The master runs
+    # container root: it chowns the /tmp buffer dirs to the worker uid and
+    # setuid-drops the workers, so it needs CHOWN/SETUID/SETGID under
+    # cap_drop: ALL, plus NET_BIND_SERVICE because angie binds container port 80.
     image: docker.angie.software/angie:1.11.3-alpine
     container_name: appflowy-angie
     restart: unless-stopped
@@ -458,6 +464,9 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
       - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true

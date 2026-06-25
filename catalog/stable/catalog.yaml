@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-25T10:15:00Z"
+generated_at: "2026-06-25T10:45:00Z"
 
 apps:
 
@@ -4453,13 +4453,23 @@ apps:
             - CHOWN
             - SETUID
             - SETGID
+      # angie + appflowy_web run their proxy master as container root: each
+      # chowns its /tmp buffer dirs to the worker uid and setuid-drops the
+      # workers, so CHOWN/SETUID/SETGID are required under cap_drop: ALL, plus
+      # NET_BIND_SERVICE for binding container port 80.
       - service: angie
         capabilities:
           add:
+            - CHOWN
+            - SETUID
+            - SETGID
             - NET_BIND_SERVICE
       - service: appflowy_web
         capabilities:
           add:
+            - CHOWN
+            - SETUID
+            - SETGID
             - NET_BIND_SERVICE
 
     networks:
