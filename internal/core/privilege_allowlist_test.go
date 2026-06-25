@@ -584,6 +584,7 @@ func TestContainerPrivilegeDisclosure(t *testing.T) {
 			"zulip":       {"postgres", "zulip", "NET_BIND_SERVICE", "CHOWN", "SETGID", "SETUID", "DAC_OVERRIDE", "FOWNER"},
 			"dockhand":    {"postgresql", "dockhand", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"},
 			"stoat":       {"database", "redis", "rabbit", "garage", "caddy", "CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID", "NET_BIND_SERVICE"},
+			"appflowy":    {"postgres", "dragonfly", "angie", "appflowy_web", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER", "NET_BIND_SERVICE"},
 		}
 		for _, app := range loadRealStableCatalogApps(t) {
 			lines := core.ContainerPrivilegeDisclosureLinesForTest(app)
