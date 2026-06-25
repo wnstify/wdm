@@ -559,7 +559,7 @@ func resolveBoolPlaceholder(ph catalog.Placeholder, value string, hasRequestValu
 			)
 		} else {
 			// Optional bool, no default, no request value: short-circuit to ""
-			// like the string and port resolvers, rather than falling through to
+			// like resolveStringPlaceholder, rather than falling through to
 			// ParseBool("") which would always error.
 			return "", nil
 		}
