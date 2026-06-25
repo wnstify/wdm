@@ -28,9 +28,9 @@ import (
 //     (E1); the os.RemoveAll runs only after resolveDeleteTarget proves
 //     symlink-resolved containment under the stack base via
 //     security.EnsureWithinRoot.
-//   - internal/core/install.go — the private 0o700 compose-validation
-//     tempdir cleanup (a deferred best-effort RemoveAll of a workspace
-//     the engine itself created under os.MkdirTemp).
+//   - internal/core/install_phase_validate.go — the private 0o700
+//     compose-validation tempdir cleanup (a deferred best-effort RemoveAll
+//     of a workspace the engine itself created under os.MkdirTemp).
 //   - internal/state/backup.go — the backupRemoveAll = os.RemoveAll seam
 //     and its snapshot-scoped uses (empty-snapshot cleanup, retention
 //     prune, restore-path cleanup), all scoped to the stack-local
@@ -75,14 +75,14 @@ import (
 // own reconciliation note. The scan walks every production (non-_test.go)
 // file under internal/, pkg/, and cmd/.
 var removeAllAllowedFiles = map[string]struct{}{
-	filepath.Join("internal", "core", "delete.go"):            {},
-	filepath.Join("internal", "core", "install.go"):           {},
-	filepath.Join("internal", "core", "recover.go"):           {},
-	filepath.Join("internal", "core", "self_update.go"):       {},
-	filepath.Join("internal", "core", "self_update_apply.go"): {},
-	filepath.Join("internal", "core", "uninstall.go"):         {},
-	filepath.Join("internal", "state", "backup.go"):           {},
-	filepath.Join("internal", "state", "catalog_bundle.go"):   {},
+	filepath.Join("internal", "core", "delete.go"):                 {},
+	filepath.Join("internal", "core", "install_phase_validate.go"): {},
+	filepath.Join("internal", "core", "recover.go"):                {},
+	filepath.Join("internal", "core", "self_update.go"):            {},
+	filepath.Join("internal", "core", "self_update_apply.go"):      {},
+	filepath.Join("internal", "core", "uninstall.go"):              {},
+	filepath.Join("internal", "state", "backup.go"):                {},
+	filepath.Join("internal", "state", "catalog_bundle.go"):        {},
 }
 
 // TestProductionSourcesRestrictRemoveAllToAllowlist walks every production

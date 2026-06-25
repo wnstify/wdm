@@ -11,6 +11,7 @@ import (
 	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/internal/render"
 	"github.com/wnstify/wdm/internal/security"
+	"github.com/wnstify/wdm/pkg/types"
 )
 
 // stagingProbeClient is a fake docker.Client whose Run inspects the
@@ -144,6 +145,23 @@ func TestValidateRenderedComposeConfig_StagesEmptyEnvUser(t *testing.T) {
 		client.envUserMode,
 		"the staged .env.user must be 0600",
 	)
+}
+
+// TestValidateRenderedComposeConfig_NilRenderedFailsClosed proves the
+// validate phase refuses an unrendered plan: a nil rendered stack returns a
+// usage-validation error and never invokes the docker client, so a future
+// edit that reaches validation before render is caught at the seam.
+func TestValidateRenderedComposeConfig_NilRenderedFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	client := &stagingProbeClient{t: t}
+	err := validateRenderedComposeConfig(t.Context(), client, nil)
+	require.Error(t, err)
+
+	var typedErr *types.Error
+	require.ErrorAs(t, err, &typedErr)
+	require.Equal(t, types.ErrCodeUsageValidation, typedErr.Code)
+	require.Equal(t, 0, client.runCalls, "validation must not invoke the docker client for a nil rendered stack")
 }
 
 // TestValidateRenderedComposeConfig_RemovesStagedArtifactsOnReturn proves
