@@ -216,7 +216,6 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 			lg.failure(ctx, plan.app.AppID, plan.stackPath, "recover_orphaned_stack", err)
 			return nil, err
 		}
-		lg.step(ctx, "orphaned stack recovered")
 	}
 
 	stackHandle, err := writeInstallFiles(ctx, plan, onProgress)
