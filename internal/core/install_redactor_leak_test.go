@@ -115,4 +115,20 @@ func TestInstall_RedactorScrubsGeneratedSecretsFromLogs(t *testing.T) {
 	assert.NotContains(t, out, base64Secret, "base64url generated secret leaked into log output")
 	assert.NotContains(t, out, hexSecret, "hex generated secret leaked into log output")
 	assert.Contains(t, out, security.RedactedPlaceholder, "scrubbed secrets must surface as the redaction placeholder")
+
+	// Issue #120 produce-then-freeze: the real render producer must leave the
+	// plan frozen, so every later install phase consumes a read-only plan.
+	assert.True(t, snapshot.Frozen, "rendered install plan must be frozen after its producing region")
+}
+
+// TestInstallPlan_FreezeFailsClosedOnSecondCall is the issue #120 guard that
+// the produce-then-freeze transition is single-shot: a future edit that runs a
+// producer over an already-frozen plan is caught at the freeze seam rather than
+// silently mutating a plan a later phase treats as read-only.
+func TestInstallPlan_FreezeFailsClosedOnSecondCall(t *testing.T) {
+	t.Parallel()
+
+	first, second := core.DoubleFreezeInstallPlanForTest()
+	require.NoError(t, first, "first freeze of a fresh plan must succeed")
+	require.Error(t, second, "freezing an already-produced plan must fail closed")
 }
