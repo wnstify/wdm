@@ -34,7 +34,7 @@ The database, cache, and storage networks are created `--internal`, so postgres,
 
 The admin account is `admin@<your-domain>`. The generated password is stored in `~/docker/appflowy/.env` (`GOTRUE_ADMIN_PASSWORD`) — read it there and sign in through the admin console at `/console`.
 
-`GOTRUE_MAILER_AUTOCONFIRM` defaults to `true`, so admin login and new-user signup work with **no SMTP server configured**. New accounts are confirmed automatically.
+No SMTP server is required: the admin account is seeded directly from the rendered `.env`, and `GOTRUE_MAILER_AUTOCONFIRM` is on by default, so the account is usable without an email round-trip.
 
 ## User overlay extras (`.env.user`)
 
@@ -63,8 +63,6 @@ APPFLOWY_MAILER_SMTP_PASSWORD=...
 APPFLOWY_MAILER_SMTP_TLS_KIND=wrapper             # wrapper (465) or starttls (587)
 ```
 
-With SMTP configured you may also set `GOTRUE_MAILER_AUTOCONFIRM=false` to require email confirmation on signup.
-
 ### Enable OAuth providers
 
 Set the matching `_ENABLED` flag to `true` and supply the provider credentials:
@@ -86,10 +84,8 @@ GOTRUE_EXTERNAL_DISCORD_SECRET=...
 GOTRUE_EXTERNAL_DISCORD_REDIRECT_URI=https://<your-domain>/gotrue/callback
 ```
 
-### Open signup
+## Managed auth defaults
 
-Signup is disabled by default (`GOTRUE_DISABLE_SIGNUP=true` in the rendered `.env`). To allow open registration, add to `.env.user`:
+`GOTRUE_DISABLE_SIGNUP=true` and `GOTRUE_MAILER_AUTOCONFIRM=true` are set in the rendered `docker-compose.yml` `environment:` block, so this deployment is admin-oriented: public registration is off and accounts are usable without email confirmation. Add users from the admin console at `/console` rather than opening registration.
 
-```sh
-GOTRUE_DISABLE_SIGNUP=false
-```
+Unlike the SMTP and OAuth keys above, these two are **not** `.env.user`-overridable: Docker Compose's `environment:` block takes precedence over `env_file:`, so an overlay value would be ignored. Changing them is a managed-template decision, not a user overlay.
