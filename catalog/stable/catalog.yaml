@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-24T18:00:00Z"
+generated_at: "2026-06-24T21:00:00Z"
 
 apps:
 
@@ -3611,12 +3611,14 @@ apps:
 
       # Web push VAPID keypair (REVOLT__PUSHD__VAPID__*). V1 SKIP: web push needs
       # an EC P-256 keypair wdm cannot mint, so both are left empty — pushd starts
-      # with browser push disabled. Documented in the first-run notes. Not
-      # secrets (wdm does not generate them).
+      # with browser push disabled. Documented in the first-run notes. wdm does
+      # not generate them; the private key is sensitive: true so a user-supplied
+      # value is redacted from logs/view-env/errors, the public key stays plain.
       - name: VAPID_PRIVATE_KEY
         type: string
         required: false
         default: ""
+        sensitive: true
       - name: VAPID_PUBLIC_KEY
         type: string
         required: false
