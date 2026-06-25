@@ -28,7 +28,7 @@
 
 schema_version: 2
 channel: stable
-generated_at: "2026-06-24T21:00:00Z"
+generated_at: "2026-06-25T11:30:00Z"
 
 apps:
 
@@ -4275,3 +4275,259 @@ apps:
       notes:
         - "Set the GitHub App webhook URL to https://<your-public-host>/github/webhook so GitHub can deliver pull-request events."
         - "Using your own reverse proxy? Point it to http://127.0.0.1:8000"
+
+  # ============================================================================
+  # AppFlowy — self-hosted Notion alternative (notes, wikis, projects,
+  # databases). Nine services: a Postgres 18 + pgvector backend, a Dragonfly
+  # (Redis-compatible) cache, MinIO object storage, GoTrue auth, the AppFlowy
+  # Cloud API/WebSocket server, an AppFlowy worker, the AppFlowy web UI, the
+  # admin frontend, and an Angie reverse proxy that fronts them all. Every
+  # service runs the image-default user (container root) under cap_drop: ALL +
+  # no-new-privileges + ipc: private; postgres adds the init/chown caps and
+  # angie + appflowy_web add NET_BIND_SERVICE (both bind container port 80).
+  # Four-network split isolates the front from the --internal database, cache,
+  # and storage networks. SMTP + OAuth are omitted from the rendered config and
+  # enabled via ~/docker/appflowy/.env.user; GOTRUE_MAILER_AUTOCONFIRM defaults
+  # true so login + signup work with no mail server. Only angie publishes a
+  # port, on localhost (front it with a reverse proxy).
+  # ============================================================================
+  - app_id: appflowy
+    name: AppFlowy
+    summary: Self-hosted workspace for notes, wikis, projects, and databases.
+    description: |
+      Open-source workspace for notes, wikis, projects, and databases — a
+      self-hosted alternative to Notion. This template runs the full AppFlowy
+      Cloud backend so the desktop, mobile, and web clients sync to your own
+      server. Nine containers make up the stack: a Postgres 18 + pgvector
+      backend, a Dragonfly Redis-compatible cache, MinIO object storage for
+      attachments, the GoTrue authentication service, the AppFlowy Cloud API +
+      WebSocket server, an AppFlowy worker for background tasks, the web UI, the
+      admin console, and an Angie reverse proxy that fronts every upstream. The
+      database, cache, and storage networks are created --internal, so Postgres,
+      Dragonfly, and MinIO have no internet egress. Only Angie publishes a port,
+      on localhost — front it with a reverse proxy that terminates TLS and
+      forwards WebSocket upgrades on /ws. The admin account is admin@<domain>;
+      the generated password is stored in ~/docker/appflowy/.env
+      (GOTRUE_ADMIN_PASSWORD). SMTP and OAuth are omitted from the rendered
+      config and enabled by adding keys to ~/docker/appflowy/.env.user;
+      GOTRUE_MAILER_AUTOCONFIRM defaults to true so login and signup work with
+      no mail server configured.
+    template_name: appflowy
+    template_version: "2026-06-25"
+    compose_template: templates/appflowy/docker-compose.yml.tmpl
+    env_template: templates/appflowy/.env.tmpl
+
+    supported_versions:
+      docker: ">=20.10"
+      compose: ">=2.0"
+
+    placeholders:
+      # Public domain. Flattened into every public URL (base/web/websocket/
+      # gotrue/presigned) and the admin email in .env.tmpl, since the --env-file
+      # loader does no recursive ${VAR} interpolation.
+      - name: DOMAIN
+        type: domain
+        required: true
+
+      # Timezone — empty triggers wdm system lookup.
+      - name: TZ
+        type: timezone
+        required: false
+
+      # Postgres password — used by the postgres entrypoint on first-run init and
+      # embedded in the flattened DB connection strings. base64url so it carries
+      # no shell- or URL-special characters in the connection URI.
+      # regenerable=false: rotation requires ALTER USER inside the container.
+      - name: POSTGRES_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # Dragonfly (Redis-compatible) password — embedded in the flattened redis
+      # URIs the API and worker use. base64url for URI-safe characters.
+      # regenerable=false: rotation needs a coordinated restart.
+      - name: DRAGONFLY_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # MinIO root password — also the S3 secret key. base64url for URI-safe
+      # characters. regenerable=false: rotation would orphan stored objects'
+      # access path until every consumer is updated together.
+      - name: MINIO_ROOT_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # GoTrue JWT secret — MUST match across gotrue and appflowy_cloud (the
+      # template wires both from this one value). regenerable=false: rotating it
+      # invalidates every issued session token.
+      - name: GOTRUE_JWT_SECRET
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+      # GoTrue admin password — seeds the admin@<domain> account; plaintext by
+      # design (GoTrue reads it directly to provision the account).
+      # regenerable=false: rotating it here does not change the already-seeded
+      # account, so wdm reuses the existing value from .env on update.
+      - name: GOTRUE_ADMIN_PASSWORD
+        type: secret
+        required: true
+        encoding: base64url
+        regenerable: false
+
+    ports:
+      # Web UI + API via angie — localhost only (no public port; front with a
+      # reverse proxy). All other service ports stay on the internal networks.
+      - service: angie
+        container: 80
+        host: 8025
+
+    image_pins:
+      # The Compose template references each image by tag only (repo norm); the
+      # @sha256 digests are pinned here in the catalog. Tags stay in parity with
+      # the template.
+      - service: postgres
+        image: pgvector/pgvector
+        tag: pg18
+        digest: sha256:3c37093adf11a0b7188081df5b6af115a5c096a694021b4114e8e352d2e85d97
+      - service: dragonfly
+        image: docker.dragonflydb.io/dragonflydb/dragonfly
+        tag: v1.36.0
+        digest: sha256:af221b68138afb0b0238401c335493cfc2b060d577c5d6c018ddf6a29d3119f9
+      - service: minio
+        image: minio/minio
+        tag: RELEASE.2025-09-07T16-13-09Z
+        digest: sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+      - service: gotrue
+        image: appflowyinc/gotrue
+        tag: 0.12.0
+        digest: sha256:306c5d6b40aa595111d6b729c96aa5a260b1a525a3e46b1d8be0462cbc07db80
+      - service: appflowy_cloud
+        image: appflowyinc/appflowy_cloud
+        tag: 0.12.0
+        digest: sha256:d8c82089cc51115dea3f148278acd240a19cca5050d5868862b74a2ab04f00ec
+      - service: appflowy_worker
+        image: appflowyinc/appflowy_worker
+        tag: 0.12.0
+        digest: sha256:eca5db527c5a15b1d0e860f1807d9b9431f5b0149677c29d3fa233fcedd58507
+      - service: appflowy_web
+        image: appflowyinc/appflowy_web
+        tag: 0.10.5
+        digest: sha256:c519ac5b95624647b34a1bc14d26586f3dc2f8309ce547ad61cbce7d118f43e9
+      - service: admin_frontend
+        image: appflowyinc/admin_frontend
+        tag: 0.12.0
+        digest: sha256:592bd5400d841a8dc10300bd0a81912ea90480dc42374a28c05dd256fb6c50e9
+      - service: angie
+        image: docker.angie.software/angie
+        tag: 1.11.3-alpine
+        digest: sha256:1dab21d9311c3a2d97e90276a69fe94218c3f3cf1bf9696ea0dbc093dd93fc44
+
+    # PRD §12.2: the capabilities each service re-adds above the cap_drop: ALL
+    # baseline, mirrored exactly from the Compose template (parity check C).
+    # postgres adds the five init / privilege-drop caps; angie and appflowy_web
+    # add NET_BIND_SERVICE because cap_drop: ALL strips it even for container
+    # root and both bind container port 80. Every other service adds nothing and
+    # declares no entry — all caps stay dropped. No NET_ADMIN / NET_RAW / SYS_*.
+    service_hardening:
+      - service: postgres
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - DAC_OVERRIDE
+            - FOWNER
+      # dragonfly's entrypoint chowns /data then setpriv-drops root to an
+      # unprivileged uid; CHOWN/SETUID/SETGID are required under cap_drop: ALL
+      # or the drop fails with "setresuid failed: Operation not permitted".
+      - service: dragonfly
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+      # angie + appflowy_web run their proxy master as container root: each
+      # chowns its /tmp buffer dirs to the worker uid and setuid-drops the
+      # workers, so CHOWN/SETUID/SETGID are required under cap_drop: ALL, plus
+      # NET_BIND_SERVICE for binding container port 80.
+      - service: angie
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - NET_BIND_SERVICE
+      - service: appflowy_web
+        capabilities:
+          add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            - NET_BIND_SERVICE
+
+    networks:
+      # Front: angie publishes here and reaches the upstreams; minio joins for
+      # presigned-URL serving.
+      - name: appflowy-frontend
+        internal: false
+      # Backend DB: postgres + the API/worker/auth services, no internet egress.
+      - name: appflowy-database
+        internal: true
+      # Cache: dragonfly + the API/worker, no internet egress.
+      - name: appflowy-cache
+        internal: true
+      # Storage: minio + the API/worker, no internet egress.
+      - name: appflowy-storage
+        internal: true
+
+    additional_files:
+      # angie.conf is the reverse-proxy config for the zero-FQDN-baked Angie
+      # front (it uses $host and container-name upstreams). mode 0644: no secret,
+      # passes the rendered-non-secret-artifact scan. The mount field names the
+      # exact bind the Compose template declares so render verifies it (never
+      # injects).
+      - src: angie.conf
+        dest: angie.conf
+        mode: "0644"
+        mount: ./angie.conf:/etc/angie/angie.conf:ro
+      # nginx.conf is the web-UI server config (temp paths under /tmp for the
+      # read-only-friendly layout). mode 0644: no secret.
+      - src: nginx.conf
+        dest: nginx.conf
+        mode: "0644"
+        mount: ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+    # PRD §20: stack contains a Postgres instance the user owns (database tag —
+    # triggers the warning + explicit --accept-database-risk confirmation), and
+    # the nine-service split with the four-network topology and the staged
+    # health-gated startup is non-trivial coordination (complex tag).
+    risk_classification:
+      - database
+      - complex
+
+    local_target_url_template: "http://127.0.0.1:8025"
+
+    # The admin login, the autoconfirm default, and the reverse-proxy
+    # requirement are surfaced on the install finish screen.
+    first_run_notes:
+      - "Open AppFlowy through your reverse proxy and sign in to the admin console at /console as admin@<your DOMAIN>. The generated admin password is stored in ~/docker/appflowy/.env (GOTRUE_ADMIN_PASSWORD) — read it there."
+      - "Email confirmation is auto-on by default (GOTRUE_MAILER_AUTOCONFIRM=true), so login and signup work with no SMTP server. To enable transactional email or OAuth, add the relevant keys to ~/docker/appflowy/.env.user (see the app README)."
+      - "Front the stack with a reverse proxy that terminates TLS, sets the forwarded Host to your DOMAIN, and forwards WebSocket upgrades on /ws; point it at http://127.0.0.1:8025."
+
+    # Structured guidance: the install
+    # result carries these fields verbatim; nothing here is parsed
+    # from README prose.
+    pangolin_guidance:
+      target_url: "http://127.0.0.1:8025"
+      recommended_subdomain: appflowy
+      notes:
+        - "Single upstream: point the reverse proxy at http://127.0.0.1:8025 — Angie inside the stack routes /gotrue, /ws, /api, /console, /minio-api, and the web UI."
+        - "Enable WebSocket upgrade for the /ws path so live document sync works."
+        - "Terminate TLS at your reverse proxy and forward the Host header matching your DOMAIN."

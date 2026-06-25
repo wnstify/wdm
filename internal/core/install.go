@@ -211,6 +211,13 @@ func (e *Engine) Install(ctx context.Context, req types.InstallRequest, onProgre
 	}
 	lg.step(ctx, "compose config validated")
 
+	if req.Force {
+		if err := e.recoverOrphanedStack(ctx, dockerClient, plan.stackPath, plan.composeProject); err != nil {
+			lg.failure(ctx, plan.app.AppID, plan.stackPath, "recover_orphaned_stack", err)
+			return nil, err
+		}
+	}
+
 	stackHandle, err := writeInstallFiles(ctx, plan, onProgress)
 	if err != nil {
 		lg.failure(ctx, plan.app.AppID, plan.stackPath, "write_install_files", err)

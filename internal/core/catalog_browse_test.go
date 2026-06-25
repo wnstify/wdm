@@ -526,8 +526,8 @@ func TestAvailableApps_RealStableCatalog(t *testing.T) {
 		assert.NotEmpty(t, a.Name)
 		assert.NotEmpty(t, a.ImagePins, "curated app %s must project image pins", a.AppID)
 	}
-	// Sorted by AppID: authentik, baserow, dockhand, docuseal, freshrss, jellyfin, meshcentral, mira, n8n, navidrome, nextcloud, openwebui, qbittorrent, serpbear, stoat, syncthing, uptime-kuma, vaultwarden, wg-adguard, zulip.
-	assert.Equal(t, []string{"authentik", "baserow", "dockhand", "docuseal", "freshrss", "jellyfin", "meshcentral", "mira", "n8n", "navidrome", "nextcloud", "openwebui", "qbittorrent", "serpbear", "stoat", "syncthing", "uptime-kuma", "vaultwarden", "wg-adguard", "zulip"}, ids)
+	// Sorted by AppID: appflowy, authentik, baserow, dockhand, docuseal, freshrss, jellyfin, meshcentral, mira, n8n, navidrome, nextcloud, openwebui, qbittorrent, serpbear, stoat, syncthing, uptime-kuma, vaultwarden, wg-adguard, zulip.
+	assert.Equal(t, []string{"appflowy", "authentik", "baserow", "dockhand", "docuseal", "freshrss", "jellyfin", "meshcentral", "mira", "n8n", "navidrome", "nextcloud", "openwebui", "qbittorrent", "serpbear", "stoat", "syncthing", "uptime-kuma", "vaultwarden", "wg-adguard", "zulip"}, ids)
 
 	// Spot-check the secret-ness derivation on a real app: uptime-kuma
 	// carries secret placeholders.

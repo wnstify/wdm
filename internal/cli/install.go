@@ -68,6 +68,7 @@ func newAppsInstallCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 		stackPath string
 		setValues []string
 		assumeYes bool
+		force     bool
 	)
 
 	cmd := &cobra.Command{
@@ -122,6 +123,7 @@ database-risk update warning.`,
 				Domain:            domain,
 				StackPath:         stackPath,
 				PlaceholderValues: placeholders,
+				Force:             force,
 			}
 
 			// Install never produces a database-risk confirmation, so
@@ -141,6 +143,7 @@ database-risk update warning.`,
 	cmd.Flags().StringVar(&stackPath, "stack-path", "", "override the default ~/docker/<app> stack path")
 	cmd.Flags().StringArrayVar(&setValues, "set", nil, "set a catalog placeholder as KEY=VALUE (repeatable); secret placeholders are generated and cannot be set")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "accept safe confirmations without prompting (never the database-risk warning)")
+	cmd.Flags().BoolVar(&force, "force", false, "recover a provably-orphaned interrupted install (refuses a managed or running stack), then install")
 
 	return cmd
 }

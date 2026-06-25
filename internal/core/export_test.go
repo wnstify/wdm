@@ -14,6 +14,17 @@ import (
 	"github.com/wnstify/wdm/pkg/types"
 )
 
+// RecoverOrphanedStackForTest exposes the unexported orphan-recovery path so
+// black-box tests can exercise the real removal/refusal seam directly.
+func (e *Engine) RecoverOrphanedStackForTest(
+	ctx context.Context,
+	client docker.Client,
+	stackPath string,
+	composeProject string,
+) error {
+	return e.recoverOrphanedStack(ctx, client, stackPath, composeProject)
+}
+
 // SwapCoreUpdateCheckNowForTest swaps the package-private coreUpdateCheckNow
 // clock seam so the daily launch-check gate methods can be exercised with a
 // pinned local wall-clock time. The previous clock is restored on cleanup.
