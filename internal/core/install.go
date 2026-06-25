@@ -105,7 +105,7 @@ func (p *installPlan) freeze() error {
 	if p.frozen {
 		return types.NewError(
 			types.ErrCodeGeneric,
-			"install plan was already produced",
+			"stack plan was already produced",
 			"this is a wdm bug: report it with the failing operation",
 		)
 	}
