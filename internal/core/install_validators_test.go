@@ -274,6 +274,7 @@ func TestResolvePortPlaceholder(t *testing.T) {
 		{name: "request value accepted", value: "8080", hasRequestValue: true, want: "8080"},
 		{name: "default applied when unset", ph: catalog.Placeholder{Default: 9000}, want: "9000"},
 		{name: "required and missing", ph: catalog.Placeholder{Name: "PORT", Required: true}, wantErr: true},
+		{name: "optional and missing short-circuits to empty", ph: catalog.Placeholder{Name: "PORT"}, want: ""},
 		{name: "non-numeric", value: "abc", hasRequestValue: true, wantErr: true},
 		{name: "below range", value: "0", hasRequestValue: true, wantErr: true},
 		{name: "above range", value: "65536", hasRequestValue: true, wantErr: true},
