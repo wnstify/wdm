@@ -3,9 +3,17 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
-## Unreleased
+## v1.3.0 - 2026-06-25
 
 ### Added
+- AppFlowy is now in the stable catalog: a self-hosted, open-source alternative
+  to Notion for notes, wikis, projects, and AI-assisted writing. The template
+  runs the full self-hosting stack — PostgreSQL, a Redis-compatible cache, MinIO
+  object storage, the GoTrue authentication service, the AppFlowy Cloud
+  API/WebSocket server, a background worker, the web UI, the admin console, and
+  an angie reverse proxy. The admin account is created on first run with a
+  generated password stored in the stack's `.env`; SMTP and OAuth are optional
+  and enabled by adding keys to `~/docker/appflowy/.env.user`.
 - `wdm apps install --force` opt-in recovery for a stack directory left behind
   by a hard-killed install (for example a power loss mid-install), which
   otherwise blocks a reinstall. It is fail-closed: it removes the directory only
