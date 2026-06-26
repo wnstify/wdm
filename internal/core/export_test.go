@@ -111,6 +111,32 @@ func SetInstallPortProbeForTest(e *Engine, probe func(context.Context, types.Por
 	e.probePort = probe
 }
 
+// SuggestFreePortForTest drives the deterministic next-free scan over the
+// engine's real probe (no probe mock), so the clamp, same-install skip, and
+// fail-closed-zero behaviors can be asserted directly (issue #145).
+func SuggestFreePortForTest(e *Engine, ctx context.Context, conflict types.PortBinding, plannedHostPorts map[int]struct{}) int {
+	p := &installPlan{probePort: e.probePort}
+	return p.suggestFreePort(ctx, conflict, plannedHostPorts)
+}
+
+// EnrichPortConflictForTest drives the conflict classifier with a constructed
+// probe error (same wrapped-syscall shape production sees), so the EACCES and
+// non-loopback/range/public non-enrichment arms are deterministic without
+// depending on OS bind semantics (issue #145).
+func EnrichPortConflictForTest(e *Engine, conflict types.PortBinding, isRange, isPublic bool, probeErr error) error {
+	p := &installPlan{probePort: e.probePort}
+	rangeHostPorts := map[int]struct{}{}
+	publicPorts := map[int]struct{}{}
+	if isRange {
+		rangeHostPorts[conflict.HostPort] = struct{}{}
+	}
+	if isPublic {
+		publicPorts[conflict.HostPort] = struct{}{}
+	}
+	plannedHostPorts := map[int]struct{}{conflict.HostPort: {}}
+	return p.enrichPortConflict(context.Background(), conflict, rangeHostPorts, publicPorts, plannedHostPorts, probeErr)
+}
+
 // PlanInstallForTest is a temporary test seam.
 func PlanInstallForTest(
 	e *Engine,
