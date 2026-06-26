@@ -127,6 +127,36 @@ func TestRenderInstall_OverrideRewritesComposeHostPort(t *testing.T) {
 	assert.NotContains(t, rendered, fmt.Sprintf("127.0.0.1:%d:8080", oldPort), "the original host port must be gone from the rendered compose")
 }
 
+// TestRenderInstall_OverrideUnmatchedInComposeFailsClosed proves the drift
+// guard: when the catalog host port (which the override matches at plan time)
+// does not appear in the rendered compose — a catalog/template host-port drift —
+// the remap finds no binding to rewrite and render fails closed rather than
+// silently deploying on the template's literal port.
+func TestRenderInstall_OverrideUnmatchedInComposeFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	catalogPort := freeLocalTCPPort(t)
+	newPort := freeLocalTCPPort(t)
+	driftedPort := freeLocalTCPPort(t)
+	app := appFixture("render-remap-drift-app", catalogPort)
+	// The template binds a DIFFERENT host port than the catalog declares.
+	compose := fmt.Sprintf("services:\n  app:\n    image: docker.io/example/app:1.0.0\n    ports:\n      - \"127.0.0.1:%d:8080\"\n", driftedPort)
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: compose,
+		app.EnvTemplate:     "",
+	}, app)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+
+	_, err := core.RenderInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, PortOverrides: map[int]int{catalogPort: newPort}},
+		planHosts(t), nil)
+	require.Error(t, err)
+	assertVerificationFailed(t, err)
+}
+
 // TestPlanPorts_OverrideRewritesLoopbackPort proves a PortOverrides entry
 // remaps a planned single loopback host port to the new port before the probe,
 // so the plan binds the new port. The original port is occupied by a real

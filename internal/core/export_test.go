@@ -115,7 +115,8 @@ func SetInstallPortProbeForTest(e *Engine, probe func(context.Context, types.Por
 // so its short/long/range/all-interfaces handling can be asserted directly
 // (issue #145).
 func RewriteComposeHostPortsForTest(composeBytes []byte, overrides map[int]int) ([]byte, error) {
-	return rewriteComposeHostPorts(composeBytes, overrides)
+	out, _, err := rewriteComposeHostPorts(composeBytes, overrides)
+	return out, err
 }
 
 // SuggestFreePortForTest drives the deterministic next-free scan over the

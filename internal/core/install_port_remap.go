@@ -8,7 +8,41 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/wnstify/wdm/internal/security"
 )
+
+// applyComposePortRemap rewrites the rendered compose host ports for the plan's
+// PortOverrides and fails closed if any planned remap found no matching rendered
+// binding (a catalog/template host-port drift would otherwise silently deploy on
+// the original port). A no-override install is a no-op. Run before the §11.1
+// bind scans so they validate the rewritten compose.
+func applyComposePortRemap(plan *installPlan, redactor security.Redactor) error {
+	if len(plan.portOverrides) == 0 {
+		return nil
+	}
+	rewritten, matched, err := rewriteComposeHostPorts(plan.rendered.ComposeBytes, plan.portOverrides)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"remapped compose could not be produced",
+			"retry without --port, or choose a different host port",
+			err,
+		)
+	}
+	for old := range plan.portOverrides {
+		if _, ok := matched[old]; !ok {
+			return redactedVerificationError(
+				redactor,
+				"remapped host port not found in rendered compose",
+				"refresh the catalog and retry",
+				fmt.Errorf("override host port %d has no matching loopback binding in the rendered compose", old),
+			)
+		}
+	}
+	plan.rendered.ComposeBytes = rewritten
+	return nil
+}
 
 // rewriteComposeHostPorts edits the rendered docker-compose so a PortOverrides
 // remap actually reaches the deployed binding. Catalog host ports are literal
@@ -25,25 +59,30 @@ import (
 // public/admin bind scans on the result, so a rewrite that somehow produced a
 // non-loopback bind still fails closed there. Returns the input unchanged when
 // no override applies, so a normal install renders byte-for-byte as before.
-func rewriteComposeHostPorts(composeBytes []byte, overrides map[int]int) ([]byte, error) {
+//
+// matched reports which override host ports were found and rewritten in the
+// compose, so the caller can fail closed if a planned remap never reached a
+// rendered binding (a catalog/template host-port drift), instead of silently
+// deploying on the original port.
+func rewriteComposeHostPorts(composeBytes []byte, overrides map[int]int) (out []byte, matched map[int]struct{}, err error) {
+	matched = map[int]struct{}{}
 	if len(overrides) == 0 {
-		return composeBytes, nil
+		return composeBytes, matched, nil
 	}
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal(composeBytes, &doc); err != nil {
-		return nil, fmt.Errorf("parse rendered compose for port remap: %w", err)
+		return nil, nil, fmt.Errorf("parse rendered compose for port remap: %w", err)
 	}
 	if len(doc.Content) == 0 {
-		return composeBytes, nil
+		return composeBytes, matched, nil
 	}
 
 	services := mappingValue(doc.Content[0], "services")
 	if services == nil || services.Kind != yaml.MappingNode {
-		return composeBytes, nil
+		return composeBytes, matched, nil
 	}
 
-	changed := false
 	for i := 1; i < len(services.Content); i += 2 {
 		ports := mappingValue(services.Content[i], "ports")
 		if ports == nil || ports.Kind != yaml.SequenceNode {
@@ -52,32 +91,32 @@ func rewriteComposeHostPorts(composeBytes []byte, overrides map[int]int) ([]byte
 		for _, entry := range ports.Content {
 			switch entry.Kind {
 			case yaml.ScalarNode:
-				if rewritten, ok := rewriteShortPort(entry.Value, overrides); ok {
+				if rewritten, old, ok := rewriteShortPort(entry.Value, overrides); ok {
 					entry.Value = rewritten
-					changed = true
+					matched[old] = struct{}{}
 				}
 			case yaml.MappingNode:
-				if rewriteLongPort(entry, overrides) {
-					changed = true
+				if old, ok := rewriteLongPort(entry, overrides); ok {
+					matched[old] = struct{}{}
 				}
 			}
 		}
 	}
 
-	if !changed {
-		return composeBytes, nil
+	if len(matched) == 0 {
+		return composeBytes, matched, nil
 	}
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(&doc); err != nil {
-		return nil, fmt.Errorf("re-encode remapped compose: %w", err)
+		return nil, nil, fmt.Errorf("re-encode remapped compose: %w", err)
 	}
 	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("close remapped compose encoder: %w", err)
+		return nil, nil, fmt.Errorf("close remapped compose encoder: %w", err)
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), matched, nil
 }
 
 // mappingValue returns the value node for key in a YAML mapping node, or nil.
@@ -97,50 +136,50 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 // published port is an override key. Only the 3-segment host_ip:host:container
 // form on a loopback host IP is remappable; a 2-segment (all-interfaces) entry
 // and a non-integer (range) published value are left untouched.
-func rewriteShortPort(value string, overrides map[int]int) (string, bool) {
+func rewriteShortPort(value string, overrides map[int]int) (rewritten string, old int, ok bool) {
 	spec, proto, hasProto := strings.Cut(value, "/")
 	parts := strings.Split(spec, ":")
 	if len(parts) != 3 || !isLoopbackHost(parts[0]) {
-		return value, false
+		return value, 0, false
 	}
 	host, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return value, false
+		return value, 0, false
 	}
-	newPort, ok := overrides[host]
-	if !ok {
-		return value, false
+	newPort, found := overrides[host]
+	if !found {
+		return value, 0, false
 	}
 	parts[1] = strconv.Itoa(newPort)
 	out := strings.Join(parts, ":")
 	if hasProto {
 		out += "/" + proto
 	}
-	return out, true
+	return out, host, true
 }
 
 // rewriteLongPort rewrites a Compose long-form port mapping in place when its
-// loopback published port is an override key. It returns whether it changed the
-// node.
-func rewriteLongPort(node *yaml.Node, overrides map[int]int) bool {
+// loopback published port is an override key. It returns the matched old host
+// port and whether it changed the node.
+func rewriteLongPort(node *yaml.Node, overrides map[int]int) (old int, ok bool) {
 	hostIP := mappingValue(node, "host_ip")
 	if hostIP == nil || !isLoopbackHost(hostIP.Value) {
-		return false
+		return 0, false
 	}
 	published := mappingValue(node, "published")
 	if published == nil {
-		return false
+		return 0, false
 	}
 	host, err := strconv.Atoi(published.Value)
 	if err != nil {
-		return false
+		return 0, false
 	}
-	newPort, ok := overrides[host]
-	if !ok {
-		return false
+	newPort, found := overrides[host]
+	if !found {
+		return 0, false
 	}
 	published.Value = strconv.Itoa(newPort)
-	return true
+	return host, true
 }
 
 // isLoopbackHost reports whether a Compose host IP is a loopback address. An
