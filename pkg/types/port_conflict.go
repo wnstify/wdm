@@ -42,8 +42,13 @@ func NewPortConflictError(service string, containerPort, conflictingHostPort, su
 }
 
 // Error implements the error interface, delegating to the wrapped *Error so the
-// message and exit code stay byte-compatible with a plain port conflict.
+// message and exit code stay byte-compatible with a plain port conflict. A nil
+// Err (zero-value or directly constructed) yields a stable string instead of
+// panicking.
 func (e *PortConflictError) Error() string {
+	if e.Err == nil {
+		return "port conflict"
+	}
 	return e.Err.Error()
 }
 

@@ -48,6 +48,17 @@ func TestPortConflictError_SuggestionZeroMeansNone(t *testing.T) {
 	assert.Equal(t, 0, conflict.SuggestedHostPort)
 }
 
+// TestPortConflictError_ZeroValueErrorNoPanic verifies a zero-value or
+// directly-constructed conflict error (nil Err) returns a stable string from
+// Error() instead of panicking on the nil delegate.
+func TestPortConflictError_ZeroValueErrorNoPanic(t *testing.T) {
+	t.Parallel()
+
+	require.NotPanics(t, func() {
+		assert.Equal(t, "port conflict", (&types.PortConflictError{}).Error())
+	})
+}
+
 // TestInstallRequest_PortOverrides_JSONContract verifies the override map
 // serializes under the stable "port_overrides" key (and is omitted when empty,
 // so existing goldens stay byte-compatible).
