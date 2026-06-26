@@ -1,10 +1,22 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/wnstify/wdm/internal/core"
 )
+
+// RequireRootlessDaemon refuses fail-closed unless the active Docker daemon
+// runs rootless (PRD §11, issue #135). cmd/wdm calls it from the engine
+// factories before [New], so every real command and the TUI entry refuse a
+// rootful or indeterminate daemon, while `wdm --version`/`--help` — which
+// never build an engine — stay Docker-free. The probe lives behind pkg/engine
+// because depguard forbids cmd/wdm and UI layers from importing
+// internal/docker.
+func RequireRootlessDaemon(ctx context.Context) error {
+	return core.RequireRootlessDaemon(ctx)
+}
 
 // New constructs an [Engine] from the supplied [Option] values. PRD §29
 // names this the GUI-facing constructor;

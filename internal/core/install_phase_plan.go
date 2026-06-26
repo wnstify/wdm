@@ -288,7 +288,29 @@ func (p *installPlan) planPlaceholders(
 	if err := p.addSyntheticResolvedValue("UID", strconv.Itoa(os.Getuid())); err != nil {
 		return err
 	}
-	return p.addSyntheticResolvedValue("GID", strconv.Itoa(os.Getgid()))
+	if err := p.addSyntheticResolvedValue("GID", strconv.Itoa(os.Getgid())); err != nil {
+		return err
+	}
+	return p.addSyntheticResolvedValue(dockerSocketSourceValueName, resolveDockerSocketSource())
+}
+
+// dockerSocketSourceValueName is the built-in template var carrying the host
+// path of the rootless Docker socket, bound as the source of a socket-proxy
+// sidecar's docker.sock mount (issue #134). Reserved like UID/GID.
+const dockerSocketSourceValueName = "DOCKER_SOCKET_SOURCE"
+
+// resolveDockerSocketSource returns the host path of the rootless Docker
+// daemon socket. wdm operates only against a rootless daemon (PRD §11, issue
+// #135), so the source is always the per-user socket: $XDG_RUNTIME_DIR/
+// docker.sock when the runtime dir is set, otherwise /run/user/<uid>/
+// docker.sock. The socket-proxy template binds this as the read-only source so
+// the proxy works under rootless Docker, where /var/run/docker.sock is absent
+// or the inaccessible rootful socket (issue #134).
+func resolveDockerSocketSource() string {
+	if dir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); dir != "" {
+		return filepath.Join(dir, "docker.sock")
+	}
+	return fmt.Sprintf("/run/user/%d/docker.sock", os.Getuid())
 }
 
 func (p *installPlan) addSyntheticResolvedValue(name, value string) error {

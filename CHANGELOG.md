@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.3.2 - 2026-06-26
+
+### Security
+- Refuse to operate against a rootful Docker daemon. Before any state-changing
+  mutation `wdm` now fails closed when the active daemon is running in rootful
+  mode or its mode cannot be determined, with no override flag.
+
+### Changed
+- Render the dockhand socket-proxy source from the rootless Docker socket so the
+  generated stack points at the correct per-user `docker.sock`.
+
+### Fixed
+- Share a single backup-history appender across the install, update, and
+  reconfigure apply paths so backup records are written consistently.
+
 ## v1.3.1 - 2026-06-25
 
 ### Changed

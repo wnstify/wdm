@@ -1041,7 +1041,7 @@ func TestUpdate_ApplyRetentionCapsAtLimitOverManyRuns(t *testing.T) {
 }
 
 // TestUpdate_ApplyPreservesPriorBackupHistoryVerbatim proves the commit
-// point's backup_history clone loop (update_deploy.go appendUpdateBackupHistory)
+// point's backup_history clone loop (update_deploy.go appendBackupHistory)
 // preserves a pre-existing ledger entry byte-for-byte while appending this
 // run's snapshot record. A forward-compatible read-modify-write must never
 // drop or rewrite unknown history bytes.
