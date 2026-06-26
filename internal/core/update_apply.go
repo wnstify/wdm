@@ -568,6 +568,13 @@ func reuseUpdateBuiltins(
 	if err := p.addSyntheticResolvedValue("GID", strconv.Itoa(os.Getgid())); err != nil {
 		return err
 	}
+	// Re-resolve the rootless Docker socket source freshly (issue #134),
+	// matching install. Added before the existing-.env reuse so a stack
+	// installed before this built-in existed still gets it rather than
+	// failing the render on a missing key.
+	if err := p.addSyntheticResolvedValue(dockerSocketSourceValueName, resolveDockerSocketSource()); err != nil {
+		return err
+	}
 
 	for key, value := range existingEnv {
 		if _, isPlaceholder := declared[key]; isPlaceholder {

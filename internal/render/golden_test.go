@@ -122,6 +122,12 @@ const (
 	testUID = "1000"
 	testGID = "1000"
 
+	// testDockerSocketSource pins the built-in DOCKER_SOCKET_SOURCE var
+	// (internal/core resolves it from $XDG_RUNTIME_DIR / the uid; issue
+	// #134). The golden uses a fixed rootless socket path so the rendered
+	// socket-proxy source never depends on the test machine's runtime dir.
+	testDockerSocketSource = "/run/user/1000/docker.sock"
+
 	// testTimezone / testDomain pin the timezone and domain
 	// placeholders. internal/core resolves an empty timezone to the
 	// host zone and a domain from --domain; the golden uses fixed
@@ -176,6 +182,49 @@ func TestGoldenRenderedArtifacts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDockhandSocketProxyBindsRootlessSocketSource proves issue #134 at the
+// real render seam: the socket-proxy sidecar's docker.sock mount sources the
+// resolved rootless socket (via the DOCKER_SOCKET_SOURCE built-in), not the
+// hard-coded rootful /var/run/docker.sock, while the in-container target stays
+// the proxy's default backend. Both the rendered compose source token and the
+// rendered .env value are checked so a future template or wiring edit that
+// reverts to the rootful path fails here.
+func TestDockhandSocketProxyBindsRootlessSocketSource(t *testing.T) {
+	t.Parallel()
+
+	cat := loadStableCatalog(t)
+	var dockhand catalog.App
+	for _, app := range cat.Apps {
+		if app.AppID == "dockhand" {
+			dockhand = app
+			break
+		}
+	}
+	require.NotEmpty(t, dockhand.AppID, "stable catalog must carry dockhand")
+
+	input := buildInput(t, dockhand)
+
+	composeStack, err := render.RenderLabels(input)
+	require.NoError(t, err)
+
+	var doc struct {
+		Services map[string]struct {
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	require.NoError(t, yaml.Unmarshal(composeStack.ComposeBytes, &doc))
+
+	proxy, ok := doc.Services["socket-proxy"]
+	require.True(t, ok, "dockhand compose must declare the socket-proxy service")
+	require.Contains(t, proxy.Volumes, "${DOCKER_SOCKET_SOURCE}:/var/run/docker.sock:ro",
+		"socket-proxy must source the resolved rootless socket, not /var/run/docker.sock")
+
+	envStack, err := render.RenderEnv(input)
+	require.NoError(t, err)
+	assert.Contains(t, string(envStack.EnvBytes), "DOCKER_SOCKET_SOURCE="+testDockerSocketSource,
+		".env must bind DOCKER_SOCKET_SOURCE to the rootless socket path")
 }
 
 func TestStoatLiveKitUsesRenderedInstallUser(t *testing.T) {
@@ -399,6 +448,7 @@ func buildInput(t *testing.T, app catalog.App) render.Input {
 	// matches the .env.tmpl's references.
 	addSynthetic(&placeholders, values, "UID", testUID)
 	addSynthetic(&placeholders, values, "GID", testGID)
+	addSynthetic(&placeholders, values, "DOCKER_SOCKET_SOURCE", testDockerSocketSource)
 
 	for _, profile := range app.Resources {
 		key := serviceKey(profile.Service)

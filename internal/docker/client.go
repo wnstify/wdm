@@ -51,6 +51,12 @@ type ComposeVersionInvocation struct{}
 
 func (ComposeVersionInvocation) isDockerInvocation() {}
 
+// InfoInvocation maps to `docker info` projected to its security options,
+// the rootless-daemon detection probe (PRD §11, [IsRootlessDaemon]).
+type InfoInvocation struct{}
+
+func (InfoInvocation) isDockerInvocation() {}
+
 // CommandResult carries normalized process output.
 type CommandResult struct {
 	Stdout   string
@@ -237,6 +243,8 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 		return commandSpec{argv: []string{"version"}}, nil
 	case ComposeVersionInvocation:
 		return commandSpec{argv: []string{"compose", "version"}}, nil
+	case InfoInvocation:
+		return commandSpec{argv: []string{"info", "--format", dockerInfoSecurityOptionsFormat}}, nil
 	case networkInspectInvocation:
 		return buildNetworkInspectCommand(typedInv.name)
 	case networkManagedLabelInvocation:
@@ -684,6 +692,8 @@ func validateCommandSpec(cmd commandSpec) error {
 	switch cmd.argv[0] {
 	case "version":
 		return validateDockerVersionArgv(cmd.argv)
+	case "info":
+		return validateInfoArgv(cmd.argv)
 	case "compose":
 		return validateComposeArgv(cmd.argv)
 	case "network":
@@ -703,6 +713,18 @@ func validateCommandSpec(cmd commandSpec) error {
 
 func validateDockerVersionArgv(argv []string) error {
 	if len(argv) == 1 && argv[0] == "version" {
+		return nil
+	}
+	return unsupportedDockerArgv(argv)
+}
+
+// validateInfoArgv allowlists the single rootless-detection probe shape:
+// `info --format {{json .SecurityOptions}}`. Every token is a fixed literal,
+// so no caller input reaches the argv (PRD §11, §12).
+func validateInfoArgv(argv []string) error {
+	if len(argv) == 3 &&
+		argv[1] == "--format" &&
+		argv[2] == dockerInfoSecurityOptionsFormat {
 		return nil
 	}
 	return unsupportedDockerArgv(argv)

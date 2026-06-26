@@ -223,14 +223,14 @@ func deployUpdateStack(
 	return docker.ComposeUp(ctx, client, project, docker.ComposeUpOptions{ForceRecreate: true})
 }
 
-// updateBackupHistoryEntry is the per-update ledger record appended to
+// backupHistoryEntry is the per-operation ledger record appended to
 // [state.StackLock.BackupHistory] at the commit point (protocol step 6).
 // The field is opaque [json.RawMessage] with no typed entry, so the update
-// path defines this minimal record locally and marshals it; existing
+// and reconfigure commit points marshal this minimal record; existing
 // history entries are preserved verbatim. PRD §21 only requires the
-// pre-update backup path be recorded, so the record carries the snapshot
+// pre-operation backup path be recorded, so the record carries the snapshot
 // path, the operation kind, and the commit timestamp.
-type updateBackupHistoryEntry struct {
+type backupHistoryEntry struct {
 	Path      string    `json:"path"`
 	Operation string    `json:"operation"`
 	At        time.Time `json:"at"`
@@ -284,7 +284,7 @@ func (e *Engine) writeUpdateLockManifest(
 		WDMVersion: e.version,
 	}
 
-	history, err := appendUpdateBackupHistory(existing.BackupHistory, backupPath, now)
+	history, err := appendBackupHistory(existing.BackupHistory, "update", backupPath, now)
 	if err != nil {
 		return types.WrapError(
 			types.ErrCodeGeneric,
@@ -306,12 +306,13 @@ func (e *Engine) writeUpdateLockManifest(
 	return nil
 }
 
-// appendUpdateBackupHistory clones the existing backup_history and appends
-// the new snapshot record (protocol step 6). An empty backupPath — which a
-// managed stack never produces, since the backup step always snapshots the
+// appendBackupHistory clones the existing backup_history and appends the new
+// snapshot record for the named operation (protocol step 6); the update and
+// reconfigure commit points share it. An empty backupPath — which a managed
+// stack never produces, since the backup step always snapshots the
 // always-present config files — appends nothing, so the ledger only records
 // real snapshots.
-func appendUpdateBackupHistory(existing []json.RawMessage, backupPath string, at time.Time) ([]json.RawMessage, error) {
+func appendBackupHistory(existing []json.RawMessage, operation, backupPath string, at time.Time) ([]json.RawMessage, error) {
 	history := make([]json.RawMessage, 0, len(existing)+1)
 	for _, entry := range existing {
 		history = append(history, append(json.RawMessage(nil), entry...))
@@ -319,9 +320,9 @@ func appendUpdateBackupHistory(existing []json.RawMessage, backupPath string, at
 	if backupPath == "" {
 		return history, nil
 	}
-	encoded, err := json.Marshal(updateBackupHistoryEntry{
+	encoded, err := json.Marshal(backupHistoryEntry{
 		Path:      backupPath,
-		Operation: "update",
+		Operation: operation,
 		At:        at,
 	})
 	if err != nil {

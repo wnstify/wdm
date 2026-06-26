@@ -9,6 +9,9 @@
 //	  allowlist checks, context cancellation, and stdout/stderr redaction.
 //	-: [CheckVersions] and [VersionReport] enforce Docker
 //	  engine 20.10+ and Compose V2.
+//	-: [IsRootlessDaemon] reports whether the active daemon runs
+//	  rootless (from `docker info` SecurityOptions), the fail-closed
+//	  signal internal/core uses to refuse a rootful daemon (PRD §11).
 //	-: [ValidateComposeConfig] wraps docker compose config.
 //	-: [ComposeProject], [ComposePull], [ComposeUp],
 //	  [ComposeDown], and [ComposeUpOptions] wrap compose deployment
