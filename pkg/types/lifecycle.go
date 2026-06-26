@@ -51,6 +51,14 @@ type InstallRequest struct {
 	// ResourceOverrides provides optional per-service resource overrides.
 	ResourceOverrides []ResourceOverride `json:"resource_overrides,omitempty"`
 
+	// PortOverrides remaps conflicting single loopback host ports as
+	// oldHostPort → newHostPort, applied during port planning before the
+	// availability probe (ADR 0004). Only single 127.0.0.1 ports are
+	// remappable; ranges and public ports are refused, and a remap never
+	// changes a binding's host IP. An override naming no planned remappable
+	// binding is a usage-validation error.
+	PortOverrides map[int]int `json:"port_overrides,omitempty"`
+
 	// Force opts in to recovering a provably-orphaned interrupted install
 	// before installing: the stack directory left behind by a hard-killed
 	// (SIGKILL) install is removed so a fresh install can proceed. It
