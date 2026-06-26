@@ -709,6 +709,19 @@ func (p *installPlan) planPorts(ctx context.Context) error {
 // privileged (≤1024) or out-of-range target (PRD §11). The host IP is never
 // changed — a remap can never turn a loopback port into a public one.
 func applyPortOverrides(planned []types.PortBinding, overrides map[int]int, rangeHostPorts, publicPorts map[int]struct{}) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+
+	// Resolve and validate every override against the pre-mutation plan first,
+	// so a remap whose target equals another remap's source cannot reorder by
+	// map-iteration order. Only after all overrides validate are the rewrites
+	// applied.
+	type rewrite struct {
+		idx     int
+		newPort int
+	}
+	rewrites := make([]rewrite, 0, len(overrides))
 	for oldPort, newPort := range overrides {
 		idx := -1
 		for i := range planned {
@@ -745,7 +758,26 @@ func applyPortOverrides(planned []types.PortBinding, overrides map[int]int, rang
 				fmt.Errorf("override %d→%d target is not in 1025..65535", oldPort, newPort),
 			)
 		}
-		planned[idx].HostPort = newPort
+		rewrites = append(rewrites, rewrite{idx: idx, newPort: newPort})
+	}
+	for _, rw := range rewrites {
+		planned[rw.idx].HostPort = rw.newPort
+	}
+
+	// A remap must not land two bindings on the same protocol/host port; that
+	// would silently install on an unintended port instead of the requested
+	// one. Reject it as a usage error.
+	seen := make(map[string]struct{}, len(planned))
+	for _, binding := range planned {
+		key := fmt.Sprintf("%s/%d", binding.Protocol, binding.HostPort)
+		if _, dup := seen[key]; dup {
+			return usageValidationError(
+				"port override collides with another planned port",
+				fmt.Sprintf("two services would bind %s; choose distinct host ports", key),
+				fmt.Errorf("override produced duplicate host port %s", key),
+			)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }
@@ -780,12 +812,21 @@ func (p *installPlan) enrichPortConflict(
 	if suggested != 0 {
 		hint = fmt.Sprintf("127.0.0.1:%d is in use; remap it with --port %d=%d (or another free port)", binding.HostPort, binding.HostPort, suggested)
 	}
+
+	// probeErr is already a usage_validation *Error; wrap its underlying cause
+	// (the net.OpError → syscall chain) so the enriched error keeps errors.Is
+	// reachability without duplicating the "[usage_validation]" message frame.
+	cause := probeErr
+	var probeTyped *types.Error
+	if errors.As(probeErr, &probeTyped) && probeTyped.Cause != nil {
+		cause = probeTyped.Cause
+	}
 	return types.NewPortConflictError(
 		binding.Service,
 		binding.ContainerPort,
 		binding.HostPort,
 		suggested,
-		types.WrapError(types.ErrCodeUsageValidation, "local port is already in use", hint, probeErr),
+		types.WrapError(types.ErrCodeUsageValidation, "local port is already in use", hint, cause),
 	)
 }
 

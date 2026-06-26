@@ -120,10 +120,11 @@ func SuggestFreePortForTest(e *Engine, ctx context.Context, conflict types.PortB
 }
 
 // EnrichPortConflictForTest drives the conflict classifier with a constructed
-// probe error (same wrapped-syscall shape production sees), so the EACCES and
-// non-loopback/range/public non-enrichment arms are deterministic without
-// depending on OS bind semantics (issue #145).
-func EnrichPortConflictForTest(e *Engine, conflict types.PortBinding, isRange, isPublic bool, probeErr error) error {
+// syscall bind error routed through the production classifyPortBindError, so the
+// probe error has the exact *types.Error→net.OpError→syscall shape production
+// sees, and the EACCES and non-loopback/range/public non-enrichment arms are
+// deterministic without depending on OS bind semantics (issue #145).
+func EnrichPortConflictForTest(e *Engine, conflict types.PortBinding, isRange, isPublic bool, bindErr error) error {
 	p := &installPlan{probePort: e.probePort}
 	rangeHostPorts := map[int]struct{}{}
 	publicPorts := map[int]struct{}{}
@@ -134,6 +135,7 @@ func EnrichPortConflictForTest(e *Engine, conflict types.PortBinding, isRange, i
 		publicPorts[conflict.HostPort] = struct{}{}
 	}
 	plannedHostPorts := map[int]struct{}{conflict.HostPort: {}}
+	probeErr := classifyPortBindError(conflict.HostPort, bindErr)
 	return p.enrichPortConflict(context.Background(), conflict, rangeHostPorts, publicPorts, plannedHostPorts, probeErr)
 }
 

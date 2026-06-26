@@ -148,6 +148,27 @@ func TestPlanPorts_OverrideRefusals(t *testing.T) {
 		assertUsageValidation(t, err)
 		assert.Contains(t, err.Error(), "1025")
 	})
+
+	t.Run("collision with another planned port refused", func(t *testing.T) {
+		t.Parallel()
+		portA := freeLocalTCPPort(t)
+		portB := freeLocalTCPPort(t)
+		app := appFixture("override-collide-app", portA)
+		app.Ports = []catalog.Port{
+			{Service: "app", Container: 8080, Host: portA, Protocol: "tcp"},
+			{Service: "two", Container: 9090, Host: portB, Protocol: "tcp"},
+		}
+		eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+		// Remap A onto B's already-planned host port: the two bindings would
+		// collide. Refused before the probe, deterministically.
+		_, err := core.PlanInstallForTest(eng, t.Context(),
+			types.InstallRequest{AppID: app.AppID, PortOverrides: map[int]int{portA: portB}},
+			planHosts(t), nil)
+		require.Error(t, err)
+		assertUsageValidation(t, err)
+		assert.Contains(t, err.Error(), "collide")
+	})
 }
 
 // TestPlanPorts_LoopbackConflictReturnsTypedSuggestion proves a plan-time
@@ -178,30 +199,28 @@ func TestPlanPorts_LoopbackConflictReturnsTypedSuggestion(t *testing.T) {
 	_ = ln.Close()
 }
 
-// TestPlanPorts_RangeAndPublicConflictsStayPlain proves a conflict on a
-// non-remappable binding (a range port or a public port) keeps the plain
-// fail-closed usage-validation error — never the typed remap suggestion.
-func TestPlanPorts_RangeAndPublicConflictsStayPlain(t *testing.T) {
+// TestPlanPorts_RangeConflictStaysPlain proves a conflict on a range port (a
+// non-remappable binding) keeps the plain fail-closed usage-validation error —
+// never the typed remap suggestion. The public-port arm is covered
+// deterministically by TestEnrichPortConflict_NonRemappableArmsStayPlain, since
+// a real 0.0.0.0 bind does not reliably conflict with a 127.0.0.1 listener.
+func TestPlanPorts_RangeConflictStaysPlain(t *testing.T) {
 	t.Parallel()
 
-	t.Run("range conflict stays plain", func(t *testing.T) {
-		t.Parallel()
-		busy := occupyLoopbackPort(t)
-		app := appFixture("range-conflict-app", 0)
-		app.Ports = []catalog.Port{
-			{Service: "media", Container: busy, Host: busy, Protocol: "tcp",
-				HostRange: strconv.Itoa(busy) + "-" + strconv.Itoa(busy+2), ContainerRange: strconv.Itoa(busy) + "-" + strconv.Itoa(busy+2)},
-		}
-		eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+	busy := occupyLoopbackPort(t)
+	app := appFixture("range-conflict-app", 0)
+	app.Ports = []catalog.Port{
+		{Service: "media", Container: busy, Host: busy, Protocol: "tcp",
+			HostRange: strconv.Itoa(busy) + "-" + strconv.Itoa(busy+2), ContainerRange: strconv.Itoa(busy) + "-" + strconv.Itoa(busy+2)},
+	}
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
 
-		_, err := core.PlanInstallForTest(eng, t.Context(),
-			types.InstallRequest{AppID: app.AppID}, planHosts(t), nil)
-		require.Error(t, err)
-		assertUsageValidation(t, err)
-		var conflict *types.PortConflictError
-		assert.False(t, errors.As(err, &conflict), "range conflicts are not remappable")
-	})
-
+	_, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID}, planHosts(t), nil)
+	require.Error(t, err)
+	assertUsageValidation(t, err)
+	var conflict *types.PortConflictError
+	assert.False(t, errors.As(err, &conflict), "range conflicts are not remappable")
 }
 
 // TestEnrichPortConflict_NonRemappableArmsStayPlain proves the classifier
