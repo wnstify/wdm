@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
@@ -521,17 +520,6 @@ func deployReconfigureStack(
 	return docker.ComposeUp(ctx, client, project, docker.ComposeUpOptions{ForceRecreate: true})
 }
 
-// reconfigureBackupHistoryEntry is the per-reconfigure ledger record
-// appended to [state.StackLock.BackupHistory] at the commit point. The
-// field is opaque [json.RawMessage], so the reconfigure path defines this
-// minimal record locally and marshals it; existing history is preserved
-// verbatim.
-type reconfigureBackupHistoryEntry struct {
-	Path      string    `json:"path"`
-	Operation string    `json:"operation"`
-	At        time.Time `json:"at"`
-}
-
 // writeReconfigureLockManifest persists the updated .wdm.lock through the
 // held per-stack flock fd — the commit point. Only the
 // last_successful_operation and backup_history fields change: a
@@ -561,7 +549,7 @@ func (e *Engine) writeReconfigureLockManifest(
 		WDMVersion: e.version,
 	}
 
-	history, err := appendReconfigureBackupHistory(existing.BackupHistory, backupPath, now)
+	history, err := appendBackupHistory(existing.BackupHistory, "reconfigure", backupPath, now)
 	if err != nil {
 		return types.WrapError(
 			types.ErrCodeGeneric,
@@ -581,28 +569,6 @@ func (e *Engine) writeReconfigureLockManifest(
 		)
 	}
 	return nil
-}
-
-// appendReconfigureBackupHistory clones the existing backup_history and
-// appends the new snapshot record. An empty backupPath appends nothing,
-// so the ledger records only real snapshots.
-func appendReconfigureBackupHistory(existing []json.RawMessage, backupPath string, at time.Time) ([]json.RawMessage, error) {
-	history := make([]json.RawMessage, 0, len(existing)+1)
-	for _, entry := range existing {
-		history = append(history, append(json.RawMessage(nil), entry...))
-	}
-	if backupPath == "" {
-		return history, nil
-	}
-	encoded, err := json.Marshal(reconfigureBackupHistoryEntry{
-		Path:      backupPath,
-		Operation: "reconfigure",
-		At:        at,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encoding backup history entry: %w", err)
-	}
-	return append(history, json.RawMessage(encoded)), nil
 }
 
 // restoreReconfigureOnFailure is the sad path for a failed reconfigure.
