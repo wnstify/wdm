@@ -74,6 +74,22 @@ func (e *Engine) renderInstall(
 		VolumeMounts:    composeStack.VolumeMounts,
 	}
 
+	// A PortOverrides remap only reaches the deployed binding by editing the
+	// rendered compose (host ports are literal template ints, ADR 0004). Do it
+	// before the §11.1 bind scans below so they validate the rewritten compose.
+	if len(plan.portOverrides) > 0 {
+		rewritten, err := rewriteComposeHostPorts(plan.rendered.ComposeBytes, plan.portOverrides)
+		if err != nil {
+			return redactedVerificationError(
+				redactor,
+				"remapped compose could not be produced",
+				"retry without --port, or choose a different host port",
+				err,
+			)
+		}
+		plan.rendered.ComposeBytes = rewritten
+	}
+
 	guidance, err := buildInstallGuidance(plan)
 	if err != nil {
 		return redactedVerificationError(

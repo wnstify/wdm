@@ -111,6 +111,13 @@ func SetInstallPortProbeForTest(e *Engine, probe func(context.Context, types.Por
 	e.probePort = probe
 }
 
+// RewriteComposeHostPortsForTest drives the rendered-compose host-port remap
+// so its short/long/range/all-interfaces handling can be asserted directly
+// (issue #145).
+func RewriteComposeHostPortsForTest(composeBytes []byte, overrides map[int]int) ([]byte, error) {
+	return rewriteComposeHostPorts(composeBytes, overrides)
+}
+
 // SuggestFreePortForTest drives the deterministic next-free scan over the
 // engine's real probe (no probe mock), so the clamp, same-install skip, and
 // fail-closed-zero behaviors can be asserted directly (issue #145).

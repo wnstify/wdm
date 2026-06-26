@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"syscall"
@@ -31,6 +32,99 @@ func occupyLoopbackPort(t *testing.T) int {
 func planHosts(t *testing.T) system.HostResources {
 	t.Helper()
 	return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}
+}
+
+// TestRewriteComposeHostPorts proves the rendered-compose host-port remap only
+// touches remappable loopback bindings: short-form loopback ports are rewritten
+// (protocol preserved), while a container-port match, an all-interfaces entry, a
+// non-loopback host IP, a range, and a no-op override all leave the bytes
+// untouched. The long-form loopback mapping is rewritten too.
+func TestRewriteComposeHostPorts(t *testing.T) {
+	t.Parallel()
+
+	short := func(p string) string {
+		return "services:\n  app:\n    ports:\n      - \"" + p + "\"\n"
+	}
+
+	t.Run("short loopback port rewritten", func(t *testing.T) {
+		t.Parallel()
+		out, err := core.RewriteComposeHostPortsForTest([]byte(short("127.0.0.1:8080:8080")), map[int]int{8080: 9090})
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "127.0.0.1:9090:8080")
+		assert.NotContains(t, string(out), "127.0.0.1:8080:8080")
+	})
+
+	t.Run("protocol preserved", func(t *testing.T) {
+		t.Parallel()
+		out, err := core.RewriteComposeHostPortsForTest([]byte(short("127.0.0.1:5353:53/udp")), map[int]int{5353: 15353})
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "127.0.0.1:15353:53/udp")
+	})
+
+	t.Run("long-form loopback port rewritten", func(t *testing.T) {
+		t.Parallel()
+		in := "services:\n  app:\n    ports:\n      - target: 8080\n        published: \"8080\"\n        host_ip: 127.0.0.1\n"
+		out, err := core.RewriteComposeHostPortsForTest([]byte(in), map[int]int{8080: 9090})
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "9090")
+		assert.NotContains(t, string(out), "\"8080\"")
+	})
+
+	identity := []struct {
+		name string
+		raw  string
+	}{
+		{"container port not rewritten", short("127.0.0.1:1234:8080")},
+		{"all-interfaces entry untouched", short("8080:8080")},
+		{"non-loopback host untouched", short("0.0.0.0:8080:8080")},
+		{"range untouched", short("127.0.0.1:8000-8002:8000-8002")},
+	}
+	for _, tc := range identity {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			in := []byte(tc.raw)
+			out, err := core.RewriteComposeHostPortsForTest(in, map[int]int{8080: 9090, 8000: 9000})
+			require.NoError(t, err)
+			assert.Equal(t, string(in), string(out), "a non-remappable entry must leave the compose byte-identical")
+		})
+	}
+
+	t.Run("no overrides is identity", func(t *testing.T) {
+		t.Parallel()
+		in := []byte(short("127.0.0.1:8080:8080"))
+		out, err := core.RewriteComposeHostPortsForTest(in, nil)
+		require.NoError(t, err)
+		assert.Equal(t, string(in), string(out))
+	})
+}
+
+// TestRenderInstall_OverrideRewritesComposeHostPort proves the override flows
+// all the way into the rendered compose end-to-end: the deployed binding moves
+// to the new host port, and the bind-scan verification (which runs on the
+// rewritten compose) still passes.
+func TestRenderInstall_OverrideRewritesComposeHostPort(t *testing.T) {
+	t.Parallel()
+
+	oldPort := freeLocalTCPPort(t)
+	newPort := freeLocalTCPPort(t)
+	app := appFixture("render-remap-app", oldPort)
+	compose := fmt.Sprintf("services:\n  app:\n    image: docker.io/example/app:1.0.0\n    ports:\n      - \"127.0.0.1:%d:8080\"\n", oldPort)
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: compose,
+		app.EnvTemplate:     "",
+	}, app)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+
+	snap, err := core.RenderInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, PortOverrides: map[int]int{oldPort: newPort}},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	rendered := string(snap.ComposeBytes)
+	assert.Contains(t, rendered, fmt.Sprintf("127.0.0.1:%d:8080", newPort), "the rendered compose must bind the new host port")
+	assert.NotContains(t, rendered, fmt.Sprintf("127.0.0.1:%d:8080", oldPort), "the original host port must be gone from the rendered compose")
 }
 
 // TestPlanPorts_OverrideRewritesLoopbackPort proves a PortOverrides entry
