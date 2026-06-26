@@ -119,6 +119,10 @@ func RewriteComposeHostPortsForTest(composeBytes []byte, overrides map[int]int) 
 	return out, err
 }
 
+// PortSuggestScanWindow exposes the candidate-scan cap so the bounded-window
+// fail-closed path can be exercised directly (issue #145).
+const PortSuggestScanWindow = portSuggestScanWindow
+
 // SuggestFreePortForTest drives the deterministic next-free scan over the
 // engine's real probe (no probe mock), so the clamp, same-install skip, and
 // fail-closed-zero behaviors can be asserted directly (issue #145).

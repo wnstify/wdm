@@ -421,4 +421,23 @@ func TestSuggestFreePort(t *testing.T) {
 		got := core.SuggestFreePortForTest(eng, t.Context(), conflict, map[int]struct{}{})
 		assert.Equal(t, 0, got, "no free port above the conflict means fail-closed 0")
 	})
+
+	t.Run("respects the scan window", func(t *testing.T) {
+		t.Parallel()
+		busy := occupyLoopbackPort(t)
+		conflict := types.PortBinding{Service: "app", HostIP: "127.0.0.1", HostPort: busy, ContainerPort: 8080, Protocol: "tcp"}
+		start := busy + 1
+		if start <= 1024 {
+			start = 1025
+		}
+		// Reserve every candidate inside the scan window as same-install
+		// planned, so the only free ports lie past the window. The bound must
+		// make the suggestion give up (0) instead of scanning toward 65535.
+		planned := map[int]struct{}{}
+		for port := start; port < start+core.PortSuggestScanWindow; port++ {
+			planned[port] = struct{}{}
+		}
+		got := core.SuggestFreePortForTest(eng, t.Context(), conflict, planned)
+		assert.Equal(t, 0, got, "no free port inside the scan window means fail-closed 0")
+	})
 }

@@ -830,6 +830,11 @@ func (p *installPlan) enrichPortConflict(
 	)
 }
 
+// portSuggestScanWindow caps how many candidate ports suggestFreePort probes
+// upward from a conflict, so a heavily loaded host cannot stretch the scan over
+// tens of thousands of probes. Fail-closed 0 when none free in the window.
+const portSuggestScanWindow = 1024
+
 // suggestFreePort scans upward from the conflicting port for the next free,
 // unprivileged (>1024) loopback host port, skipping ports already planned by
 // the same install, re-probing each candidate through the same seam as the
@@ -840,7 +845,9 @@ func (p *installPlan) suggestFreePort(ctx context.Context, conflict types.PortBi
 	if start <= 1024 {
 		start = 1025
 	}
-	for candidate := start; candidate <= 65535; candidate++ {
+	// Scan at most portSuggestScanWindow candidates so worst-case latency stays
+	// bounded regardless of host load; 65535 remains the hard upper edge.
+	for candidate := start; candidate < start+portSuggestScanWindow && candidate <= 65535; candidate++ {
 		if _, planned := plannedHostPorts[candidate]; planned {
 			continue
 		}
