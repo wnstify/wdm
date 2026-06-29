@@ -64,6 +64,11 @@ type installPlan struct {
 	// ephemeral) does not flake on a busy host.
 	probePort func(context.Context, types.PortBinding) error
 
+	// portOverrides remaps conflicting single loopback host ports
+	// (oldHostPort → newHostPort) during port planning, before the probe
+	// (ADR 0004). Sourced from [types.InstallRequest.PortOverrides].
+	portOverrides map[int]int
+
 	// frozen marks the end of the plan's producing region (issue #120). A
 	// plan is mutated only while it is built — placeholders, ports,
 	// resources, secrets, and the render output — after which [freeze] flips
