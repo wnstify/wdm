@@ -195,8 +195,9 @@ func renderInstallLocalTargetURL(plan *installPlan) (string, error) {
 // remap source, so the post-install target URL points at the actually-bound
 // port after a --port/--auto-port remap. A URL with no port, an unparseable
 // value, a non-loopback host, or a port that is not an override key is returned
-// unchanged. Only loopback hosts are rewritten, matching the remap invariant
-// that only loopback ports are ever remapped (ADR 0004 / PRD §11.1).
+// unchanged. Only loopback hosts are rewritten — the 127.0.0.1/::1 literals or
+// the localhost DNS name — matching the remap invariant that only loopback
+// ports are ever remapped (ADR 0004 / PRD §11.1).
 func remapGuidanceURL(raw string, overrides map[int]int) string {
 	if len(overrides) == 0 || raw == "" {
 		return raw
@@ -213,7 +214,7 @@ func remapGuidanceURL(raw string, overrides map[int]int) string {
 	if err != nil {
 		return raw
 	}
-	if ip := net.ParseIP(parsed.Hostname()); ip == nil || !ip.IsLoopback() {
+	if !isLoopbackGuidanceHost(parsed.Hostname()) {
 		return raw
 	}
 	newPort, ok := overrides[port]
@@ -222,6 +223,17 @@ func remapGuidanceURL(raw string, overrides map[int]int) string {
 	}
 	parsed.Host = net.JoinHostPort(parsed.Hostname(), strconv.Itoa(newPort))
 	return parsed.String()
+}
+
+// isLoopbackGuidanceHost reports whether a guidance URL host is loopback: a
+// loopback IP literal (127.0.0.1, ::1) or the localhost DNS name, which a
+// catalog may author instead of the IP literal.
+func isLoopbackGuidanceHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // guidanceText flattens the guidance strings for the non-secret

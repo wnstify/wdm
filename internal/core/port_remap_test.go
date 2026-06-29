@@ -165,6 +165,39 @@ func TestGuidance_RemapRewritesTargetURLs(t *testing.T) {
 	assert.NotContains(t, snap.Guidance.Pangolin.TargetURL, oldHostPort, "the stale catalog port must be gone from the pangolin target URL")
 }
 
+// TestRemapGuidanceURL pins the guidance-URL port rewriter: a loopback host —
+// whether the 127.0.0.1 literal or the localhost DNS name — has an override-key
+// port rewritten, while a non-loopback host, a missing/unparseable port, a port
+// that is not an override key, and an empty override map all leave the URL
+// untouched.
+func TestRemapGuidanceURL(t *testing.T) {
+	t.Parallel()
+
+	overrides := map[int]int{8080: 9090}
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"loopback ip rewritten", "http://127.0.0.1:8080/admin", "http://127.0.0.1:9090/admin"},
+		{"localhost name rewritten", "http://localhost:8080/", "http://localhost:9090/"},
+		{"non-loopback host untouched", "http://10.0.0.5:8080/", "http://10.0.0.5:8080/"},
+		{"port not an override key untouched", "http://127.0.0.1:7000/", "http://127.0.0.1:7000/"},
+		{"no port untouched", "http://127.0.0.1/", "http://127.0.0.1/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, core.RemapGuidanceURLForTest(tc.raw, overrides))
+		})
+	}
+
+	t.Run("empty overrides untouched", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "http://127.0.0.1:8080/", core.RemapGuidanceURLForTest("http://127.0.0.1:8080/", nil))
+	})
+}
+
 // TestRenderInstall_OverrideUnmatchedInComposeFailsClosed proves the drift
 // guard: when the catalog host port (which the override matches at plan time)
 // does not appear in the rendered compose — a catalog/template host-port drift —

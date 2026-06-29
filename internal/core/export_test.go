@@ -151,6 +151,13 @@ func EnrichPortConflictForTest(e *Engine, conflict types.PortBinding, isRange, i
 	return p.enrichPortConflict(context.Background(), conflict, rangeHostPorts, publicPorts, plannedHostPorts, probeErr)
 }
 
+// RemapGuidanceURLForTest exposes the unexported guidance-URL port rewriter so
+// its loopback gating (including the localhost DNS name) and no-op arms can be
+// pinned at the real boundary.
+func RemapGuidanceURLForTest(raw string, overrides map[int]int) string {
+	return remapGuidanceURL(raw, overrides)
+}
+
 // PlanInstallForTest is a temporary test seam.
 func PlanInstallForTest(
 	e *Engine,
