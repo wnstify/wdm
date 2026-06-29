@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.4.0 - 2026-06-29
+
+### Added
+- `wdm apps install --port HOST=NEW` (repeatable) remaps a conflicting loopback
+  host port before the availability probe, so an install can proceed on a free
+  port instead of aborting. Only single `127.0.0.1` ports are remappable; port
+  ranges and public ports stay refused, and a remap never changes a binding's
+  host IP. On a host-port conflict the install stays fail-closed by default, and
+  under `--json` the error now carries the conflicting service, the busy port,
+  and a deterministic suggested free port.
+
+### Changed
+- Updated build and CI dependencies: `golang.org/x/mod` 0.36.0 to 0.37.0 and the
+  pinned GitHub Actions (`codeql-action` to v4.36.2, `setup-go` to 6.5.0,
+  `attest-build-provenance` to 4.1.1).
+
 ## v1.3.2 - 2026-06-26
 
 ### Security

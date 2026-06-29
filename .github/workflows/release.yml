@@ -175,7 +175,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
@@ -454,7 +454,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
 
@@ -495,7 +495,7 @@ jobs:
         # Pinned to the resolved commit for
         # actions/attest-build-provenance v4.1.0 (lightweight tag ->
         # a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32).
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           # Newline-separated subject paths -> ONE SLSA in-toto/DSSE statement
           # with TWO subjects (the action bundles a path list into a single

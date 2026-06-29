@@ -111,6 +111,46 @@ func SetInstallPortProbeForTest(e *Engine, probe func(context.Context, types.Por
 	e.probePort = probe
 }
 
+// RewriteComposeHostPortsForTest drives the rendered-compose host-port remap
+// so its short/long/range/all-interfaces handling can be asserted directly
+// (issue #145).
+func RewriteComposeHostPortsForTest(composeBytes []byte, overrides map[int]int) ([]byte, error) {
+	out, _, err := rewriteComposeHostPorts(composeBytes, overrides)
+	return out, err
+}
+
+// PortSuggestScanWindow exposes the candidate-scan cap so the bounded-window
+// fail-closed path can be exercised directly (issue #145).
+const PortSuggestScanWindow = portSuggestScanWindow
+
+// SuggestFreePortForTest drives the deterministic next-free scan over the
+// engine's real probe (no probe mock), so the clamp, same-install skip, and
+// fail-closed-zero behaviors can be asserted directly (issue #145).
+func SuggestFreePortForTest(e *Engine, ctx context.Context, conflict types.PortBinding, plannedHostPorts map[int]struct{}) int {
+	p := &installPlan{probePort: e.probePort}
+	return p.suggestFreePort(ctx, conflict, plannedHostPorts)
+}
+
+// EnrichPortConflictForTest drives the conflict classifier with a constructed
+// syscall bind error routed through the production classifyPortBindError, so the
+// probe error has the exact *types.Error→net.OpError→syscall shape production
+// sees, and the EACCES and non-loopback/range/public non-enrichment arms are
+// deterministic without depending on OS bind semantics (issue #145).
+func EnrichPortConflictForTest(e *Engine, conflict types.PortBinding, isRange, isPublic bool, bindErr error) error {
+	p := &installPlan{probePort: e.probePort}
+	rangeHostPorts := map[int]struct{}{}
+	publicPorts := map[int]struct{}{}
+	if isRange {
+		rangeHostPorts[conflict.HostPort] = struct{}{}
+	}
+	if isPublic {
+		publicPorts[conflict.HostPort] = struct{}{}
+	}
+	plannedHostPorts := map[int]struct{}{conflict.HostPort: {}}
+	probeErr := classifyPortBindError(conflict.HostPort, bindErr)
+	return p.enrichPortConflict(context.Background(), conflict, rangeHostPorts, publicPorts, plannedHostPorts, probeErr)
+}
+
 // PlanInstallForTest is a temporary test seam.
 func PlanInstallForTest(
 	e *Engine,
