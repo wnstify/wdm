@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## Unreleased
+
+### Fixed
+- `wdm apps update` now preserves the loopback host port a stack is actually
+  bound to instead of reverting to the catalog default. A port remapped at
+  install (or a default a maintainer later changed) survives every update, with
+  no new flag: the update reads the effective binding from the on-disk compose
+  and re-renders the new catalog version onto that same port. Only single
+  `127.0.0.1` ports are preserved; ranges and public ports re-render to the
+  catalog default. `reconfigure` already preserved the port and is unchanged.
+
 ## v1.4.0 - 2026-06-29
 
 ### Added
