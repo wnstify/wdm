@@ -295,6 +295,118 @@ func TestPlanPorts_OverrideRefusals(t *testing.T) {
 	})
 }
 
+// TestPlanPorts_AutoPortResolvesConflict proves --auto-port resolves a single
+// remappable loopback conflict non-interactively: the occupied catalog port is
+// rebound to the deterministic next-free port without any explicit --port.
+func TestPlanPorts_AutoPortResolvesConflict(t *testing.T) {
+	t.Parallel()
+
+	busy := occupyLoopbackPort(t)
+	app := appFixture("autoport-resolve-app", busy)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	plan, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.Len(t, plan.LocalPorts, 1)
+	assert.Greater(t, plan.LocalPorts[0].HostPort, busy, "auto-port scans upward from the conflict")
+	assert.Equal(t, "127.0.0.1", plan.LocalPorts[0].HostIP, "auto-port never changes the host IP")
+
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(plan.LocalPorts[0].HostPort)))
+	require.NoError(t, err, "the auto-bound port must be genuinely free")
+	_ = ln.Close()
+}
+
+// TestPlanPorts_AutoPortFailsClosedWhenNoFreePort proves --auto-port fails
+// closed when no free port exists above the conflict: a catalog port at 65535
+// (above the Linux ephemeral range) is occupied, leaving no candidate, so the
+// plan returns the typed conflict with a zero suggestion and the usage exit.
+func TestPlanPorts_AutoPortFailsClosedWhenNoFreePort(t *testing.T) {
+	// Not parallel: binds the fixed top-of-range port 65535.
+	ln, err := net.Listen("tcp", "127.0.0.1:65535")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	app := appFixture("autoport-noport-app", 65535)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	_, err = core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true},
+		planHosts(t), nil)
+	require.Error(t, err)
+	var conflict *types.PortConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, 0, conflict.SuggestedHostPort, "no free port above 65535 means fail-closed 0")
+	assert.True(t, types.IsCode(err, types.ErrCodeUsageValidation))
+}
+
+// TestPlanPorts_AutoPortHonorsExplicitAndResolvesRest proves explicit and
+// auto remaps coexist: an explicit --port remap of a free port is honored
+// verbatim, while a second occupied port the user did not remap is resolved by
+// auto-port. Both bindings stay on 127.0.0.1.
+func TestPlanPorts_AutoPortHonorsExplicitAndResolvesRest(t *testing.T) {
+	// Not parallel: freeA2 is an unheld free port the plan must still find free
+	// when it probes; running in the serial phase shrinks the window in which a
+	// parallel ephemeral :0 bind could steal it.
+	freeA1 := freeLocalTCPPort(t)
+	freeA2 := freeLocalTCPPort(t)
+	busyB := occupyLoopbackPort(t)
+
+	app := appFixture("autoport-mixed-app", freeA1)
+	app.Ports = []catalog.Port{
+		{Service: "app", Container: 8080, Host: freeA1, Protocol: "tcp"},
+		{Service: "two", Container: 9090, Host: busyB, Protocol: "tcp"},
+	}
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	plan, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true, PortOverrides: map[int]int{freeA1: freeA2}},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.Len(t, plan.LocalPorts, 2)
+
+	hostPorts := map[int]string{}
+	for _, b := range plan.LocalPorts {
+		hostPorts[b.HostPort] = b.HostIP
+		assert.Equal(t, "127.0.0.1", b.HostIP, "neither remap changes the host IP")
+	}
+	assert.Contains(t, hostPorts, freeA2, "the explicit --port remap is honored")
+
+	resolvedB := false
+	for hostPort := range hostPorts {
+		if hostPort > busyB {
+			ln, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hostPort)))
+			if lerr == nil {
+				_ = ln.Close()
+				resolvedB = true
+			}
+		}
+	}
+	assert.True(t, resolvedB, "the unremapped occupied port is auto-resolved to a free port above it")
+}
+
+// TestPlanPorts_AutoPortDoesNotRescueExplicitConflict proves explicit --port
+// wins over --auto-port: when the user's own explicit target is occupied,
+// auto-port does NOT rescue it — the typed conflict naming the explicit target
+// surfaces, so the user sees their chosen port failed.
+func TestPlanPorts_AutoPortDoesNotRescueExplicitConflict(t *testing.T) {
+	t.Parallel()
+
+	free := freeLocalTCPPort(t)
+	busyTarget := occupyLoopbackPort(t)
+	app := appFixture("autoport-explicit-conflict-app", free)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	_, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true, PortOverrides: map[int]int{free: busyTarget}},
+		planHosts(t), nil)
+	require.Error(t, err)
+	var conflict *types.PortConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, busyTarget, conflict.ConflictingHostPort, "the explicit choice is not auto-rescued")
+}
+
 // TestPlanPorts_LoopbackConflictReturnsTypedSuggestion proves a plan-time
 // conflict on a remappable single loopback port surfaces as a typed
 // PortConflictError carrying the binding detail and a deterministic, actually
