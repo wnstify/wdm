@@ -42,6 +42,7 @@ Manage the Docker Compose stacks that `wdm` installs under `~/docker/<app>/`.
 - `--domain <host>` — public domain for the app, for example `app.example.com`.
 - `--stack-path <path>` — override the default `~/docker/<app>` stack path.
 - `--set KEY=VALUE` — set a catalog placeholder. Repeatable. Secret placeholders are generated and cannot be set.
+- `--port HOST=NEW` — remap a conflicting loopback host port. Repeatable. Only single `127.0.0.1` ports are remappable (not port ranges or public ports), and `NEW` must be an unprivileged port between 1025 and 65535. On a host-port conflict the install otherwise stays fail-closed; under `--json` the error names the conflicting service, the busy port, and a suggested free port.
 - `--yes` — accept safe confirmations. This never accepts the database-risk warning.
 - `--force` — recover a provably-orphaned interrupted install before installing. Use it only when a previous install was hard-killed (for example the machine lost power) and left the stack directory behind, blocking a reinstall. It is fail-closed: it refuses a stack that is still running (use `wdm apps uninstall` instead), refuses a directory whose `.wdm.lock` manifest is valid (the stack is properly managed — uninstall it instead), and refuses a non-`wdm` directory that is not empty. It never deletes named Docker volumes, so your data survives the recovery.
 

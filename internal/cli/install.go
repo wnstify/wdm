@@ -3,9 +3,11 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -64,11 +66,12 @@ const acceptDatabaseRiskFlag = "--accept-database-risk"
 // smoke-check invariant, mirrored from `apps list`).
 func newAppsInstallCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 	var (
-		domain    string
-		stackPath string
-		setValues []string
-		assumeYes bool
-		force     bool
+		domain        string
+		stackPath     string
+		setValues     []string
+		portOverrides []string
+		assumeYes     bool
+		force         bool
 	)
 
 	cmd := &cobra.Command{
@@ -112,6 +115,14 @@ database-risk update warning.`,
 				return err
 			}
 
+			// Parse --port before constructing the engine for the same reason
+			// as --set: a malformed pair is a usage error and must not touch
+			// the engine or runtime.lock.
+			overrides, err := parsePortOverrides(portOverrides)
+			if err != nil {
+				return err
+			}
+
 			eng, err := newEngine()
 			if err != nil {
 				return err
@@ -123,6 +134,7 @@ database-risk update warning.`,
 				Domain:            domain,
 				StackPath:         stackPath,
 				PlaceholderValues: placeholders,
+				PortOverrides:     overrides,
 				Force:             force,
 			}
 
@@ -132,7 +144,7 @@ database-risk update warning.`,
 
 			result, err := eng.Install(cmd.Context(), req, onProgress, confirmer)
 			if err != nil {
-				return err
+				return reportInstallError(cmd, useJSON, err)
 			}
 
 			return emitResult(cmd, useJSON, result, writeInstallFinish)
@@ -142,6 +154,7 @@ database-risk update warning.`,
 	cmd.Flags().StringVar(&domain, "domain", "", "public domain for the app (for example app.example.com)")
 	cmd.Flags().StringVar(&stackPath, "stack-path", "", "override the default ~/docker/<app> stack path")
 	cmd.Flags().StringArrayVar(&setValues, "set", nil, "set a catalog placeholder as KEY=VALUE (repeatable); secret placeholders are generated and cannot be set")
+	cmd.Flags().StringArrayVar(&portOverrides, "port", nil, "remap a conflicting loopback host port as HOST=NEW (repeatable); only single 127.0.0.1 ports, NEW must be 1025-65535")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "accept safe confirmations without prompting (never the database-risk warning)")
 	cmd.Flags().BoolVar(&force, "force", false, "recover a provably-orphaned interrupted install (refuses a managed or running stack), then install")
 
@@ -179,6 +192,76 @@ func parseSetFlags(pairs []string) (map[string]string, error) {
 		values[key] = value
 	}
 	return values, nil
+}
+
+// parsePortOverrides turns the repeatable --port HOST=NEW pairs into the
+// override map for [types.InstallRequest.PortOverrides]. Like parseSetFlags it
+// is thin: the engine owns every semantic check (port existence,
+// remappability, the 1025..65535 bound). It refuses only the shapes the engine
+// cannot report — a pair with no '=', a non-integer HOST or NEW, and a
+// duplicate HOST — all plain (non-typed) errors so cmd/wdm's exitCodeFor maps
+// them to exit 2.
+func parsePortOverrides(pairs []string) (map[int]int, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	overrides := make(map[int]int, len(pairs))
+	for _, pair := range pairs {
+		hostText, newText, found := strings.Cut(pair, "=")
+		if !found {
+			return nil, fmt.Errorf("apps install: invalid --port %q: expected HOST=NEW", pair)
+		}
+		host, hostErr := strconv.Atoi(strings.TrimSpace(hostText))
+		newPort, newErr := strconv.Atoi(strings.TrimSpace(newText))
+		if hostErr != nil || newErr != nil {
+			return nil, fmt.Errorf("apps install: invalid --port %q: HOST and NEW must be integers", pair)
+		}
+		if _, dup := overrides[host]; dup {
+			return nil, fmt.Errorf("apps install: duplicate --port host %d", host)
+		}
+		overrides[host] = newPort
+	}
+	return overrides, nil
+}
+
+// portConflictPayload is the wdm.v1 envelope data emitted under --json when an
+// install fails on a remappable host-port conflict (ADR 0004). It names the
+// conflicting service and port plus the deterministic suggested free port, so a
+// machine consumer can offer a --port remap without parsing the message.
+type portConflictPayload struct {
+	Code            string `json:"code"`
+	Message         string `json:"message"`
+	Hint            string `json:"hint,omitempty"`
+	Service         string `json:"service"`
+	ConflictingPort int    `json:"conflicting_port"`
+	SuggestedPort   int    `json:"suggested_port"`
+}
+
+// reportInstallError surfaces an install failure. Under --json a typed
+// [types.PortConflictError] is emitted as a wdm.v1 envelope on stdout carrying
+// the structured detail; every other error (and the plain path) just returns
+// so cmd/wdm prints it to stderr and maps the exit code. The original error is
+// always returned so the exit code is unchanged; an envelope-write fault is
+// joined in rather than masking the conflict.
+func reportInstallError(cmd *cobra.Command, useJSON bool, err error) error {
+	var conflict *types.PortConflictError
+	if !useJSON || !errors.As(err, &conflict) {
+		return err
+	}
+	payload := portConflictPayload{
+		Service:         conflict.Service,
+		ConflictingPort: conflict.ConflictingHostPort,
+		SuggestedPort:   conflict.SuggestedHostPort,
+	}
+	if conflict.Err != nil {
+		payload.Code = conflict.Err.Code.String()
+		payload.Message = conflict.Err.Message
+		payload.Hint = conflict.Err.Hint
+	}
+	if emitErr := EmitJSON(cmd.OutOrStdout(), payload); emitErr != nil {
+		return errors.Join(err, emitErr)
+	}
+	return err
 }
 
 // stderrProgress returns a [types.ProgressFn] that writes one line per

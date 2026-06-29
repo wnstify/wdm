@@ -71,6 +71,7 @@ func (e *Engine) planInstall(
 		resolvedValues: map[string]string{},
 		localPorts:     []types.PortBinding{},
 		probePort:      probePort,
+		portOverrides:  req.PortOverrides,
 	}
 
 	if err := plan.planPlaceholders(req, e.settings.Timezone, tzDeps); err != nil {
@@ -646,11 +647,13 @@ func (p *installPlan) planPorts(ctx context.Context) error {
 	seen := map[string]struct{}{}
 	var planned []types.PortBinding
 	publicPorts := map[int]struct{}{}
+	rangeHostPorts := map[int]struct{}{}
 	for _, port := range p.app.Ports {
 		bindings, err := portBindings(port)
 		if err != nil {
 			return err
 		}
+		isRange := port.HostRange != "" || port.ContainerRange != ""
 		for _, binding := range bindings {
 			key := fmt.Sprintf("%s/%d", binding.Protocol, binding.HostPort)
 			if _, ok := seen[key]; ok {
@@ -664,6 +667,9 @@ func (p *installPlan) planPorts(ctx context.Context) error {
 			if port.Public {
 				publicPorts[binding.HostPort] = struct{}{}
 			}
+			if isRange {
+				rangeHostPorts[binding.HostPort] = struct{}{}
+			}
 			planned = append(planned, binding)
 		}
 	}
@@ -676,13 +682,182 @@ func (p *installPlan) planPorts(ctx context.Context) error {
 		return err
 	}
 
+	// Apply user remaps before the probe so the chosen port is the one
+	// probed (ADR 0004). Only single loopback ports are remappable.
+	if err := applyPortOverrides(planned, p.portOverrides, rangeHostPorts, publicPorts); err != nil {
+		return err
+	}
+
+	plannedHostPorts := make(map[int]struct{}, len(planned))
+	for _, binding := range planned {
+		plannedHostPorts[binding.HostPort] = struct{}{}
+	}
+
 	for _, binding := range planned {
 		if err := p.probePort(ctx, binding); err != nil {
-			return err
+			return p.enrichPortConflict(ctx, binding, rangeHostPorts, publicPorts, plannedHostPorts, err)
 		}
 		p.localPorts = append(p.localPorts, binding)
 	}
 	return nil
+}
+
+// applyPortOverrides rewrites planned host ports per the request's
+// oldHostPort→newHostPort map, before the availability probe (ADR 0004). Only
+// single loopback ports are remappable: an override naming a range port, a
+// public port, or no planned binding is a usage-validation error, as is a
+// privileged (≤1024) or out-of-range target (PRD §11). The host IP is never
+// changed — a remap can never turn a loopback port into a public one.
+func applyPortOverrides(planned []types.PortBinding, overrides map[int]int, rangeHostPorts, publicPorts map[int]struct{}) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+
+	// Resolve and validate every override against the pre-mutation plan first,
+	// so a remap whose target equals another remap's source cannot reorder by
+	// map-iteration order. Only after all overrides validate are the rewrites
+	// applied.
+	type rewrite struct {
+		idx     int
+		newPort int
+	}
+	rewrites := make([]rewrite, 0, len(overrides))
+	for oldPort, newPort := range overrides {
+		idx := -1
+		for i := range planned {
+			if planned[i].HostPort == oldPort {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			return usageValidationError(
+				"port override names no planned host port",
+				fmt.Sprintf("no app port binds 127.0.0.1:%d; pass --port with a port this app actually binds", oldPort),
+				fmt.Errorf("override %d→%d matches no planned binding", oldPort, newPort),
+			)
+		}
+		if _, isRange := rangeHostPorts[oldPort]; isRange {
+			return usageValidationError(
+				"port override targets a range port",
+				fmt.Sprintf("host port %d belongs to a port range and cannot be remapped", oldPort),
+				fmt.Errorf("override %d→%d targets a range host port", oldPort, newPort),
+			)
+		}
+		if _, isPublic := publicPorts[oldPort]; isPublic {
+			return usageValidationError(
+				"port override targets a public port",
+				fmt.Sprintf("host port %d is a public port and cannot be remapped", oldPort),
+				fmt.Errorf("override %d→%d targets a public host port", oldPort, newPort),
+			)
+		}
+		if newPort <= 1024 || newPort > 65535 {
+			return usageValidationError(
+				"port override target is out of range",
+				fmt.Sprintf("choose an unprivileged host port between 1025 and 65535, not %d", newPort),
+				fmt.Errorf("override %d→%d target is not in 1025..65535", oldPort, newPort),
+			)
+		}
+		rewrites = append(rewrites, rewrite{idx: idx, newPort: newPort})
+	}
+	for _, rw := range rewrites {
+		planned[rw.idx].HostPort = rw.newPort
+	}
+
+	// A remap must not land two bindings on the same protocol/host port; that
+	// would silently install on an unintended port instead of the requested
+	// one. Reject it as a usage error.
+	seen := make(map[string]struct{}, len(planned))
+	for _, binding := range planned {
+		key := fmt.Sprintf("%s/%d", binding.Protocol, binding.HostPort)
+		if _, dup := seen[key]; dup {
+			return usageValidationError(
+				"port override collides with another planned port",
+				fmt.Sprintf("two services would bind %s; choose distinct host ports", key),
+				fmt.Errorf("override produced duplicate host port %s", key),
+			)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// enrichPortConflict turns a plan-time probe failure into a typed
+// [types.PortConflictError] carrying a deterministic suggestion when the
+// conflicting binding is a remappable single loopback port. An EACCES
+// (elevated-privileges) failure, and any conflict on a range or public port,
+// stay the plain fail-closed error unchanged (ADR 0004). The pre-deploy
+// re-check ([recheckPorts]) never calls this, so its rare race stays plain too.
+func (p *installPlan) enrichPortConflict(
+	ctx context.Context,
+	binding types.PortBinding,
+	rangeHostPorts, publicPorts, plannedHostPorts map[int]struct{},
+	probeErr error,
+) error {
+	if errors.Is(probeErr, syscall.EACCES) {
+		return probeErr
+	}
+	if binding.HostIP != "127.0.0.1" {
+		return probeErr
+	}
+	if _, isRange := rangeHostPorts[binding.HostPort]; isRange {
+		return probeErr
+	}
+	if _, isPublic := publicPorts[binding.HostPort]; isPublic {
+		return probeErr
+	}
+
+	suggested := p.suggestFreePort(ctx, binding, plannedHostPorts)
+	hint := fmt.Sprintf("free 127.0.0.1:%d or remap it with --port %d=NEW", binding.HostPort, binding.HostPort)
+	if suggested != 0 {
+		hint = fmt.Sprintf("127.0.0.1:%d is in use; remap it with --port %d=%d (or another free port)", binding.HostPort, binding.HostPort, suggested)
+	}
+
+	// probeErr is already a usage_validation *Error; wrap its underlying cause
+	// (the net.OpError → syscall chain) so the enriched error keeps errors.Is
+	// reachability without duplicating the "[usage_validation]" message frame.
+	cause := probeErr
+	var probeTyped *types.Error
+	if errors.As(probeErr, &probeTyped) && probeTyped.Cause != nil {
+		cause = probeTyped.Cause
+	}
+	return types.NewPortConflictError(
+		binding.Service,
+		binding.ContainerPort,
+		binding.HostPort,
+		suggested,
+		types.WrapError(types.ErrCodeUsageValidation, "local port is already in use", hint, cause),
+	)
+}
+
+// portSuggestScanWindow caps how many candidate ports suggestFreePort probes
+// upward from a conflict, so a heavily loaded host cannot stretch the scan over
+// tens of thousands of probes. Fail-closed 0 when none free in the window.
+const portSuggestScanWindow = 1024
+
+// suggestFreePort scans upward from the conflicting port for the next free,
+// unprivileged (>1024) loopback host port, skipping ports already planned by
+// the same install, re-probing each candidate through the same seam as the
+// plan-time check (no new TOCTOU hole). It returns 0 fail-closed when no free
+// port is found in the scan range (ADR 0004 / PRD §11).
+func (p *installPlan) suggestFreePort(ctx context.Context, conflict types.PortBinding, plannedHostPorts map[int]struct{}) int {
+	start := conflict.HostPort + 1
+	if start <= 1024 {
+		start = 1025
+	}
+	// Scan at most portSuggestScanWindow candidates so worst-case latency stays
+	// bounded regardless of host load; 65535 remains the hard upper edge.
+	for candidate := start; candidate < start+portSuggestScanWindow && candidate <= 65535; candidate++ {
+		if _, planned := plannedHostPorts[candidate]; planned {
+			continue
+		}
+		probe := conflict
+		probe.HostPort = candidate
+		if p.probePort(ctx, probe) == nil {
+			return candidate
+		}
+	}
+	return 0
 }
 
 // refusePublicAdminPorts refuses any public-declared host port that is also
