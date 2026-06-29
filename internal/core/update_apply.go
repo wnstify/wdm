@@ -320,6 +320,13 @@ func (e *Engine) rewriteUpdateStack(
 		ServiceLabels:   composeStack.ServiceLabels,
 		VolumeMounts:    composeStack.VolumeMounts,
 	}
+	// Persist a remapped loopback host port across the re-render (ADR 0005,
+	// issue #148): read the effective binding from the pre-render on-disk
+	// compose and rewrite the rendered default back to the recorded port, so
+	// the §11.1 bind scans below validate the preserved bytes.
+	if err := preserveUpdateHostPorts(rewrite, redactor); err != nil {
+		return nil, err
+	}
 	// The catalog pins drive the update diff while the template image:
 	// lines drive what the recreate deploys; refuse a drifted catalog on
 	// the update arc exactly as install does (PRD §9, §22).
