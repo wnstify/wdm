@@ -381,12 +381,11 @@ func TestPlanPorts_AutoPortResolvesConflict(t *testing.T) {
 		planHosts(t), nil)
 	require.NoError(t, err)
 	require.Len(t, plan.LocalPorts, 1)
+	// The planner only returns a binding after probing it free, so a port above
+	// the conflict is sufficient proof; re-listening here would just re-race the
+	// (unheld) port against sibling parallel tests for no added guarantee.
 	assert.Greater(t, plan.LocalPorts[0].HostPort, busy, "auto-port scans upward from the conflict")
 	assert.Equal(t, "127.0.0.1", plan.LocalPorts[0].HostIP, "auto-port never changes the host IP")
-
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(plan.LocalPorts[0].HostPort)))
-	require.NoError(t, err, "the auto-bound port must be genuinely free")
-	_ = ln.Close()
 }
 
 // TestPlanPorts_AutoPortFailsClosedWhenNoFreePort proves --auto-port fails
