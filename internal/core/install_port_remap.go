@@ -195,8 +195,9 @@ func extractShortPort(value string) (container string, host int, ok bool) {
 
 // extractLongPort reads a Compose long-form port mapping's loopback host port
 // and its container-side identity (target plus any protocol). Only a loopback
-// host_ip with an integer published port is read; a range published value is
-// skipped.
+// host_ip with an integer published port AND a target (the container port,
+// required by the long form) is read; a range published value or a missing
+// target is skipped, so a degenerate entry never seeds an empty-keyed binding.
 func extractLongPort(node *yaml.Node) (container string, host int, ok bool) {
 	hostIP := mappingValue(node, "host_ip")
 	if hostIP == nil || !isLoopbackHost(hostIP.Value) {
@@ -210,9 +211,11 @@ func extractLongPort(node *yaml.Node) (container string, host int, ok bool) {
 	if err != nil {
 		return "", 0, false
 	}
-	if target := mappingValue(node, "target"); target != nil {
-		container = target.Value
+	target := mappingValue(node, "target")
+	if target == nil || target.Value == "" {
+		return "", 0, false
 	}
+	container = target.Value
 	if proto := mappingValue(node, "protocol"); proto != nil && proto.Value != "" {
 		container += "/" + proto.Value
 	}

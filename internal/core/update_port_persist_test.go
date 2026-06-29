@@ -41,6 +41,41 @@ func updatePortDiskCompose(portsLine string) string {
 `
 }
 
+// updatePortCandidateTmplLong is updatePortCandidateTmpl in Compose long form
+// (host_ip/published/target), so the long-form extractor path is exercised
+// end to end. published is the new catalog default host port.
+func updatePortCandidateTmplLong(published string) string {
+	return `services:
+  app:
+    image: docker.io/example/app:2.0.0
+    ports:
+      - target: 80
+        published: ` + published + `
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh:ro
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+      API_TOKEN: ${API_TOKEN}
+      SITE_NAME: ${SITE_NAME}
+`
+}
+
+// updatePortDiskComposeLong is updatePortDiskCompose in Compose long form.
+// published is the effective (pre-render) loopback host port.
+func updatePortDiskComposeLong(published string) string {
+	return `services:
+  app:
+    image: docker.io/example/app:1.0.0
+    ports:
+      - target: 80
+        published: ` + published + `
+        host_ip: 127.0.0.1
+        protocol: tcp
+`
+}
+
 // newUpdatePortFixture wires an update apply fixture whose candidate template
 // renders candidatePorts as the new catalog default and whose on-disk compose
 // is overwritten with diskCompose (the effective pre-render bindings the
@@ -144,6 +179,30 @@ func TestUpdate_ApplyDroppedBindingIsSkipped(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(composeAfter), "9999",
 		"a binding the new catalog dropped must not be carried over")
+}
+
+// TestUpdate_ApplyPreservesRemappedLongFormHostPort proves the long-form port
+// path (host_ip/published/target) is preserved across update exactly like the
+// short form: on-disk publishes the remapped 9999, the new catalog default is
+// 8080, and 9999 must survive. Exercises extractLongPort end to end.
+func TestUpdate_ApplyPreservesRemappedLongFormHostPort(t *testing.T) {
+	t.Parallel()
+
+	fx := newUpdatePortFixture(t, "preserve-port-long-app",
+		updatePortCandidateTmplLong("8080"),
+		updatePortDiskComposeLong("9999"),
+	)
+
+	res, err := fx.eng.Update(t.Context(), types.UpdateRequest{AppID: fx.appID}, nil, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	composeAfter, err := os.ReadFile(fx.composePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(composeAfter), "published: 9999",
+		"the remapped long-form host port must survive the update re-render")
+	assert.NotContains(t, string(composeAfter), "published: 8080",
+		"the catalog default must not revert the remapped long-form port")
 }
 
 // TestUpdate_ApplyUnparseableOnDiskComposeFailsClosed proves the preservation
