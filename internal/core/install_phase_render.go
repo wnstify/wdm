@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -139,6 +142,7 @@ func buildInstallGuidance(plan *installPlan) (*types.PostInstallGuidance, error)
 	if err != nil {
 		return nil, err
 	}
+	localTargetURL = remapGuidanceURL(localTargetURL, plan.portOverrides)
 
 	firstRunNotes := append([]string(nil), plan.app.FirstRunNotes...)
 	firstRunNotes = append(firstRunNotes, containerPrivilegeDisclosureLines(plan.app)...)
@@ -158,7 +162,7 @@ func buildInstallGuidance(plan *installPlan) (*types.PostInstallGuidance, error)
 	pangolin := plan.app.PangolinGuidance
 	if pangolin.TargetURL != "" || pangolin.RecommendedSubdomain != "" || len(pangolin.Notes) > 0 {
 		guidance.Pangolin = &types.PangolinGuidance{
-			TargetURL:            pangolin.TargetURL,
+			TargetURL:            remapGuidanceURL(pangolin.TargetURL, plan.portOverrides),
 			RecommendedSubdomain: pangolin.RecommendedSubdomain,
 			Notes:                append([]string(nil), pangolin.Notes...),
 		}
@@ -185,6 +189,39 @@ func renderInstallLocalTargetURL(plan *installPlan) (string, error) {
 		return "", fmt.Errorf("render local_target_url_template: %w", err)
 	}
 	return rendered.String(), nil
+}
+
+// remapGuidanceURL rewrites a localhost guidance URL's host port when it is a
+// remap source, so the post-install target URL points at the actually-bound
+// port after a --port/--auto-port remap. A URL with no port, an unparseable
+// value, a non-loopback host, or a port that is not an override key is returned
+// unchanged. Only loopback hosts are rewritten, matching the remap invariant
+// that only loopback ports are ever remapped (ADR 0004 / PRD §11.1).
+func remapGuidanceURL(raw string, overrides map[int]int) string {
+	if len(overrides) == 0 || raw == "" {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	portText := parsed.Port()
+	if portText == "" {
+		return raw
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return raw
+	}
+	if ip := net.ParseIP(parsed.Hostname()); ip == nil || !ip.IsLoopback() {
+		return raw
+	}
+	newPort, ok := overrides[port]
+	if !ok {
+		return raw
+	}
+	parsed.Host = net.JoinHostPort(parsed.Hostname(), strconv.Itoa(newPort))
+	return parsed.String()
 }
 
 // guidanceText flattens the guidance strings for the non-secret

@@ -127,6 +127,44 @@ func TestRenderInstall_OverrideRewritesComposeHostPort(t *testing.T) {
 	assert.NotContains(t, rendered, fmt.Sprintf("127.0.0.1:%d:8080", oldPort), "the original host port must be gone from the rendered compose")
 }
 
+// TestGuidance_RemapRewritesTargetURLs proves a --port/--auto-port remap also
+// rewrites the post-install guidance URLs to the actually-bound host port. The
+// catalog admin URLs (local_target_url_template and pangolin target_url) point at
+// the original catalog port; after the override they must name the new port, not
+// the stale catalog one, so the reverse-proxy hint stays correct (issue #146).
+func TestGuidance_RemapRewritesTargetURLs(t *testing.T) {
+	t.Parallel()
+
+	oldPort := freeLocalTCPPort(t)
+	newPort := freeLocalTCPPort(t)
+	app := appFixture("guidance-remap-app", oldPort)
+	app.LocalTargetURLTemplate = fmt.Sprintf("http://127.0.0.1:%d/", oldPort)
+	app.PangolinGuidance.TargetURL = fmt.Sprintf("http://127.0.0.1:%d", oldPort)
+	compose := fmt.Sprintf("services:\n  app:\n    image: docker.io/example/app:1.0.0\n    ports:\n      - \"127.0.0.1:%d:8080\"\n", oldPort)
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: compose,
+		app.EnvTemplate:     "",
+	}, app)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+
+	snap, err := core.RenderInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, PortOverrides: map[int]int{oldPort: newPort}},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.NotNil(t, snap.Guidance)
+	require.NotNil(t, snap.Guidance.Pangolin)
+
+	newHostPort := fmt.Sprintf("127.0.0.1:%d", newPort)
+	oldHostPort := fmt.Sprintf("127.0.0.1:%d", oldPort)
+	assert.Contains(t, snap.Guidance.LocalTargetURL, newHostPort, "local target URL must point at the bound port")
+	assert.NotContains(t, snap.Guidance.LocalTargetURL, oldHostPort, "the stale catalog port must be gone from the local target URL")
+	assert.Contains(t, snap.Guidance.Pangolin.TargetURL, newHostPort, "pangolin target URL must point at the bound port")
+	assert.NotContains(t, snap.Guidance.Pangolin.TargetURL, oldHostPort, "the stale catalog port must be gone from the pangolin target URL")
+}
+
 // TestRenderInstall_OverrideUnmatchedInComposeFailsClosed proves the drift
 // guard: when the catalog host port (which the override matches at plan time)
 // does not appear in the rendered compose — a catalog/template host-port drift —
