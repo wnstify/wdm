@@ -290,6 +290,41 @@ func TestModel_PortRemapIgnoresSubmitWhileBusy(t *testing.T) {
 	assert.Equal(t, screenInstallResult, m.screen)
 }
 
+// TestModel_PortRemapEscWhileBusyIsIgnored locks the honest cancel contract:
+// once a remap submit is in flight (busy), Esc cannot un-dispatch the engine op,
+// so Back must be a no-op instead of pretending to cancel. The already-dispatched
+// op still completes normally when its command runs (ADR 0004).
+func TestModel_PortRemapEscWhileBusyIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	fake := installFormFake()
+	fake.installOutcomes = []installOutcome{
+		{err: portConflict("web", 8080, 8081)},
+		{result: &types.InstallResult{AppID: "alpha", StackPath: "/srv/alpha"}},
+	}
+	m := submitInstallForm(t, loadInstallForm(t, fake))
+	require.Equal(t, screenPortRemap, m.screen)
+
+	// Submit puts the model in flight (busy); hold the command unrun.
+	next, cmd := m.Update(enterKey())
+	m = assertModel(t, next)
+	require.NotNil(t, cmd)
+	require.True(t, m.busy)
+	require.NotNil(t, m.portConflict)
+
+	// Esc while busy must not navigate or clear the conflict: the retry is
+	// already dispatched and cannot be canceled.
+	m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	require.Equal(t, screenPortRemap, m.screen, "Esc must be ignored while a retry is in flight")
+	require.True(t, m.busy)
+	require.NotNil(t, m.portConflict, "Esc must not clear the in-flight conflict")
+
+	// The in-flight op still completes: running the held command lands normally.
+	m = updateModel(t, m, cmd())
+	require.Len(t, fake.installRequests, 2)
+	assert.Equal(t, screenInstallResult, m.screen)
+}
+
 func TestModel_PortConflictNoSuggestionStaysFailClosed(t *testing.T) {
 	t.Parallel()
 

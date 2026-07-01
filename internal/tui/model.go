@@ -677,8 +677,13 @@ func (m *model) back() {
 		m.screen = screenInstallCatalog
 		m.err = nil
 	case screenPortRemap:
-		// Cancel aborts fail-closed: nothing was written, so drop back to the
-		// form with the conflict cleared (ADR 0004).
+		// Cancel aborts fail-closed only on the conflict prompt before submit:
+		// nothing was written, so drop back to the form with the conflict
+		// cleared. Once a retry is in flight, Esc cannot un-dispatch the engine
+		// op, so Back is a no-op (ADR 0004).
+		if m.busy {
+			return
+		}
 		m.screen = screenInstallForm
 		m.portConflict = nil
 		m.err = nil
