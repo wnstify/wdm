@@ -45,6 +45,7 @@ const (
 	screenInstallCatalog
 	screenInstallForm
 	screenInstallResult
+	screenPortRemap
 	screenUpdateApps
 	screenUpdateResult
 	screenRemoveActions
@@ -103,6 +104,9 @@ type model struct {
 	catalogDetail      *types.CatalogApp
 	installFields      []installField
 	installFieldCursor int
+	installReq         types.InstallRequest
+	portConflict       *types.PortConflictError
+	portRemapInput     string
 	installResult      *types.InstallResult
 	updateResult       *types.UpdateResult
 	removeActionCursor int
@@ -386,12 +390,7 @@ func (m model) updateFinishedMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 		m.reconfigureResult = msg.result
 	case installFinishedMsg:
-		m.busy = false
-		m.err = msg.err
-		m.installResult = msg.result
-		if msg.err == nil {
-			m.screen = screenInstallResult
-		}
+		return m.applyInstallFinished(msg), nil
 	case updateFinishedMsg:
 		m.busy = false
 		m.err = msg.err
@@ -552,7 +551,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the global 'b'/'q' shortcuts must not shadow runes destined for a field.
 func (m model) isTextEntryScreen() bool {
 	switch m.screen {
-	case screenInstallForm, screenSettings, screenDeleteName, screenResources:
+	case screenInstallForm, screenPortRemap, screenSettings, screenDeleteName, screenResources:
 		return true
 	default:
 		return false
@@ -563,6 +562,9 @@ func (m model) updateScreenSpecificKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool
 	switch m.screen {
 	case screenInstallForm:
 		next, cmd := m.updateInstallFormKey(msg)
+		return next, cmd, true
+	case screenPortRemap:
+		next, cmd := m.updatePortRemapKey(msg)
 		return next, cmd, true
 	case screenSettings:
 		next, cmd := m.updateSettingsKey(msg)
@@ -673,6 +675,12 @@ func (m *model) back() {
 		m.restoreResult = nil
 	case screenInstallForm:
 		m.screen = screenInstallCatalog
+		m.err = nil
+	case screenPortRemap:
+		// Cancel aborts fail-closed: nothing was written, so drop back to the
+		// form with the conflict cleared (ADR 0004).
+		m.screen = screenInstallForm
+		m.portConflict = nil
 		m.err = nil
 	case screenFirstRunWelcome, screenFirstRunSystemCheck, screenCheckApps, screenStopAll, screenStopAllResult, screenUninstall, screenUninstallResult, screenInstallCatalog, screenInstallResult, screenUpdateApps, screenUpdateResult, screenRemoveResult, screenDeleteResult, screenBackupsApps, screenRestoreResult, screenSettings, screenRuntimeLock, screenCatalogUpdate, screenCatalogUpdateResult, screenSelfUpdate, screenSelfUpdateResult:
 		m.screen = screenDashboard
@@ -992,7 +1000,7 @@ func (m model) screenView() string {
 		return m.firstRunWelcomeView()
 	case screenFirstRunSystemCheck:
 		return m.firstRunSystemCheckView()
-	case screenInstallCatalog, screenInstallForm, screenInstallResult:
+	case screenInstallCatalog, screenInstallForm, screenInstallResult, screenPortRemap:
 		return m.installScreenView()
 	case screenUpdateApps:
 		return m.updateAppsView()
@@ -1072,6 +1080,8 @@ func (m model) installScreenView() string {
 		return m.installFormScreenView()
 	case screenInstallResult:
 		return m.installResultScreenView()
+	case screenPortRemap:
+		return m.installPortRemapView()
 	default:
 		return m.installCatalogScreenView()
 	}

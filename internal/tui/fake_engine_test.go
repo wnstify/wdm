@@ -42,6 +42,7 @@ type fakeEngine struct {
 	availableAppCalls      []types.CatalogAppQuery
 	installResult          *types.InstallResult
 	installErr             error
+	installOutcomes        []installOutcome
 	installRequests        []types.InstallRequest
 	updateResult           *types.UpdateResult
 	updateErr              error
@@ -149,6 +150,14 @@ func (f *fakeEngine) Logs(context.Context, types.LogsRequest, engine.LogLineFn) 
 	return nil
 }
 
+// installOutcome is one queued Install return, so a test can drive the
+// port-remap re-invoke loop (conflict, then conflict again, then success)
+// through repeated Install calls.
+type installOutcome struct {
+	result *types.InstallResult
+	err    error
+}
+
 func (f *fakeEngine) Install(
 	_ context.Context,
 	req types.InstallRequest,
@@ -156,6 +165,11 @@ func (f *fakeEngine) Install(
 	_ types.Confirmer,
 ) (*types.InstallResult, error) {
 	f.installRequests = append(f.installRequests, req)
+	if len(f.installOutcomes) > 0 {
+		out := f.installOutcomes[0]
+		f.installOutcomes = f.installOutcomes[1:]
+		return out.result, out.err
+	}
 	return f.installResult, f.installErr
 }
 
