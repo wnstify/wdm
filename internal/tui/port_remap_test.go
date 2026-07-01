@@ -201,7 +201,7 @@ func TestModel_PortRemapEngineErrorKeepsScreenUsable(t *testing.T) {
 	for range "8081" {
 		m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
 	}
-	m = typeIntoInstallField(t, m, "70000")
+	m = typeIntoInstallField(t, m, "9000")
 	next, cmd := m.Update(enterKey())
 	m = assertModel(t, next)
 	require.NotNil(t, cmd)
@@ -221,6 +221,73 @@ func TestModel_PortRemapEngineErrorKeepsScreenUsable(t *testing.T) {
 	m = updateModel(t, m, cmd())
 
 	require.Len(t, fake.installRequests, 3, "the second Enter must re-invoke install")
+}
+
+// TestModel_PortRemapRejectsOutOfRangePort locks the client-side bound: a host
+// port outside the engine's unprivileged range is rejected on the remap screen
+// with instant feedback and never re-invokes install (mirrors applyPortOverrides
+// / PRD §11). The conflict stays so the screen keeps rendering and editing.
+func TestModel_PortRemapRejectsOutOfRangePort(t *testing.T) {
+	t.Parallel()
+
+	for _, port := range []string{"70000", "80"} {
+		t.Run(port, func(t *testing.T) {
+			t.Parallel()
+
+			fake := installFormFake()
+			fake.installErr = portConflict("web", 8080, 8081)
+			m := submitInstallForm(t, loadInstallForm(t, fake))
+			require.Equal(t, screenPortRemap, m.screen)
+
+			for range "8081" {
+				m = updateModel(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+			}
+			m = typeIntoInstallField(t, m, port)
+
+			next, cmd := m.Update(enterKey())
+			m = assertModel(t, next)
+			require.Nil(t, cmd, "an out-of-range port must not re-invoke install")
+
+			assert.Equal(t, screenPortRemap, m.screen)
+			require.Error(t, m.err)
+			assert.Contains(t, m.err.Error(), "between 1025 and 65535")
+			assert.Len(t, fake.installRequests, 1, "no new Install dispatched")
+			require.NotNil(t, m.portConflict, "the conflict must stay so the screen stays usable")
+		})
+	}
+}
+
+// TestModel_PortRemapIgnoresSubmitWhileBusy locks the re-entrant guard: once a
+// remap submit is in flight (busy), a second Enter must not dispatch a second
+// Install. The queued first outcome is folded in only after we run its command.
+func TestModel_PortRemapIgnoresSubmitWhileBusy(t *testing.T) {
+	t.Parallel()
+
+	fake := installFormFake()
+	fake.installOutcomes = []installOutcome{
+		{err: portConflict("web", 8080, 8081)},
+		{result: &types.InstallResult{AppID: "alpha", StackPath: "/srv/alpha"}},
+	}
+	m := submitInstallForm(t, loadInstallForm(t, fake))
+	require.Equal(t, screenPortRemap, m.screen)
+
+	// First submit puts the model in flight (busy) but we hold the command.
+	next, cmd := m.Update(enterKey())
+	m = assertModel(t, next)
+	require.NotNil(t, cmd)
+	require.True(t, m.busy)
+	require.Len(t, fake.installRequests, 1, "the command has not run yet")
+
+	// A second Enter while busy must be swallowed.
+	next2, cmd2 := m.Update(enterKey())
+	m = assertModel(t, next2)
+	require.Nil(t, cmd2, "a submit while busy must not re-invoke install")
+	require.Len(t, fake.installRequests, 1, "no second Install dispatched while busy")
+
+	// Running the held command dispatches exactly the first Install.
+	m = updateModel(t, m, cmd())
+	require.Len(t, fake.installRequests, 2)
+	assert.Equal(t, screenInstallResult, m.screen)
 }
 
 func TestModel_PortConflictNoSuggestionStaysFailClosed(t *testing.T) {

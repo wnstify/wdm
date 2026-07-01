@@ -167,13 +167,19 @@ func (m model) updatePortRemapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // matches an existing override's target the same catalog key is updated rather
 // than adding a stale key that would match no planned binding.
 func (m model) submitPortRemap() (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
 	if m.portConflict == nil {
 		return m, nil
 	}
 
+	// Reject outside the engine's unprivileged range (mirrors applyPortOverrides
+	// / PRD §11) so the user gets instant feedback instead of a re-invoke round
+	// trip. The engine stays the authority.
 	newPort, err := strconv.Atoi(m.portRemapInput)
-	if err != nil || newPort <= 0 {
-		m.err = fmt.Errorf("enter a host port number")
+	if err != nil || newPort < 1025 || newPort > 65535 {
+		m.err = fmt.Errorf("enter a host port between 1025 and 65535")
 		return m, nil
 	}
 
@@ -223,6 +229,9 @@ func (m model) deleteInstallInputRune() model {
 }
 
 func (m model) submitInstall() (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
 	if m.catalogDetail == nil {
 		m.err = fmt.Errorf("no catalog app selected")
 		return m, nil
