@@ -44,6 +44,184 @@ func applyComposePortRemap(plan *installPlan, redactor security.Redactor) error 
 	return nil
 }
 
+// portBindingKey identifies a compose host-port binding by service and
+// container port (the container side plus any protocol suffix), so the update
+// preservation step can pair an effective on-disk binding against the freshly
+// rendered new-catalog default even when the host port changed.
+type portBindingKey struct {
+	service       string
+	containerPort string
+}
+
+// preserveUpdateHostPorts keeps a remapped loopback host port stable across an
+// update (ADR 0005). The pre-render on-disk compose carries the effective
+// bindings; the freshly rendered plan carries the new-catalog defaults. For
+// every (service, containerPort) present in BOTH whose effective host port
+// differs from the new default, the recorded port wins: an override
+// {newDefault → effective} is fed to rewriteComposeHostPorts so the rendered
+// compose binds the recorded port. A binding the new catalog no longer
+// declares is dropped silently. It runs after RenderLabels and before the
+// §11.1 bind scans so the scans validate the rewritten compose. Fails closed
+// (redacted verification error → rollback) if either compose is unreadable or
+// unparseable, or if an override key never matched the rendered compose.
+func preserveUpdateHostPorts(plan *installPlan, redactor security.Redactor) error {
+	oldCompose, err := readStackFile(plan.stackPath, installComposeFilename)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"existing stack compose could not be read for port preservation",
+			"the stack compose is corrupt; reinstall the app to restore managed state",
+			err,
+		)
+	}
+	effective, err := extractLoopbackHostPorts(oldCompose)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"existing stack compose could not be parsed for port preservation",
+			"the stack compose is corrupt; reinstall the app to restore managed state",
+			err,
+		)
+	}
+	defaults, err := extractLoopbackHostPorts(plan.rendered.ComposeBytes)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"rendered compose could not be parsed for port preservation",
+			"refresh the catalog and retry",
+			err,
+		)
+	}
+
+	overrides := map[int]int{}
+	for key, defaultHost := range defaults {
+		recorded, ok := effective[key]
+		if !ok || recorded == defaultHost {
+			continue
+		}
+		overrides[defaultHost] = recorded
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+
+	rewritten, matched, err := rewriteComposeHostPorts(plan.rendered.ComposeBytes, overrides)
+	if err != nil {
+		return redactedVerificationError(
+			redactor,
+			"remapped compose could not be produced for port preservation",
+			"the stack compose is corrupt; reinstall the app to restore managed state",
+			err,
+		)
+	}
+	for old := range overrides {
+		if _, ok := matched[old]; !ok {
+			return redactedVerificationError(
+				redactor,
+				"preserved host port not found in rendered compose",
+				"refresh the catalog and retry",
+				fmt.Errorf("preserved host port %d has no matching loopback binding in the rendered compose", old),
+			)
+		}
+	}
+	plan.rendered.ComposeBytes = rewritten
+	return nil
+}
+
+// extractLoopbackHostPorts reads the effective single loopback host ports from
+// a compose document, keyed by (service, containerPort). It mirrors
+// rewriteComposeHostPorts's notion of remappable: a 3-segment loopback short
+// form, or a long form carrying a loopback host_ip; ranges (non-integer
+// published) and public/all-interfaces binds are skipped.
+func extractLoopbackHostPorts(composeBytes []byte) (map[portBindingKey]int, error) {
+	result := map[portBindingKey]int{}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(composeBytes, &doc); err != nil {
+		return nil, fmt.Errorf("parse compose for port preservation: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return result, nil
+	}
+
+	services := mappingValue(doc.Content[0], "services")
+	if services == nil || services.Kind != yaml.MappingNode {
+		return result, nil
+	}
+
+	for i := 1; i < len(services.Content); i += 2 {
+		service := services.Content[i-1].Value
+		ports := mappingValue(services.Content[i], "ports")
+		if ports == nil || ports.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, entry := range ports.Content {
+			switch entry.Kind {
+			case yaml.ScalarNode:
+				if container, host, ok := extractShortPort(entry.Value); ok {
+					result[portBindingKey{service, container}] = host
+				}
+			case yaml.MappingNode:
+				if container, host, ok := extractLongPort(entry); ok {
+					result[portBindingKey{service, container}] = host
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+// extractShortPort reads a Compose short-form port string's loopback host port
+// and its container-side identity (container port plus any protocol suffix).
+// Only the 3-segment host_ip:host:container form on a loopback host IP with an
+// integer host port is read; a 2-segment (all-interfaces) entry and a range
+// (non-integer host) are skipped.
+func extractShortPort(value string) (container string, host int, ok bool) {
+	spec, proto, hasProto := strings.Cut(value, "/")
+	parts := strings.Split(spec, ":")
+	if len(parts) != 3 || !isLoopbackHost(parts[0]) {
+		return "", 0, false
+	}
+	host, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return "", 0, false
+	}
+	container = parts[2]
+	if hasProto {
+		container += "/" + proto
+	}
+	return container, host, true
+}
+
+// extractLongPort reads a Compose long-form port mapping's loopback host port
+// and its container-side identity (target plus any protocol). Only a loopback
+// host_ip with an integer published port AND a target (the container port,
+// required by the long form) is read; a range published value or a missing
+// target is skipped, so a degenerate entry never seeds an empty-keyed binding.
+func extractLongPort(node *yaml.Node) (container string, host int, ok bool) {
+	hostIP := mappingValue(node, "host_ip")
+	if hostIP == nil || !isLoopbackHost(hostIP.Value) {
+		return "", 0, false
+	}
+	published := mappingValue(node, "published")
+	if published == nil {
+		return "", 0, false
+	}
+	host, err := strconv.Atoi(published.Value)
+	if err != nil {
+		return "", 0, false
+	}
+	target := mappingValue(node, "target")
+	if target == nil || target.Value == "" {
+		return "", 0, false
+	}
+	container = target.Value
+	if proto := mappingValue(node, "protocol"); proto != nil && proto.Value != "" {
+		container += "/" + proto.Value
+	}
+	return container, host, true
+}
+
 // rewriteComposeHostPorts edits the rendered docker-compose so a PortOverrides
 // remap actually reaches the deployed binding. Catalog host ports are literal
 // ints in each compose_template (no host-port placeholder exists), so changing

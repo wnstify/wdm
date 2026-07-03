@@ -69,6 +69,12 @@ type installPlan struct {
 	// (ADR 0004). Sourced from [types.InstallRequest.PortOverrides].
 	portOverrides map[int]int
 
+	// autoPort opts in to non-interactively resolving remaining remappable
+	// loopback conflicts during port planning by binding the deterministic
+	// next-free port (ADR 0004 / PRD §11.1). Sourced from
+	// [types.InstallRequest.AutoPort]; explicit portOverrides win over it.
+	autoPort bool
+
 	// frozen marks the end of the plan's producing region (issue #120). A
 	// plan is mutated only while it is built — placeholders, ports,
 	// resources, secrets, and the render output — after which [freeze] flips

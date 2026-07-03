@@ -59,6 +59,14 @@ type InstallRequest struct {
 	// binding is a usage-validation error.
 	PortOverrides map[int]int `json:"port_overrides,omitempty"`
 
+	// AutoPort opts in to non-interactively resolving remaining remappable
+	// single loopback host-port conflicts by binding the deterministic
+	// next-free port, re-planning in a bounded loop until all conflicts clear
+	// (ADR 0004 / PRD §11.1). Explicit PortOverrides take precedence: a port
+	// the user remapped is never auto-rescued. It fails closed when no free
+	// port is found for a conflicting binding.
+	AutoPort bool `json:"auto_port,omitempty"`
+
 	// Force opts in to recovering a provably-orphaned interrupted install
 	// before installing: the stack directory left behind by a hard-killed
 	// (SIGKILL) install is removed so a fresh install can proceed. It

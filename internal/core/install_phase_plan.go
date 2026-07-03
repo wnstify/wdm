@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math"
 	"net"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -72,6 +74,7 @@ func (e *Engine) planInstall(
 		localPorts:     []types.PortBinding{},
 		probePort:      probePort,
 		portOverrides:  req.PortOverrides,
+		autoPort:       req.AutoPort,
 	}
 
 	if err := plan.planPlaceholders(req, e.settings.Timezone, tzDeps); err != nil {
@@ -643,21 +646,97 @@ func stringDefault(v any) (string, bool) {
 // public-bind scan all operate on the exact set of ports Compose will bind.
 // A public declaration for an app admin/web-UI port is refused as a
 // defense-in-depth backstop (PRD §11.1(d)) before any port is probed.
+//
+// When --auto-port is set, a remappable single-loopback conflict the user did
+// NOT explicitly remap is resolved by binding the deterministic next-free port
+// (the same suggestion the typed conflict carries), then re-planning in a
+// bounded loop until every binding is free or the plan fails closed (ADR 0004 /
+// PRD §11.1). Explicit PortOverrides always win: a port the user remapped is
+// never auto-rescued, so its conflict surfaces as the typed error. A conflict
+// on a range or public port, or one with no free port in the scan window,
+// stays the fail-closed error.
 func (p *installPlan) planPorts(ctx context.Context) error {
+	base, publicPorts, rangeHostPorts, err := p.catalogPortBindings()
+	if err != nil {
+		return err
+	}
+
+	// Admin-port detection falls back to the first planned port when the app
+	// declares no local_target_url_template, so identify admin ports only
+	// after the full plan is known. The refusal precedes any availability
+	// probe so a catalog defect fails fast (PRD §11.1(d)).
+	if err := refusePublicAdminPorts(p, base, publicPorts); err != nil {
+		return err
+	}
+
+	overrides := maps.Clone(p.portOverrides)
+	if overrides == nil {
+		overrides = map[int]int{}
+	}
+	for attempt := 0; ; attempt++ {
+		// base is never mutated; each attempt rewrites a fresh clone so a retry
+		// starts from the catalog host ports, not the prior attempt's remaps.
+		planned := slices.Clone(base)
+		if err := applyPortOverrides(planned, overrides, rangeHostPorts, publicPorts); err != nil {
+			return err
+		}
+
+		plannedHostPorts := make(map[int]struct{}, len(planned))
+		for _, binding := range planned {
+			plannedHostPorts[binding.HostPort] = struct{}{}
+		}
+
+		conflictIdx := -1
+		var conflictErr error
+		var bound []types.PortBinding
+		for i, binding := range planned {
+			if probeErr := p.probePort(ctx, binding); probeErr != nil {
+				conflictIdx = i
+				conflictErr = p.enrichPortConflict(ctx, binding, rangeHostPorts, publicPorts, plannedHostPorts, probeErr)
+				break
+			}
+			bound = append(bound, binding)
+		}
+		if conflictIdx == -1 {
+			p.localPorts = bound
+			p.portOverrides = overrides
+			return nil
+		}
+
+		catalogPort := base[conflictIdx].HostPort
+		// p.portOverrides is still the ORIGINAL explicit map; a port the user
+		// remapped explicitly is never auto-rescued.
+		_, explicit := p.portOverrides[catalogPort]
+		var conflict *types.PortConflictError
+		if !p.autoPort ||
+			explicit ||
+			!errors.As(conflictErr, &conflict) ||
+			conflict.SuggestedHostPort == 0 ||
+			attempt >= autoPortMaxAttempts {
+			return conflictErr
+		}
+		overrides[catalogPort] = conflict.SuggestedHostPort
+	}
+}
+
+// catalogPortBindings expands the verified catalog ports into the base set of
+// host bindings plus the public and range host-port indexes. base is the
+// catalog ground truth (host ports as declared) and is never mutated by
+// remapping; each planPorts attempt rewrites a clone of it.
+func (p *installPlan) catalogPortBindings() (base []types.PortBinding, publicPorts, rangeHostPorts map[int]struct{}, err error) {
 	seen := map[string]struct{}{}
-	var planned []types.PortBinding
-	publicPorts := map[int]struct{}{}
-	rangeHostPorts := map[int]struct{}{}
+	publicPorts = map[int]struct{}{}
+	rangeHostPorts = map[int]struct{}{}
 	for _, port := range p.app.Ports {
 		bindings, err := portBindings(port)
 		if err != nil {
-			return err
+			return nil, nil, nil, err
 		}
 		isRange := port.HostRange != "" || port.ContainerRange != ""
 		for _, binding := range bindings {
 			key := fmt.Sprintf("%s/%d", binding.Protocol, binding.HostPort)
 			if _, ok := seen[key]; ok {
-				return catalogVerificationError(
+				return nil, nil, nil, catalogVerificationError(
 					"catalog contains duplicate host ports",
 					"refresh the catalog and retry",
 					fmt.Errorf("duplicate host port %s", key),
@@ -670,36 +749,10 @@ func (p *installPlan) planPorts(ctx context.Context) error {
 			if isRange {
 				rangeHostPorts[binding.HostPort] = struct{}{}
 			}
-			planned = append(planned, binding)
+			base = append(base, binding)
 		}
 	}
-
-	// Admin-port detection falls back to the first planned port when the app
-	// declares no local_target_url_template, so identify admin ports only
-	// after the full plan is known. The refusal precedes any availability
-	// probe so a catalog defect fails fast (PRD §11.1(d)).
-	if err := refusePublicAdminPorts(p, planned, publicPorts); err != nil {
-		return err
-	}
-
-	// Apply user remaps before the probe so the chosen port is the one
-	// probed (ADR 0004). Only single loopback ports are remappable.
-	if err := applyPortOverrides(planned, p.portOverrides, rangeHostPorts, publicPorts); err != nil {
-		return err
-	}
-
-	plannedHostPorts := make(map[int]struct{}, len(planned))
-	for _, binding := range planned {
-		plannedHostPorts[binding.HostPort] = struct{}{}
-	}
-
-	for _, binding := range planned {
-		if err := p.probePort(ctx, binding); err != nil {
-			return p.enrichPortConflict(ctx, binding, rangeHostPorts, publicPorts, plannedHostPorts, err)
-		}
-		p.localPorts = append(p.localPorts, binding)
-	}
-	return nil
+	return base, publicPorts, rangeHostPorts, nil
 }
 
 // applyPortOverrides rewrites planned host ports per the request's
@@ -834,6 +887,11 @@ func (p *installPlan) enrichPortConflict(
 // upward from a conflict, so a heavily loaded host cannot stretch the scan over
 // tens of thousands of probes. Fail-closed 0 when none free in the window.
 const portSuggestScanWindow = 1024
+
+// autoPortMaxAttempts bounds the --auto-port re-plan loop so a pathological
+// host (every suggested port re-taken between probe and bind) cannot spin
+// forever; it is the bounded-retry safety net, not the expected iteration count.
+const autoPortMaxAttempts = 64
 
 // suggestFreePort scans upward from the conflicting port for the next free,
 // unprivileged (>1024) loopback host port, skipping ports already planned by

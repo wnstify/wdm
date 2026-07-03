@@ -3,6 +3,52 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.5.0 - 2026-07-03
+
+### Added
+- `wdm apps install --auto-port` automatically remaps conflicting loopback host
+  ports to the deterministic next-free port, non-interactively, re-planning
+  until all conflicts clear or the install fails closed (no free port).
+  Explicit `--port` wins: a port you remapped yourself is never auto-rescued,
+  and only single `127.0.0.1` ports are auto-resolved (ranges and public ports
+  stay fail-closed).
+- The interactive installer now offers to remap a conflicting loopback host port
+  instead of only failing. On a `127.0.0.1` port conflict the TUI shows the busy
+  port and its service and prompts for a new host port, prefilled with a
+  deterministic suggestion: press Enter to accept it, type a different port, or
+  press Esc to cancel (fail-closed, nothing is written). Submitting re-runs the
+  install with the chosen port re-probed; if it is also busy the prompt returns
+  with a fresh suggestion, and multiple conflicts are resolved one at a time.
+
+### Changed
+- Internal cleanup of the destructive paths, with no behavior change: delete
+  and uninstall now share one compose-derived network-removal loop, and the
+  symlink-aware path-containment checks in front of directory removal moved
+  into the security package with new tests at that boundary. Refusal behavior
+  and messages are unchanged.
+
+### Fixed
+- `wdm apps update` now preserves the loopback host port a stack is actually
+  bound to instead of reverting to the catalog default. A port remapped at
+  install (or a default a maintainer later changed) survives every update, with
+  no new flag: the update reads the effective binding from the on-disk compose
+  and re-renders the new catalog version onto that same port. Only single
+  `127.0.0.1` ports are preserved; ranges and public ports re-render to the
+  catalog default. `reconfigure` already preserved the port and is unchanged.
+- Post-install guidance notes now show the remapped loopback host port after a
+  `--port`, `--auto-port`, or TUI conflict remap. The "point your reverse proxy
+  at `http://127.0.0.1:<port>`" hint (and any other loopback URL embedded in a
+  first-run or Pangolin note) previously kept the original catalog port even
+  though the local target and Pangolin target URLs were already remapped.
+- The installer's rootless Docker pre-flight now matches the `name=rootless`
+  security option exactly, aligning with the runtime gate instead of a
+  substring match that a value like `name=rootless-extra` would satisfy.
+- `wdm apps install --force` orphan recovery no longer aborts with a
+  permission error when the orphaned stack contains data written by
+  containers as subordinate UIDs. Recovery now clears such bind-mount
+  contents through the Docker cleanup helper and retries the removal,
+  matching what `apps delete` already did.
+
 ## v1.4.0 - 2026-06-29
 
 ### Added

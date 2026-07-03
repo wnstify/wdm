@@ -18,7 +18,6 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -145,11 +144,13 @@ func TestInstallUptimeKuma(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stackBase, 0o755))
 
 	// The stack uses bind mounts (./data,./db); the containers write
-	// those as their own internal UIDs (root, mysql=999), which the host
-	// test user cannot unlink. Registered right after stackBase is
-	// created so it runs LAST among the test's cleanups — just before
-	// t.TempDir's RemoveAll — reowning the tree so RemoveAll succeeds.
-	t.Cleanup(func() { reownStackFiles(t, stackBase) })
+	// those as their own internal UIDs (root, mysql=999), which map to
+	// subordinate UIDs the host test user cannot unlink on a rootless
+	// daemon. Registered right after stackBase is created so it runs LAST
+	// among the test's cleanups — just before t.TempDir's RemoveAll —
+	// removing the tree inside the user namespace so RemoveAll finds
+	// nothing subuid-owned left (issue #165).
+	t.Cleanup(func() { removeStackFilesInUserNS(t, stackBase) })
 
 	seedStableCatalog(t, dataDir)
 
@@ -468,25 +469,27 @@ func dockerHygiene(t *testing.T) {
 	}
 }
 
-// reownStackFiles chowns the stack base tree back to the host test user
-// via a throwaway root container. Container processes write bind-mounted
-// files (./data as root,./db as mysql=999) that the unprivileged test
-// user cannot unlink, which would make t.TempDir's RemoveAll fail. The
-// alpine:3 image is not part of the stack's pull set; `docker run`
-// pulls it on first use, best-effort. Failures are logged, not fatal —
-// they only degrade temp-dir cleanup.
-func reownStackFiles(t *testing.T, stackBase string) {
+// removeStackFilesInUserNS deletes the stack base tree from inside the
+// rootless user namespace before Go's t.TempDir cleanup runs. The stack's
+// containers write bind-mounted files (./data as root, ./db as mysql=999)
+// as subordinate UIDs the unprivileged host test user cannot unlink, so a
+// plain RemoveAll — which is exactly what t.TempDir does — fails with
+// EACCES on a rootless daemon (issue #165). rootlesskit ships alongside the
+// rootless dockerd on PATH; `rootlesskit rm -rf` runs rm inside the
+// namespace where the mapped root owns the whole subuid range and can
+// unlink the tree. Best-effort by design: on failure the tree is left in
+// place and t.TempDir's own RemoveAll surfaces the original permission
+// error, exactly as before — cleanup never masks the test's outcome.
+func removeStackFilesInUserNS(t *testing.T, stackBase string) {
 	t.Helper()
 	if _, err := os.Stat(stackBase); err != nil {
 		return
 	}
-	owner := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
-	runDocker(t,
-		"run", "--rm",
-		"-v", stackBase+":/work",
-		"alpine:3",
-		"chown", "-R", owner, "/work",
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "rootlesskit", "rm", "-rf", stackBase).CombinedOutput(); err != nil {
+		t.Logf("rootlesskit rm -rf %s (best-effort): %v\n%s", stackBase, err, out)
+	}
 }
 
 // dockerLines runs a docker query and returns its non-empty stdout lines.

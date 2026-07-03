@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/url"
 	"path"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -139,9 +143,11 @@ func buildInstallGuidance(plan *installPlan) (*types.PostInstallGuidance, error)
 	if err != nil {
 		return nil, err
 	}
+	localTargetURL = remapGuidanceURL(localTargetURL, plan.portOverrides)
 
 	firstRunNotes := append([]string(nil), plan.app.FirstRunNotes...)
 	firstRunNotes = append(firstRunNotes, containerPrivilegeDisclosureLines(plan.app)...)
+	remapGuidanceNotes(firstRunNotes, plan.portOverrides)
 
 	guidance := &types.PostInstallGuidance{
 		LocalTargetURL: localTargetURL,
@@ -157,10 +163,12 @@ func buildInstallGuidance(plan *installPlan) (*types.PostInstallGuidance, error)
 	}
 	pangolin := plan.app.PangolinGuidance
 	if pangolin.TargetURL != "" || pangolin.RecommendedSubdomain != "" || len(pangolin.Notes) > 0 {
+		pangolinNotes := append([]string(nil), pangolin.Notes...)
+		remapGuidanceNotes(pangolinNotes, plan.portOverrides)
 		guidance.Pangolin = &types.PangolinGuidance{
-			TargetURL:            pangolin.TargetURL,
+			TargetURL:            remapGuidanceURL(pangolin.TargetURL, plan.portOverrides),
 			RecommendedSubdomain: pangolin.RecommendedSubdomain,
-			Notes:                append([]string(nil), pangolin.Notes...),
+			Notes:                pangolinNotes,
 		}
 	}
 	return guidance, nil
@@ -185,6 +193,85 @@ func renderInstallLocalTargetURL(plan *installPlan) (string, error) {
 		return "", fmt.Errorf("render local_target_url_template: %w", err)
 	}
 	return rendered.String(), nil
+}
+
+// remapGuidanceURL rewrites a localhost guidance URL's host port when it is a
+// remap source, so the post-install target URL points at the actually-bound
+// port after a --port/--auto-port remap. A URL with no port, an unparseable
+// value, a non-loopback host, or a port that is not an override key is returned
+// unchanged. Only loopback hosts are rewritten — the 127.0.0.1/::1 literals or
+// the localhost DNS name — matching the remap invariant that only loopback
+// ports are ever remapped (ADR 0004 / PRD §11.1).
+func remapGuidanceURL(raw string, overrides map[int]int) string {
+	if len(overrides) == 0 || raw == "" {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	portText := parsed.Port()
+	if portText == "" {
+		return raw
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return raw
+	}
+	if !isLoopbackGuidanceHost(parsed.Hostname()) {
+		return raw
+	}
+	newPort, ok := overrides[port]
+	if !ok {
+		return raw
+	}
+	parsed.Host = net.JoinHostPort(parsed.Hostname(), strconv.Itoa(newPort))
+	return parsed.String()
+}
+
+// loopbackHostPortRe matches a loopback host followed by a port embedded in
+// free text — the 127.0.0.1 literal, the bracketed [::1] form, or the localhost
+// DNS name. It captures the port digits so remapGuidanceNotes can rewrite only
+// the number. A bare ::1 is deliberately not matched: it would also match the
+// tail of a longer IPv6 address such as fc00::1:9000, and unbracketed IPv6
+// host:port is ambiguous — remapGuidanceURL likewise only accepts the
+// bracketed form via url.Parse.
+var loopbackHostPortRe = regexp.MustCompile(`(?:127\.0\.0\.1|\[::1\]|localhost):(\d+)`)
+
+// remapGuidanceNotes rewrites, in place, the loopback host port embedded in each
+// free-text guidance note when it is a remap source key, so notes that tell the
+// user to point a reverse proxy at http://127.0.0.1:<port> track a
+// --port/--auto-port remap (issue #161). Only ports that are override keys are
+// rewritten (ADR 0004 / PRD §11.1); every other occurrence is left untouched.
+func remapGuidanceNotes(notes []string, overrides map[int]int) {
+	if len(overrides) == 0 {
+		return
+	}
+	for i, note := range notes {
+		notes[i] = loopbackHostPortRe.ReplaceAllStringFunc(note, func(match string) string {
+			sep := strings.LastIndex(match, ":")
+			port, err := strconv.Atoi(match[sep+1:])
+			if err != nil {
+				return match
+			}
+			newPort, ok := overrides[port]
+			if !ok {
+				return match
+			}
+			return match[:sep+1] + strconv.Itoa(newPort)
+		})
+	}
+}
+
+// isLoopbackGuidanceHost reports whether a guidance URL host is loopback: a
+// loopback IP literal (127.0.0.1, ::1) or the localhost DNS name, which a
+// catalog may author instead of the IP literal.
+func isLoopbackGuidanceHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // guidanceText flattens the guidance strings for the non-secret

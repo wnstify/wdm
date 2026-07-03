@@ -115,6 +115,45 @@ func confirmLifecycleOp(
 	return nil
 }
 
+// partitionManagedNetworks removes each named wdm-created network best-effort
+// and partitions the outcome: an owned network actually removed (or already
+// absent) lands in removed, while one that genuinely cannot be removed or is
+// present but unowned lands in retained with a redacted reason. It is the
+// compose-derived network-removal loop the destructive delete and self-uninstall
+// paths share (PRD §10, §39); each verb keeps its own network-name sourcing and
+// progress emission and delegates only the partition. It NEVER returns an error
+// and NEVER aborts the caller — network removal must not block a delete or an
+// uninstall.
+func partitionManagedNetworks(
+	ctx context.Context,
+	client docker.Client,
+	names []string,
+) (removed []string, retained []types.RetainedNetwork) {
+	for _, name := range names {
+		ok, skipped, err := docker.RemoveNetworkIfManaged(ctx, client, name)
+		if err != nil {
+			retained = append(retained, types.RetainedNetwork{
+				Name:   name,
+				Reason: err.Error(),
+			})
+			continue
+		}
+		if skipped {
+			// Present but not wdm-owned (no wdm.managed=true label): leave the
+			// operator's network in place rather than deleting a foreign one.
+			retained = append(retained, types.RetainedNetwork{
+				Name:   name,
+				Reason: "network is not wdm-managed (missing wdm.managed=true label)",
+			})
+			continue
+		}
+		if ok {
+			removed = append(removed, name)
+		}
+	}
+	return removed, retained
+}
+
 // perStackOp runs the shared per-stack preparation the batch teardown verbs
 // share (stop-all, uninstall): SafeJoin the app id under the stack base, take
 // the exclusive per-stack flock, reconfirm the manifest names appID and carries

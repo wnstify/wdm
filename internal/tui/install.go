@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -136,6 +138,73 @@ func (m model) updateInstallFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updatePortRemapKey drives the port-conflict input: Enter re-invokes install
+// with the chosen port, digits build the port, backspace erases. Non-digit
+// runes are ignored so the field only ever holds a port number. Esc (handled
+// as Back in the top-level Update) cancels fail-closed.
+func (m model) updatePortRemapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Select):
+		return m.submitPortRemap()
+	case msg.Type == tea.KeyBackspace || msg.Type == tea.KeyCtrlH:
+		if m.portRemapInput != "" {
+			runes := []rune(m.portRemapInput)
+			m.portRemapInput = string(runes[:len(runes)-1])
+		}
+	case msg.Type == tea.KeyRunes:
+		for _, r := range msg.Runes {
+			if r >= '0' && r <= '9' {
+				m.portRemapInput += string(r)
+			}
+		}
+	}
+	return m, nil
+}
+
+// submitPortRemap records the chosen host port as a PortOverride and re-invokes
+// install (ADR 0004). PortOverrides keys on the catalog host port, but a repeat
+// conflict reports the effective (already-remapped) port, so when the busy port
+// matches an existing override's target the same catalog key is updated rather
+// than adding a stale key that would match no planned binding.
+func (m model) submitPortRemap() (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
+	if m.portConflict == nil {
+		return m, nil
+	}
+
+	// Reject outside the engine's unprivileged range (mirrors applyPortOverrides
+	// / PRD §11) so the user gets instant feedback instead of a re-invoke round
+	// trip. The engine stays the authority.
+	newPort, err := strconv.Atoi(m.portRemapInput)
+	if err != nil || newPort < 1025 || newPort > 65535 {
+		m.err = fmt.Errorf("enter a host port between 1025 and 65535")
+		return m, nil
+	}
+
+	if m.installReq.PortOverrides == nil {
+		m.installReq.PortOverrides = map[int]int{}
+	}
+	catalogPort := m.portConflict.ConflictingHostPort
+	for old, remapped := range m.installReq.PortOverrides {
+		if remapped == catalogPort {
+			catalogPort = old
+			break
+		}
+	}
+	m.installReq.PortOverrides[catalogPort] = newPort
+
+	// Keep m.portConflict set: a plain (non-PortConflictError) re-invoke failure
+	// leaves applyInstallFinished nothing to repopulate it with, and the remap
+	// screen renders "No port conflict." + swallows m.err if it goes nil, dead-
+	// ending the user. A fresh conflict overwrites it; success advances the
+	// screen and makes the stale value harmless (ADR 0004).
+	m.busy = true
+	m.err = nil
+	return m, m.installCmd(m.installReq)
+}
+
 func (m model) appendInstallInput(value string) model {
 	if m.installFieldCursor >= len(m.installFields) {
 		return m
@@ -160,15 +229,45 @@ func (m model) deleteInstallInputRune() model {
 }
 
 func (m model) submitInstall() (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
 	if m.catalogDetail == nil {
 		m.err = fmt.Errorf("no catalog app selected")
 		return m, nil
 	}
 
 	req := m.installRequest()
+	m.installReq = req
 	m.busy = true
 	m.err = nil
 	return m, m.installCmd(req)
+}
+
+// applyInstallFinished folds an Install outcome into the model. A remappable
+// host-port conflict (a typed *PortConflictError carrying a non-zero
+// suggestion) is not a failure: it opens the port-remap screen prefilled with
+// the suggestion so the user can accept, retype, or cancel (ADR 0004). A
+// fail-closed conflict (suggestion 0) and any other error stay a plain failure
+// on the form; success advances to the result screen.
+func (m model) applyInstallFinished(msg installFinishedMsg) model {
+	m.busy = false
+
+	var conflict *types.PortConflictError
+	if errors.As(msg.err, &conflict) && conflict.SuggestedHostPort != 0 {
+		m.err = nil
+		m.portConflict = conflict
+		m.portRemapInput = strconv.Itoa(conflict.SuggestedHostPort)
+		m.screen = screenPortRemap
+		return m
+	}
+
+	m.err = msg.err
+	m.installResult = msg.result
+	if msg.err == nil {
+		m.screen = screenInstallResult
+	}
+	return m
 }
 
 func (m model) installRequest() types.InstallRequest {
@@ -309,6 +408,41 @@ func (m model) installFormView() string {
 	b.WriteByte('\n')
 
 	b.WriteString("\n")
+	b.WriteString(m.helpLine())
+	return b.String()
+}
+
+func (m model) installPortRemapView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle().Render("Port conflict"))
+	b.WriteString("\n\n")
+
+	if m.busy {
+		b.WriteString("Retrying install...\n\n")
+		b.WriteString(m.helpLine())
+		return b.String()
+	}
+
+	if m.portConflict == nil {
+		b.WriteString("No port conflict.\n\n")
+		b.WriteString(m.helpLine())
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "127.0.0.1:%d is already in use", m.portConflict.ConflictingHostPort)
+	if m.portConflict.Service != "" {
+		fmt.Fprintf(&b, " by service %s", m.portConflict.Service)
+	}
+	b.WriteString(".\n\n")
+
+	if m.err != nil {
+		b.WriteString(m.err.Error())
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("New host port: ")
+	b.WriteString(m.portRemapInput)
+	b.WriteString("\n\n")
 	b.WriteString(m.helpLine())
 	return b.String()
 }

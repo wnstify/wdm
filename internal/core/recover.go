@@ -69,6 +69,22 @@ func (e *Engine) recoverOrphanedStack(
 	}
 	lg.step(ctx, "recover: no running containers for project")
 
+	// Prove the digest-pinned bind-cleanup helper image is present BEFORE any
+	// state mutation. removeOrphanStackDir may need it to clear subuid-owned
+	// bind files on EACCES (RemoveBindMountContents runs --pull=never), and
+	// clearing the .wdm.lock first would strip the only proof the directory is
+	// wdm-owned: a failed removal after the lock is gone would leave a
+	// lock-less, non-empty directory that every later --force refuses via the
+	// StackLockClearAbsent path. Fail closed here, before the lock is touched.
+	if err := docker.EnsureBindMountCleanupHelperAvailable(ctx, client); err != nil {
+		return types.WrapError(
+			types.ErrCodeGeneric,
+			"orphan recovery cannot proceed without the bind-cleanup helper image",
+			"pull the wdm cleanup helper image, then retry `wdm apps install --force`",
+			err,
+		)
+	}
+
 	// Capture the wdm-created networks from the rendered compose BEFORE
 	// removing the directory; a missing/unparseable file yields no names.
 	composePath := filepath.Join(stackPath, installComposeFilename)
@@ -81,7 +97,7 @@ func (e *Engine) recoverOrphanedStack(
 
 	switch outcome {
 	case state.StackLockClearCleared:
-		if err := removeOrphanStackDir(stackPath); err != nil {
+		if err := removeOrphanStackDir(ctx, client, stackPath); err != nil {
 			return err
 		}
 		lg.step(ctx, "recover: removed wdm-owned orphan stack directory")
@@ -119,7 +135,7 @@ func (e *Engine) recoverOrphanedStack(
 // reject an unsafe root, reject symlinked ancestors, reject an out-of-home
 // or suspiciously shallow resolved path, then RemoveAll. Named volumes are
 // Docker objects and are never touched here.
-func removeOrphanStackDir(stackPath string) error {
+func removeOrphanStackDir(ctx context.Context, client docker.Client, stackPath string) error {
 	if err := security.RejectUnsafeRoot(stackPath); err != nil {
 		return stackPathUnsafeError(err)
 	}
@@ -154,7 +170,7 @@ func removeOrphanStackDir(stackPath string) error {
 			err,
 		)
 	}
-	if isSuspiciouslyShallowPath(cleaned) {
+	if security.IsSuspiciouslyShallowPath(cleaned) {
 		return usageValidationError(
 			"the orphan stack path resolves to a suspiciously shallow location",
 			"wdm refuses to remove a near-root directory (PRD §39)",
@@ -163,14 +179,31 @@ func removeOrphanStackDir(stackPath string) error {
 	}
 
 	if err := os.RemoveAll(cleaned); err != nil {
-		return types.WrapError(
-			types.ErrCodeGeneric,
-			"the orphan stack directory could not be removed",
-			"inspect the stack directory and remove it manually",
-			err,
-		)
+		if errors.Is(err, os.ErrPermission) {
+			// An interrupted install can leave subuid-owned bind files under
+			// the orphan directory, so the host user's RemoveAll gets EACCES.
+			// The fallback mounts only the already containment-proven directory
+			// and never touches Compose named volumes (issue #166).
+			if cleanupErr := docker.RemoveBindMountContents(ctx, client, cleaned); cleanupErr != nil {
+				return wrapRemoveOrphanStackDirError(errors.Join(err, cleanupErr))
+			}
+			if retryErr := os.RemoveAll(cleaned); retryErr != nil {
+				return wrapRemoveOrphanStackDirError(errors.Join(err, retryErr))
+			}
+			return nil
+		}
+		return wrapRemoveOrphanStackDirError(err)
 	}
 	return nil
+}
+
+func wrapRemoveOrphanStackDirError(err error) error {
+	return types.WrapError(
+		types.ErrCodeGeneric,
+		"the orphan stack directory could not be removed",
+		"inspect the stack directory and remove it manually",
+		err,
+	)
 }
 
 // sweepRecoveredNetworks best-effort removes the wdm-created networks the
