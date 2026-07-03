@@ -916,37 +916,6 @@ func TestResolveDeleteTarget_ContainmentArms(t *testing.T) {
 	})
 }
 
-// TestIsSuspiciouslyShallowPath pins the lexical shallow-path backstop:
-// the filesystem root and any single top-level component are shallow
-// (refused), while a path at least two levels deep is not (a legitimate
-// managed stack lives at e.g. /home/<user>/docker/<app>). This is the
-// §19:452 defense-in-depth arm guarding against a stack base that ever
-// resolves near root.
-func TestIsSuspiciouslyShallowPath(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		path    string
-		shallow bool
-	}{
-		{"/", true},
-		{"/etc", true},
-		{"/home", true},
-		{"/private", true},
-		{"/home/user", false},
-		{"/home/user/docker/app", false},
-		{"/private/var/folders/xx/stacks/app", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.shallow, core.IsSuspiciouslyShallowPathForTest(tt.path),
-				"isSuspiciouslyShallowPath(%q)", tt.path)
-		})
-	}
-}
-
 // TestDeleteApp_RefusesUnmanagedMissingAndCorrupt covers the managed-only
 // refusals shared with Remove (PRD §9, §10, §19):
 // uninstalled apps, unmanaged directories, and corrupt manifests all

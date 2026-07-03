@@ -2,6 +2,8 @@ package security_test
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -158,6 +160,134 @@ func TestSafeJoin_TableDriven(t *testing.T) {
 			assert.Empty(t, got)
 			assert.True(t, errors.Is(err, tc.wantErr),
 				"want errors.Is(err, %v); got %v", tc.wantErr, err)
+		})
+	}
+}
+
+// TestResolveContainedPath_TableDriven exercises the symlink-aware
+// containment seam at the REAL filesystem boundary — real temp dirs and
+// real symlinks, never mocks — so the EvalSymlinks-both-sides + containment
+// contract destructive verbs depend on is verified end to end.
+func TestResolveContainedPath_TableDriven(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		setup     func(t *testing.T) (root, candidate string)
+		wantErr   bool
+		wantErrIs error // nil with wantErr means: just require an error
+		wantEqual bool  // resolvedRoot == resolvedCandidate on success
+	}{
+		{
+			name: "candidate under root resolves",
+			setup: func(t *testing.T) (string, string) {
+				root := t.TempDir()
+				cand := filepath.Join(root, "app")
+				require.NoError(t, os.MkdirAll(cand, 0o755))
+				return root, cand
+			},
+		},
+		{
+			name: "candidate equal to root resolves to equal pair",
+			setup: func(t *testing.T) (string, string) {
+				root := t.TempDir()
+				return root, root
+			},
+			wantEqual: true,
+		},
+		{
+			name: "symlink escaping root is ErrPathEscape",
+			setup: func(t *testing.T) (string, string) {
+				root := t.TempDir()
+				outside := t.TempDir()
+				cand := filepath.Join(root, "link")
+				require.NoError(t, os.Symlink(outside, cand))
+				return root, cand
+			},
+			wantErr:   true,
+			wantErrIs: security.ErrPathEscape,
+		},
+		{
+			name: "non-existent candidate is os.ErrNotExist",
+			setup: func(t *testing.T) (string, string) {
+				root := t.TempDir()
+				return root, filepath.Join(root, "missing")
+			},
+			wantErr:   true,
+			wantErrIs: os.ErrNotExist,
+		},
+		{
+			name: "empty root rejected",
+			setup: func(t *testing.T) (string, string) {
+				return "", t.TempDir()
+			},
+			wantErr: true,
+		},
+		{
+			name: "relative root rejected",
+			setup: func(t *testing.T) (string, string) {
+				return "not-an-absolute-root", t.TempDir()
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root, candidate := tc.setup(t)
+			resolvedRoot, resolvedCandidate, err := security.ResolveContainedPath(root, candidate)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.wantErrIs != nil {
+					assert.True(t, errors.Is(err, tc.wantErrIs),
+						"want errors.Is(err, %v); got %v", tc.wantErrIs, err)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.NotEmpty(t, resolvedRoot)
+			assert.NotEmpty(t, resolvedCandidate)
+
+			realCandidate, evalErr := filepath.EvalSymlinks(candidate)
+			require.NoError(t, evalErr)
+			assert.Equal(t, filepath.Clean(realCandidate), resolvedCandidate)
+			if tc.wantEqual {
+				assert.Equal(t, resolvedRoot, resolvedCandidate)
+			}
+		})
+	}
+}
+
+// TestIsSuspiciouslyShallowPath pins the lexical shallow-path backstop: the
+// filesystem root and any single top-level component are shallow (refused),
+// while a path at least two levels deep is not (a legitimate managed stack
+// lives at e.g. /home/<user>/docker/<app>).
+func TestIsSuspiciouslyShallowPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		path    string
+		shallow bool
+	}{
+		{"/", true},
+		{"/etc", true},
+		{"/home", true},
+		{"/private", true},
+		{"/data/app", false},
+		{"/home/u", false},
+		{"/home/user/docker/app", false},
+		{"/private/var/folders/xx/stacks/app", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.shallow, security.IsSuspiciouslyShallowPath(tc.path),
+				"IsSuspiciouslyShallowPath(%q)", tc.path)
 		})
 	}
 }

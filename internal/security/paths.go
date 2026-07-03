@@ -145,3 +145,64 @@ func SafeJoin(root, untrustedSub string) (string, error) {
 	}
 	return joined, nil
 }
+
+// IsSuspiciouslyShallowPath reports whether cleaned — an absolute, cleaned
+// path — sits at the filesystem root or a single top-level component such as
+// "/etc" or "/home", and ONLY those. The floor is deliberately shallow: a
+// two-segment path such as "/data/<app>" is NOT shallow and stays removable,
+// because a single-segment custom stack base (e.g. "/data" resolving stacks
+// to "/data/<app>") is legitimate and a stricter >=3-segment floor would
+// refuse it. It is a defense-in-depth backstop that destructive verbs apply
+// just before os.RemoveAll — a sibling of [RejectUnsafeRoot] and its
+// unsafeRoots deny-list — not the load-bearing guard.
+func IsSuspiciouslyShallowPath(cleaned string) bool {
+	trimmed := strings.Trim(cleaned, string(filepath.Separator))
+	if trimmed == "" {
+		// The filesystem root.
+		return true
+	}
+	// A single top-level component (no separator after trimming) is shallow.
+	return !strings.Contains(trimmed, string(filepath.Separator))
+}
+
+// ResolveContainedPath resolves root and candidate through
+// [filepath.EvalSymlinks] on BOTH sides, lexically cleans each result, and
+// verifies the resolved candidate lies within the resolved root via
+// [EnsureWithinRoot]. It is the symlink-aware containment seam destructive
+// verbs run immediately before os.RemoveAll, so the comparison is
+// symlink-consistent on both sides: comparing a resolved candidate against an
+// unresolved root could spuriously pass or fail across a symlink indirection
+// (e.g. /var -> /private/var on the test host).
+//
+// The errors are message-agnostic so each caller can translate them into its
+// own PRD-anchored wording. Root is resolved first, then candidate, so the
+// returned values identify which stage failed:
+//   - empty resolvedRoot: the root failed to resolve;
+//   - empty resolvedCandidate with non-empty resolvedRoot: the candidate
+//     failed to resolve;
+//   - both non-empty with err != nil: a containment escape ([ErrPathEscape]).
+//
+// EvalSymlinks errors pass through unwrapped, so a caller can map a
+// non-existent candidate with [errors.Is](err, [os.ErrNotExist]).
+func ResolveContainedPath(root, candidate string) (resolvedRoot, resolvedCandidate string, err error) {
+	resolvedRoot, err = evalCleanPath(root)
+	if err != nil {
+		return "", "", err
+	}
+	resolvedCandidate, err = evalCleanPath(candidate)
+	if err != nil {
+		return resolvedRoot, "", err
+	}
+	if err := EnsureWithinRoot(resolvedRoot, resolvedCandidate); err != nil {
+		return resolvedRoot, resolvedCandidate, err
+	}
+	return resolvedRoot, resolvedCandidate, nil
+}
+
+func evalCleanPath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}

@@ -127,6 +127,122 @@ func TestRenderInstall_OverrideRewritesComposeHostPort(t *testing.T) {
 	assert.NotContains(t, rendered, fmt.Sprintf("127.0.0.1:%d:8080", oldPort), "the original host port must be gone from the rendered compose")
 }
 
+// TestGuidance_RemapRewritesTargetURLs proves a --port/--auto-port remap also
+// rewrites the post-install guidance URLs to the actually-bound host port. The
+// catalog admin URLs (local_target_url_template and pangolin target_url) point at
+// the original catalog port; after the override they must name the new port, not
+// the stale catalog one, so the reverse-proxy hint stays correct (issue #146).
+func TestGuidance_RemapRewritesTargetURLs(t *testing.T) {
+	t.Parallel()
+
+	oldPort := freeLocalTCPPort(t)
+	newPort := freeLocalTCPPort(t)
+	app := appFixture("guidance-remap-app", oldPort)
+	app.LocalTargetURLTemplate = fmt.Sprintf("http://127.0.0.1:%d/", oldPort)
+	app.PangolinGuidance.TargetURL = fmt.Sprintf("http://127.0.0.1:%d", oldPort)
+	compose := fmt.Sprintf("services:\n  app:\n    image: docker.io/example/app:1.0.0\n    ports:\n      - \"127.0.0.1:%d:8080\"\n", oldPort)
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: compose,
+		app.EnvTemplate:     "",
+	}, app)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+
+	snap, err := core.RenderInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, PortOverrides: map[int]int{oldPort: newPort}},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.NotNil(t, snap.Guidance)
+	require.NotNil(t, snap.Guidance.Pangolin)
+
+	newHostPort := fmt.Sprintf("127.0.0.1:%d", newPort)
+	oldHostPort := fmt.Sprintf("127.0.0.1:%d", oldPort)
+	assert.Contains(t, snap.Guidance.LocalTargetURL, newHostPort, "local target URL must point at the bound port")
+	assert.NotContains(t, snap.Guidance.LocalTargetURL, oldHostPort, "the stale catalog port must be gone from the local target URL")
+	assert.Contains(t, snap.Guidance.Pangolin.TargetURL, newHostPort, "pangolin target URL must point at the bound port")
+	assert.NotContains(t, snap.Guidance.Pangolin.TargetURL, oldHostPort, "the stale catalog port must be gone from the pangolin target URL")
+}
+
+// TestGuidance_RemapRewritesNotePorts proves a --port/--auto-port remap also
+// rewrites the loopback host port embedded in free-text guidance notes (the
+// "point your reverse proxy at http://127.0.0.1:<port>" hint). The catalog notes
+// name the original catalog port; after the override they must name the new
+// bound port, matching the already-remapped target URLs (issue #161).
+func TestGuidance_RemapRewritesNotePorts(t *testing.T) {
+	t.Parallel()
+
+	oldPort := freeLocalTCPPort(t)
+	newPort := freeLocalTCPPort(t)
+	app := appFixture("guidance-note-remap-app", oldPort)
+	app.FirstRunNotes = []string{
+		fmt.Sprintf("Open http://127.0.0.1:%d and create the admin account.", oldPort),
+		fmt.Sprintf("Peers reach the mesh at fc00::1:%d over the VPN.", oldPort),
+	}
+	app.PangolinGuidance.Notes = []string{fmt.Sprintf("Using your own reverse proxy? Point it to http://127.0.0.1:%d", oldPort)}
+	compose := fmt.Sprintf("services:\n  app:\n    image: docker.io/example/app:1.0.0\n    ports:\n      - \"127.0.0.1:%d:8080\"\n", oldPort)
+	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
+		app.ComposeTemplate: compose,
+		app.EnvTemplate:     "",
+	}, app)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFS))
+	core.SetInstallHostResourceProbeForTest(eng, func() (system.HostResources, error) {
+		return system.HostResources{CPUCores: 4, TotalMemoryBytes: 8 * gibibyte}, nil
+	})
+
+	snap, err := core.RenderInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, PortOverrides: map[int]int{oldPort: newPort}},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.NotNil(t, snap.Guidance)
+	require.NotNil(t, snap.Guidance.Pangolin)
+
+	newHostPort := fmt.Sprintf("127.0.0.1:%d", newPort)
+	oldHostPort := fmt.Sprintf("127.0.0.1:%d", oldPort)
+	require.Len(t, snap.Guidance.FirstRunNotes, 2)
+	assert.Contains(t, snap.Guidance.FirstRunNotes[0], newHostPort, "first-run note must point at the bound port")
+	assert.NotContains(t, snap.Guidance.FirstRunNotes[0], oldHostPort, "the stale catalog port must be gone from the first-run note")
+	assert.Equal(t, fmt.Sprintf("Peers reach the mesh at fc00::1:%d over the VPN.", oldPort),
+		snap.Guidance.FirstRunNotes[1], "a longer IPv6 address ending in ::1:<port> is not loopback and must not be rewritten")
+	require.Len(t, snap.Guidance.Pangolin.Notes, 1)
+	assert.Contains(t, snap.Guidance.Pangolin.Notes[0], newHostPort, "pangolin note must point at the bound port")
+	assert.NotContains(t, snap.Guidance.Pangolin.Notes[0], oldHostPort, "the stale catalog port must be gone from the pangolin note")
+}
+
+// TestRemapGuidanceURL pins the guidance-URL port rewriter: a loopback host —
+// whether the 127.0.0.1 literal or the localhost DNS name — has an override-key
+// port rewritten, while a non-loopback host, a missing/unparseable port, a port
+// that is not an override key, and an empty override map all leave the URL
+// untouched.
+func TestRemapGuidanceURL(t *testing.T) {
+	t.Parallel()
+
+	overrides := map[int]int{8080: 9090}
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"loopback ip rewritten", "http://127.0.0.1:8080/admin", "http://127.0.0.1:9090/admin"},
+		{"localhost name rewritten", "http://localhost:8080/", "http://localhost:9090/"},
+		{"non-loopback host untouched", "http://10.0.0.5:8080/", "http://10.0.0.5:8080/"},
+		{"port not an override key untouched", "http://127.0.0.1:7000/", "http://127.0.0.1:7000/"},
+		{"no port untouched", "http://127.0.0.1/", "http://127.0.0.1/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, core.RemapGuidanceURLForTest(tc.raw, overrides))
+		})
+	}
+
+	t.Run("empty overrides untouched", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "http://127.0.0.1:8080/", core.RemapGuidanceURLForTest("http://127.0.0.1:8080/", nil))
+	})
+}
+
 // TestRenderInstall_OverrideUnmatchedInComposeFailsClosed proves the drift
 // guard: when the catalog host port (which the override matches at plan time)
 // does not appear in the rendered compose — a catalog/template host-port drift —
@@ -293,6 +409,117 @@ func TestPlanPorts_OverrideRefusals(t *testing.T) {
 		assertUsageValidation(t, err)
 		assert.Contains(t, err.Error(), "collide")
 	})
+}
+
+// TestPlanPorts_AutoPortResolvesConflict proves --auto-port resolves a single
+// remappable loopback conflict non-interactively: the occupied catalog port is
+// rebound to the deterministic next-free port without any explicit --port.
+func TestPlanPorts_AutoPortResolvesConflict(t *testing.T) {
+	t.Parallel()
+
+	busy := occupyLoopbackPort(t)
+	app := appFixture("autoport-resolve-app", busy)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	plan, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.Len(t, plan.LocalPorts, 1)
+	// The planner only returns a binding after probing it free, so a port above
+	// the conflict is sufficient proof; re-listening here would just re-race the
+	// (unheld) port against sibling parallel tests for no added guarantee.
+	assert.Greater(t, plan.LocalPorts[0].HostPort, busy, "auto-port scans upward from the conflict")
+	assert.Equal(t, "127.0.0.1", plan.LocalPorts[0].HostIP, "auto-port never changes the host IP")
+}
+
+// TestPlanPorts_AutoPortFailsClosedWhenNoFreePort proves --auto-port fails
+// closed when no free port exists above the conflict: a catalog port at 65535
+// (above the Linux ephemeral range) is occupied, leaving no candidate, so the
+// plan returns the typed conflict with a zero suggestion and the usage exit.
+func TestPlanPorts_AutoPortFailsClosedWhenNoFreePort(t *testing.T) {
+	// Not parallel: binds the fixed top-of-range port 65535.
+	ln, err := net.Listen("tcp", "127.0.0.1:65535")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	app := appFixture("autoport-noport-app", 65535)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	_, err = core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true},
+		planHosts(t), nil)
+	require.Error(t, err)
+	var conflict *types.PortConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, 0, conflict.SuggestedHostPort, "no free port above 65535 means fail-closed 0")
+	assert.True(t, types.IsCode(err, types.ErrCodeUsageValidation))
+}
+
+// TestPlanPorts_AutoPortHonorsExplicitAndResolvesRest proves explicit and
+// auto remaps coexist: an explicit --port remap of a free port is honored
+// verbatim, while a second occupied port the user did not remap is resolved by
+// auto-port. Both bindings stay on 127.0.0.1.
+func TestPlanPorts_AutoPortHonorsExplicitAndResolvesRest(t *testing.T) {
+	// Not parallel: freeA2 is an unheld free port the plan must still find free
+	// when it probes; running in the serial phase shrinks the window in which a
+	// parallel ephemeral :0 bind could steal it.
+	freeA1 := freeLocalTCPPort(t)
+	freeA2 := freeLocalTCPPort(t)
+	busyB := occupyLoopbackPort(t)
+
+	app := appFixture("autoport-mixed-app", freeA1)
+	app.Ports = []catalog.Port{
+		{Service: "app", Container: 8080, Host: freeA1, Protocol: "tcp"},
+		{Service: "two", Container: 9090, Host: busyB, Protocol: "tcp"},
+	}
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	plan, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true, PortOverrides: map[int]int{freeA1: freeA2}},
+		planHosts(t), nil)
+	require.NoError(t, err)
+	require.Len(t, plan.LocalPorts, 2)
+
+	hostPorts := map[int]string{}
+	for _, b := range plan.LocalPorts {
+		hostPorts[b.HostPort] = b.HostIP
+		assert.Equal(t, "127.0.0.1", b.HostIP, "neither remap changes the host IP")
+	}
+	assert.Contains(t, hostPorts, freeA2, "the explicit --port remap is honored")
+
+	resolvedB := false
+	for hostPort := range hostPorts {
+		if hostPort > busyB {
+			ln, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(hostPort)))
+			if lerr == nil {
+				_ = ln.Close()
+				resolvedB = true
+			}
+		}
+	}
+	assert.True(t, resolvedB, "the unremapped occupied port is auto-resolved to a free port above it")
+}
+
+// TestPlanPorts_AutoPortDoesNotRescueExplicitConflict proves explicit --port
+// wins over --auto-port: when the user's own explicit target is occupied,
+// auto-port does NOT rescue it — the typed conflict naming the explicit target
+// surfaces, so the user sees their chosen port failed.
+func TestPlanPorts_AutoPortDoesNotRescueExplicitConflict(t *testing.T) {
+	t.Parallel()
+
+	free := freeLocalTCPPort(t)
+	busyTarget := occupyLoopbackPort(t)
+	app := appFixture("autoport-explicit-conflict-app", free)
+	eng, _ := newTestEngine(t, core.WithCatalog(catalogFixtureFS(t, app)))
+
+	_, err := core.PlanInstallForTest(eng, t.Context(),
+		types.InstallRequest{AppID: app.AppID, AutoPort: true, PortOverrides: map[int]int{free: busyTarget}},
+		planHosts(t), nil)
+	require.Error(t, err)
+	var conflict *types.PortConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, busyTarget, conflict.ConflictingHostPort, "the explicit choice is not auto-rescued")
 }
 
 // TestPlanPorts_LoopbackConflictReturnsTypedSuggestion proves a plan-time

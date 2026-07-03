@@ -128,6 +128,41 @@ func TestAppsInstall_PortConflict_PlainNoEnvelope(t *testing.T) {
 	assert.Contains(t, got.Err.Hint, "--port")
 }
 
+// TestAppsInstall_AutoPortFlag_SetsRequest proves --auto-port sets
+// types.InstallRequest.AutoPort true.
+func TestAppsInstall_AutoPortFlag_SetsRequest(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{installResult: &types.InstallResult{AppID: "appflowy", StackPath: "/s"}}
+	_, _, err := runLeaf(t, fake, "apps", "install", "appflowy", "--auto-port", "--json")
+	require.NoError(t, err)
+	assert.True(t, fake.installReq.AutoPort)
+}
+
+// TestAppsInstall_AutoPortFlag_DefaultFalse pins that omitting --auto-port
+// leaves AutoPort false.
+func TestAppsInstall_AutoPortFlag_DefaultFalse(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{installResult: &types.InstallResult{AppID: "appflowy", StackPath: "/s"}}
+	_, _, err := runLeaf(t, fake, "apps", "install", "appflowy", "--json")
+	require.NoError(t, err)
+	assert.False(t, fake.installReq.AutoPort)
+}
+
+// TestAppsInstall_AutoPortFlag_CombinesWithPort proves --auto-port and --port
+// coexist: AutoPort is set and the explicit override reaches PortOverrides
+// verbatim (explicit precedence is enforced engine-side).
+func TestAppsInstall_AutoPortFlag_CombinesWithPort(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEngine{installResult: &types.InstallResult{AppID: "appflowy", StackPath: "/s"}}
+	_, _, err := runLeaf(t, fake, "apps", "install", "appflowy", "--port", "8080=9090", "--auto-port", "--json")
+	require.NoError(t, err)
+	assert.True(t, fake.installReq.AutoPort)
+	assert.Equal(t, map[int]int{8080: 9090}, fake.installReq.PortOverrides)
+}
+
 // TestParsePortOverrides is a focused unit test of the parser.
 func TestParsePortOverrides(t *testing.T) {
 	t.Parallel()

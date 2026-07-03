@@ -77,4 +77,9 @@
 //   - [EnsureWithinRoot] — verifies a candidate path lies under a root
 //   - [SafeJoin] — joins a trusted root with an untrusted relative
 //     subpath, rejecting parent traversal and absolute re-injection
+//   - [ResolveContainedPath] — resolves root and candidate through
+//     EvalSymlinks on both sides and confirms containment, the seam
+//     destructive verbs run before os.RemoveAll
+//   - [IsSuspiciouslyShallowPath] — reports a near-root path, the
+//     defense-in-depth backstop those verbs apply before removal
 package security

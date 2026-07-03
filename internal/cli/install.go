@@ -70,6 +70,7 @@ func newAppsInstallCmd(newEngine func() (engine.Engine, error)) *cobra.Command {
 		stackPath     string
 		setValues     []string
 		portOverrides []string
+		autoPort      bool
 		assumeYes     bool
 		force         bool
 	)
@@ -135,6 +136,7 @@ database-risk update warning.`,
 				StackPath:         stackPath,
 				PlaceholderValues: placeholders,
 				PortOverrides:     overrides,
+				AutoPort:          autoPort,
 				Force:             force,
 			}
 
@@ -155,6 +157,7 @@ database-risk update warning.`,
 	cmd.Flags().StringVar(&stackPath, "stack-path", "", "override the default ~/docker/<app> stack path")
 	cmd.Flags().StringArrayVar(&setValues, "set", nil, "set a catalog placeholder as KEY=VALUE (repeatable); secret placeholders are generated and cannot be set")
 	cmd.Flags().StringArrayVar(&portOverrides, "port", nil, "remap a conflicting loopback host port as HOST=NEW (repeatable); only single 127.0.0.1 ports, NEW must be 1025-65535")
+	cmd.Flags().BoolVar(&autoPort, "auto-port", false, "automatically remap conflicting loopback host ports to the next free port (non-interactive); explicit --port wins")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "accept safe confirmations without prompting (never the database-risk warning)")
 	cmd.Flags().BoolVar(&force, "force", false, "recover a provably-orphaned interrupted install (refuses a managed or running stack), then install")
 
