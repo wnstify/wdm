@@ -453,29 +453,7 @@ func (e *Engine) removeDeleteNetworks(
 		))
 	}
 
-	for _, name := range names {
-		ok, skipped, removeErr := docker.RemoveNetworkIfManaged(ctx, client, name)
-		if removeErr != nil {
-			retained = append(retained, types.RetainedNetwork{
-				Name:   name,
-				Reason: removeErr.Error(),
-			})
-			continue
-		}
-		if skipped {
-			// Present but not wdm-owned (no wdm.managed=true label): leave the
-			// operator's network in place rather than deleting a foreign one.
-			retained = append(retained, types.RetainedNetwork{
-				Name:   name,
-				Reason: "network is not wdm-managed (missing wdm.managed=true label)",
-			})
-			continue
-		}
-		if ok {
-			removed = append(removed, name)
-		}
-	}
-	return removed, retained
+	return partitionManagedNetworks(ctx, client, names)
 }
 
 // confirmDelete asks the Confirmer to authorize the permanent deletion
