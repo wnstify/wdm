@@ -69,6 +69,22 @@ func (e *Engine) recoverOrphanedStack(
 	}
 	lg.step(ctx, "recover: no running containers for project")
 
+	// Prove the digest-pinned bind-cleanup helper image is present BEFORE any
+	// state mutation. removeOrphanStackDir may need it to clear subuid-owned
+	// bind files on EACCES (RemoveBindMountContents runs --pull=never), and
+	// clearing the .wdm.lock first would strip the only proof the directory is
+	// wdm-owned: a failed removal after the lock is gone would leave a
+	// lock-less, non-empty directory that every later --force refuses via the
+	// StackLockClearAbsent path. Fail closed here, before the lock is touched.
+	if err := docker.EnsureBindMountCleanupHelperAvailable(ctx, client); err != nil {
+		return types.WrapError(
+			types.ErrCodeGeneric,
+			"orphan recovery cannot proceed without the bind-cleanup helper image",
+			"pull the wdm cleanup helper image, then retry `wdm apps install --force`",
+			err,
+		)
+	}
+
 	// Capture the wdm-created networks from the rendered compose BEFORE
 	// removing the directory; a missing/unparseable file yields no names.
 	composePath := filepath.Join(stackPath, installComposeFilename)

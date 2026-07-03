@@ -3,6 +3,7 @@ package core_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,24 @@ func recoverRunningContainerClient(t *testing.T) *fakeDockerClient {
 				return docker.CommandResult{Stdout: id + "\n"}, nil
 			case "docker.containerInspectInvocation":
 				return docker.CommandResult{Stdout: inspect}, nil
+			default:
+				return docker.CommandResult{}, nil
+			}
+		},
+	}
+}
+
+// recoverHelperUnavailableClient reports no running containers but fails the
+// digest-pinned bind-cleanup helper probe, so the recovery preflight must
+// refuse before any state mutation.
+func recoverHelperUnavailableClient() *fakeDockerClient {
+	return &fakeDockerClient{
+		runFn: func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+			switch fmt.Sprintf("%T", inv) {
+			case "docker.projectContainerListInvocation":
+				return docker.CommandResult{}, nil // no containers
+			case "docker.imageDigestInspectInvocation":
+				return docker.CommandResult{}, errors.New("no such image")
 			default:
 				return docker.CommandResult{}, nil
 			}
@@ -164,6 +183,31 @@ func TestRecoverOrphanedStack_AbsentLockEmptyRemoved(t *testing.T) {
 
 	_, statErr := os.Stat(stackPath)
 	assert.True(t, os.IsNotExist(statErr), "an empty leftover dir must be removed")
+}
+
+// TestRecoverOrphanedStack_HelperImageUnavailableRefusesBeforeLockTouched
+// pins the #166 wedge class: removeOrphanStackDir may need the digest-pinned
+// bind-cleanup helper to clear subuid-owned files on EACCES, so recovery MUST
+// prove the image is present before clearing the .wdm.lock. If the preflight
+// failed only after the lock was gone, a failed removal would leave a
+// lock-less, non-empty directory that every later --force refuses. A stale
+// (empty) lock is used so a proceeding recovery WOULD clear it and remove the
+// dir; the assertions prove neither happened.
+func TestRecoverOrphanedStack_HelperImageUnavailableRefusesBeforeLockTouched(t *testing.T) {
+	t.Parallel()
+
+	eng, _ := newTestEngine(t)
+	stackPath := recoverStackDir(t, []byte("")) // stale lock: cleared+removed if it proceeded
+	lockPath := filepath.Join(stackPath, ".wdm.lock")
+	client := recoverHelperUnavailableClient()
+
+	err := eng.RecoverOrphanedStackForTest(context.Background(), client, stackPath, recoverComposeProject)
+	require.Error(t, err)
+
+	_, statErr := os.Stat(lockPath)
+	require.NoError(t, statErr, "the .wdm.lock must survive: recovery must refuse before clearing it")
+	_, statErr = os.Stat(stackPath)
+	assert.NoError(t, statErr, "the orphan directory must not be removed when the preflight fails")
 }
 
 // TestRecoverOrphanedStack_NothingPresentNoop proves recovery is a no-op when
