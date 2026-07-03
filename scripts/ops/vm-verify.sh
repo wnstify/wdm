@@ -79,7 +79,7 @@ done
 # Word-split apps into separate ssh positional args; each is validated
 # [a-z0-9-] above, so splitting is safe and intentional.
 # shellcheck disable=SC2086
-exec ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 "$target" sh -s -- "$fresh" $apps <<'REMOTE'
+exec ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 "$target" sh -s -- "$fresh" $apps <<'REMOTE'
 set -eu
 
 die() {
