@@ -5,6 +5,15 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
 
 ## Unreleased
 
+### Added
+- The interactive installer now offers to remap a conflicting loopback host port
+  instead of only failing. On a `127.0.0.1` port conflict the TUI shows the busy
+  port and its service and prompts for a new host port, prefilled with a
+  deterministic suggestion: press Enter to accept it, type a different port, or
+  press Esc to cancel (fail-closed, nothing is written). Submitting re-runs the
+  install with the chosen port re-probed; if it is also busy the prompt returns
+  with a fresh suggestion, and multiple conflicts are resolved one at a time.
+
 ### Fixed
 - `wdm apps update` now preserves the loopback host port a stack is actually
   bound to instead of reverting to the catalog default. A port remapped at
