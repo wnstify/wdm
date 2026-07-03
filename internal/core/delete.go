@@ -453,29 +453,7 @@ func (e *Engine) removeDeleteNetworks(
 		))
 	}
 
-	for _, name := range names {
-		ok, skipped, removeErr := docker.RemoveNetworkIfManaged(ctx, client, name)
-		if removeErr != nil {
-			retained = append(retained, types.RetainedNetwork{
-				Name:   name,
-				Reason: removeErr.Error(),
-			})
-			continue
-		}
-		if skipped {
-			// Present but not wdm-owned (no wdm.managed=true label): leave the
-			// operator's network in place rather than deleting a foreign one.
-			retained = append(retained, types.RetainedNetwork{
-				Name:   name,
-				Reason: "network is not wdm-managed (missing wdm.managed=true label)",
-			})
-			continue
-		}
-		if ok {
-			removed = append(removed, name)
-		}
-	}
-	return removed, retained
+	return partitionManagedNetworks(ctx, client, names)
 }
 
 // confirmDelete asks the Confirmer to authorize the permanent deletion
@@ -654,77 +632,43 @@ func wrapDeleteStackFilesError(stackPath string, err error) error {
 // or fail when either crosses a symlink (e.g. a /var → /private/var
 // indirection on the test host).
 func resolveDeleteTarget(stackBase, stackPath string) (string, error) {
-	resolvedBase, err := filepath.EvalSymlinks(stackBase)
+	resolvedBase, resolved, err := security.ResolveContainedPath(stackBase, stackPath)
 	if err != nil {
-		return "", usageValidationError(
-			"stack base could not be resolved",
-			"check that the configured stack base directory exists",
-			err,
-		)
+		switch {
+		case resolvedBase == "":
+			return "", usageValidationError(
+				"stack base could not be resolved",
+				"check that the configured stack base directory exists",
+				err,
+			)
+		case resolved == "":
+			return "", usageValidationError(
+				"stack path could not be resolved",
+				"the stack directory may have moved; re-run apps list",
+				err,
+			)
+		default:
+			return "", usageValidationError(
+				"stack path resolves outside the managed stack base",
+				"wdm refuses to delete paths outside its stack base (PRD §19)",
+				err,
+			)
+		}
 	}
 
-	resolved, err := filepath.EvalSymlinks(stackPath)
-	if err != nil {
-		return "", usageValidationError(
-			"stack path could not be resolved",
-			"the stack directory may have moved; re-run apps list",
-			err,
-		)
-	}
-
-	cleanedBase := filepath.Clean(resolvedBase)
-	cleaned := filepath.Clean(resolved)
-
-	if err := security.EnsureWithinRoot(cleanedBase, cleaned); err != nil {
-		return "", usageValidationError(
-			"stack path resolves outside the managed stack base",
-			"wdm refuses to delete paths outside its stack base (PRD §19)",
-			err,
-		)
-	}
-	if cleaned == cleanedBase {
+	if resolved == resolvedBase {
 		return "", usageValidationError(
 			"stack path resolves to the stack base itself",
 			"wdm refuses to delete the entire stack base (PRD §19)",
-			fmt.Errorf("resolved stack path %q is the stack base", cleaned),
+			fmt.Errorf("resolved stack path %q is the stack base", resolved),
 		)
 	}
-	if isSuspiciouslyShallowPath(cleaned) {
+	if security.IsSuspiciouslyShallowPath(resolved) {
 		return "", usageValidationError(
 			"stack path resolves to a suspiciously shallow location",
 			"wdm refuses to delete a near-root directory (PRD §19)",
-			fmt.Errorf("resolved stack path %q is too shallow to delete", cleaned),
+			fmt.Errorf("resolved stack path %q is too shallow to delete", resolved),
 		)
 	}
-	return cleaned, nil
-}
-
-// isSuspiciouslyShallowPath reports whether an absolute, cleaned path sits at
-// the filesystem root or a single top-level component such as "/etc" or
-// "/home" — and ONLY those. The floor is deliberately shallow: a two-segment
-// path such as "/data/<app>" is NOT shallow and so remains deletable,
-// because a single-segment custom stack base (e.g. BaseStackPath="/data",
-// resolving stacks to "/data/<app>") is legitimate and a stricter
-// >=3-segment floor would refuse it, creating a delete-only asymmetry no
-// other verb shares. /home-style two-segment bases are likewise allowed —
-// the unsafeRoots design keeps /home and /Users off the deny-list
-// (internal/security/paths.go:34-36).
-// This is therefore a defense-in-depth backstop, NOT the primary guard
-// against a near-root misconfiguration. What actually protects the deletion
-// is the layered managed-stack resolution that runs first: a parsing
-// .wdm.lock recording the exact app id (resolveManagedStack),
-// [security.EnsureWithinRoot] containment under the stack base, the separate
-// base-itself refusal (cleaned == cleanedBase), the engine-side typed-name
-// re-verification, and the §19:449
-// file-list confirmation. A one-segment target survives all of those only
-// under a pathological base, so this check refuses it as a last line rather
-// than the load-bearing one.
-func isSuspiciouslyShallowPath(cleaned string) bool {
-	trimmed := strings.Trim(cleaned, string(filepath.Separator))
-	if trimmed == "" {
-		// The filesystem root.
-		return true
-	}
-	// A single top-level component (no separator after trimming) is shallow.
-	return !strings.Contains(trimmed, string(filepath.Separator))
+	return resolved, nil
 }

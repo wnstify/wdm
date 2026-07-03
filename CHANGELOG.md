@@ -14,6 +14,13 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   install with the chosen port re-probed; if it is also busy the prompt returns
   with a fresh suggestion, and multiple conflicts are resolved one at a time.
 
+### Changed
+- Internal cleanup of the destructive paths, with no behavior change: delete
+  and uninstall now share one compose-derived network-removal loop, and the
+  symlink-aware path-containment checks in front of directory removal moved
+  into the security package with new tests at that boundary. Refusal behavior
+  and messages are unchanged.
+
 ### Fixed
 - `wdm apps update` now preserves the loopback host port a stack is actually
   bound to instead of reverting to the catalog default. A port remapped at
