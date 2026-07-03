@@ -3,9 +3,15 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
-## Unreleased
+## v1.5.0 - 2026-07-03
 
 ### Added
+- `wdm apps install --auto-port` automatically remaps conflicting loopback host
+  ports to the deterministic next-free port, non-interactively, re-planning
+  until all conflicts clear or the install fails closed (no free port).
+  Explicit `--port` wins: a port you remapped yourself is never auto-rescued,
+  and only single `127.0.0.1` ports are auto-resolved (ranges and public ports
+  stay fail-closed).
 - The interactive installer now offers to remap a conflicting loopback host port
   instead of only failing. On a `127.0.0.1` port conflict the TUI shows the busy
   port and its service and prompts for a new host port, prefilled with a
