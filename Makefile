@@ -6,7 +6,7 @@ GO_E2E_TAG ?= docker_e2e
 
 CATALOG_DIR ?= $(if $(XDG_DATA_HOME),$(XDG_DATA_HOME),$(HOME)/.local/share)/wdm/catalogs
 
-.PHONY: build build-linux test test-race coverage coverage-check catalog-freshness catalog-freshness-test release-notes-test dev-catalog-seed e2e lint vet fmt tidy clean help
+.PHONY: build build-linux test test-race coverage coverage-check catalog-freshness catalog-freshness-test release-notes-test dev-catalog-seed e2e vm-verify lint vet fmt tidy clean help
 
 build: ## Build local binary
 	$(GO) build -o $(BIN_DIR)/$(APP_NAME) $(CMD_DIR)
@@ -50,6 +50,9 @@ dev-catalog-seed: ## Seed the in-repo catalog into the local data dir for dev te
 
 e2e: ## Run Docker e2e tests
 	$(GO) test -tags $(GO_E2E_TAG) ./tests/e2e/...
+
+vm-verify: ## Verify origin/dev on the remote rootless-Docker server (needs WDM_VM_SSH; VM_VERIFY_ARGS for flags)
+	sh scripts/ops/vm-verify.sh $(VM_VERIFY_ARGS)
 
 lint: ## Run golangci-lint
 	golangci-lint run
