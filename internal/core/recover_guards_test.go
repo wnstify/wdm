@@ -18,7 +18,7 @@ import (
 // recoverFakeClient is a minimal docker.Client for white-box recovery tests:
 // it records each invocation type and delegates to runFn.
 type recoverFakeClient struct {
-	runFn      func(inv docker.Invocation) (docker.CommandResult, error)
+	runFn       func(inv docker.Invocation) (docker.CommandResult, error)
 	invokeTypes []string
 }
 
