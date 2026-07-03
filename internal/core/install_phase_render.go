@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -146,6 +147,7 @@ func buildInstallGuidance(plan *installPlan) (*types.PostInstallGuidance, error)
 
 	firstRunNotes := append([]string(nil), plan.app.FirstRunNotes...)
 	firstRunNotes = append(firstRunNotes, containerPrivilegeDisclosureLines(plan.app)...)
+	remapGuidanceNotes(firstRunNotes, plan.portOverrides)
 
 	guidance := &types.PostInstallGuidance{
 		LocalTargetURL: localTargetURL,
@@ -161,10 +163,12 @@ func buildInstallGuidance(plan *installPlan) (*types.PostInstallGuidance, error)
 	}
 	pangolin := plan.app.PangolinGuidance
 	if pangolin.TargetURL != "" || pangolin.RecommendedSubdomain != "" || len(pangolin.Notes) > 0 {
+		pangolinNotes := append([]string(nil), pangolin.Notes...)
+		remapGuidanceNotes(pangolinNotes, plan.portOverrides)
 		guidance.Pangolin = &types.PangolinGuidance{
 			TargetURL:            remapGuidanceURL(pangolin.TargetURL, plan.portOverrides),
 			RecommendedSubdomain: pangolin.RecommendedSubdomain,
-			Notes:                append([]string(nil), pangolin.Notes...),
+			Notes:                pangolinNotes,
 		}
 	}
 	return guidance, nil
@@ -223,6 +227,36 @@ func remapGuidanceURL(raw string, overrides map[int]int) string {
 	}
 	parsed.Host = net.JoinHostPort(parsed.Hostname(), strconv.Itoa(newPort))
 	return parsed.String()
+}
+
+// loopbackHostPortRe matches a loopback host followed by a port embedded in
+// free text — the 127.0.0.1/::1 literals or the localhost DNS name. It captures
+// the port digits so remapGuidanceNotes can rewrite only the number.
+var loopbackHostPortRe = regexp.MustCompile(`(?:127\.0\.0\.1|\[::1\]|::1|localhost):(\d+)`)
+
+// remapGuidanceNotes rewrites, in place, the loopback host port embedded in each
+// free-text guidance note when it is a remap source key, so notes that tell the
+// user to point a reverse proxy at http://127.0.0.1:<port> track a
+// --port/--auto-port remap (issue #161). Only ports that are override keys are
+// rewritten (ADR 0004 / PRD §11.1); every other occurrence is left untouched.
+func remapGuidanceNotes(notes []string, overrides map[int]int) {
+	if len(overrides) == 0 {
+		return
+	}
+	for i, note := range notes {
+		notes[i] = loopbackHostPortRe.ReplaceAllStringFunc(note, func(match string) string {
+			sep := strings.LastIndex(match, ":")
+			port, err := strconv.Atoi(match[sep+1:])
+			if err != nil {
+				return match
+			}
+			newPort, ok := overrides[port]
+			if !ok {
+				return match
+			}
+			return match[:sep+1] + strconv.Itoa(newPort)
+		})
+	}
 }
 
 // isLoopbackGuidanceHost reports whether a guidance URL host is loopback: a
