@@ -478,38 +478,33 @@ func resolveFootprintDir(home, dir string) (string, error) {
 		return "", nil
 	}
 
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolvedHome, cleaned, err := security.ResolveContainedPath(home, dir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			// A partially installed wdm may be missing a footprint directory
+			// (or its home); a non-existent target is a no-op, not a refusal.
 			return "", nil
+		case resolvedHome == "" || cleaned == "":
+			// A non-ENOENT resolution failure. The footprint dir lives under
+			// home, so an unresolvable home and an unresolvable dir are the
+			// same observable fault; report the dir-resolve refusal for both.
+			return "", types.WrapError(
+				types.ErrCodeGeneric,
+				"a wdm footprint directory could not be resolved",
+				fmt.Sprintf("inspect %s and remove it manually", dir),
+				err,
+			)
+		default:
+			return "", usageValidationError(
+				"a wdm footprint path resolves outside the home directory",
+				"wdm refuses to remove paths outside the home directory (PRD §39)",
+				err,
+			)
 		}
-		return "", types.WrapError(
-			types.ErrCodeGeneric,
-			"a wdm footprint directory could not be resolved",
-			fmt.Sprintf("inspect %s and remove it manually", dir),
-			err,
-		)
 	}
 
-	resolvedHome, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		return "", types.WrapError(
-			types.ErrCodeGeneric,
-			"the home directory could not be resolved",
-			"",
-			err,
-		)
-	}
-
-	cleaned := filepath.Clean(resolved)
-	if err := security.EnsureWithinRoot(filepath.Clean(resolvedHome), cleaned); err != nil {
-		return "", usageValidationError(
-			"a wdm footprint path resolves outside the home directory",
-			"wdm refuses to remove paths outside the home directory (PRD §39)",
-			err,
-		)
-	}
-	if isSuspiciouslyShallowPath(cleaned) {
+	if security.IsSuspiciouslyShallowPath(cleaned) {
 		return "", usageValidationError(
 			"a wdm footprint path resolves to a suspiciously shallow location",
 			"wdm refuses to remove a near-root directory (PRD §39)",
@@ -585,7 +580,7 @@ func (e *Engine) resolveRunningBinary() (string, error) {
 	}
 
 	cleaned := filepath.Clean(resolved)
-	if isSuspiciouslyShallowPath(cleaned) {
+	if security.IsSuspiciouslyShallowPath(cleaned) {
 		return "", usageValidationError(
 			"the wdm executable resolves to a suspiciously shallow location",
 			"wdm refuses to delete a near-root path (PRD §39)",

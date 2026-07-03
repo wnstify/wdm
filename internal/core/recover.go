@@ -170,7 +170,7 @@ func removeOrphanStackDir(ctx context.Context, client docker.Client, stackPath s
 			err,
 		)
 	}
-	if isSuspiciouslyShallowPath(cleaned) {
+	if security.IsSuspiciouslyShallowPath(cleaned) {
 		return usageValidationError(
 			"the orphan stack path resolves to a suspiciously shallow location",
 			"wdm refuses to remove a near-root directory (PRD §39)",

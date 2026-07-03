@@ -342,15 +342,6 @@ func ResolveDeleteTargetForTest(stackBase, stackPath string) (string, error) {
 	return resolveDeleteTarget(stackBase, stackPath)
 }
 
-// IsSuspiciouslyShallowPathForTest exercises the lexical shallow-path
-// backstop directly. resolveDeleteTarget calls filepath.EvalSymlinks
-// first (requiring the path to exist), so the shallow arm — a defense
-// against a stack base that resolves near root — is unit-tested here on
-// constructed absolute paths rather than through a brittle real /etc.
-func IsSuspiciouslyShallowPathForTest(cleaned string) bool {
-	return isSuspiciouslyShallowPath(cleaned)
-}
-
 func snapshotInstallPlanForTest(plan *installPlan) *InstallPlanSnapshotForTest {
 	if plan == nil {
 		return nil
