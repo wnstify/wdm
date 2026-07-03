@@ -22,6 +22,11 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   and re-renders the new catalog version onto that same port. Only single
   `127.0.0.1` ports are preserved; ranges and public ports re-render to the
   catalog default. `reconfigure` already preserved the port and is unchanged.
+- Post-install guidance notes now show the remapped loopback host port after a
+  `--port`, `--auto-port`, or TUI conflict remap. The "point your reverse proxy
+  at `http://127.0.0.1:<port>`" hint (and any other loopback URL embedded in a
+  first-run or Pangolin note) previously kept the original catalog port even
+  though the local target and Pangolin target URLs were already remapped.
 
 ## v1.4.0 - 2026-06-29
 
