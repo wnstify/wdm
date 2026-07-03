@@ -230,9 +230,13 @@ func remapGuidanceURL(raw string, overrides map[int]int) string {
 }
 
 // loopbackHostPortRe matches a loopback host followed by a port embedded in
-// free text — the 127.0.0.1/::1 literals or the localhost DNS name. It captures
-// the port digits so remapGuidanceNotes can rewrite only the number.
-var loopbackHostPortRe = regexp.MustCompile(`(?:127\.0\.0\.1|\[::1\]|::1|localhost):(\d+)`)
+// free text — the 127.0.0.1 literal, the bracketed [::1] form, or the localhost
+// DNS name. It captures the port digits so remapGuidanceNotes can rewrite only
+// the number. A bare ::1 is deliberately not matched: it would also match the
+// tail of a longer IPv6 address such as fc00::1:9000, and unbracketed IPv6
+// host:port is ambiguous — remapGuidanceURL likewise only accepts the
+// bracketed form via url.Parse.
+var loopbackHostPortRe = regexp.MustCompile(`(?:127\.0\.0\.1|\[::1\]|localhost):(\d+)`)
 
 // remapGuidanceNotes rewrites, in place, the loopback host port embedded in each
 // free-text guidance note when it is a remap source key, so notes that tell the

@@ -176,7 +176,10 @@ func TestGuidance_RemapRewritesNotePorts(t *testing.T) {
 	oldPort := freeLocalTCPPort(t)
 	newPort := freeLocalTCPPort(t)
 	app := appFixture("guidance-note-remap-app", oldPort)
-	app.FirstRunNotes = []string{fmt.Sprintf("Open http://127.0.0.1:%d and create the admin account.", oldPort)}
+	app.FirstRunNotes = []string{
+		fmt.Sprintf("Open http://127.0.0.1:%d and create the admin account.", oldPort),
+		fmt.Sprintf("Peers reach the mesh at fc00::1:%d over the VPN.", oldPort),
+	}
 	app.PangolinGuidance.Notes = []string{fmt.Sprintf("Using your own reverse proxy? Point it to http://127.0.0.1:%d", oldPort)}
 	compose := fmt.Sprintf("services:\n  app:\n    image: docker.io/example/app:1.0.0\n    ports:\n      - \"127.0.0.1:%d:8080\"\n", oldPort)
 	catalogFS := catalogFixtureFSWithFiles(t, map[string]string{
@@ -197,9 +200,11 @@ func TestGuidance_RemapRewritesNotePorts(t *testing.T) {
 
 	newHostPort := fmt.Sprintf("127.0.0.1:%d", newPort)
 	oldHostPort := fmt.Sprintf("127.0.0.1:%d", oldPort)
-	require.Len(t, snap.Guidance.FirstRunNotes, 1)
+	require.Len(t, snap.Guidance.FirstRunNotes, 2)
 	assert.Contains(t, snap.Guidance.FirstRunNotes[0], newHostPort, "first-run note must point at the bound port")
 	assert.NotContains(t, snap.Guidance.FirstRunNotes[0], oldHostPort, "the stale catalog port must be gone from the first-run note")
+	assert.Equal(t, fmt.Sprintf("Peers reach the mesh at fc00::1:%d over the VPN.", oldPort),
+		snap.Guidance.FirstRunNotes[1], "a longer IPv6 address ending in ::1:<port> is not loopback and must not be rewritten")
 	require.Len(t, snap.Guidance.Pangolin.Notes, 1)
 	assert.Contains(t, snap.Guidance.Pangolin.Notes[0], newHostPort, "pangolin note must point at the bound port")
 	assert.NotContains(t, snap.Guidance.Pangolin.Notes[0], oldHostPort, "the stale catalog port must be gone from the pangolin note")
