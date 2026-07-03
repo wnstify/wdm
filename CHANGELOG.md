@@ -27,6 +27,9 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
   at `http://127.0.0.1:<port>`" hint (and any other loopback URL embedded in a
   first-run or Pangolin note) previously kept the original catalog port even
   though the local target and Pangolin target URLs were already remapped.
+- The installer's rootless Docker pre-flight now matches the `name=rootless`
+  security option exactly, aligning with the runtime gate instead of a
+  substring match that a value like `name=rootless-extra` would satisfy.
 
 ## v1.4.0 - 2026-06-29
 

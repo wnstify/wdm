@@ -45,6 +45,8 @@ write_base_fakes() {
 		'[ "${1:-}" = "info" ] || exit 0' \
 		'if [ "${WDM_INSTALL_TEST_SCENARIO:-}" = "rootful_docker" ]; then' \
 		'	printf "%s\n" "[\"name=seccomp\"]"' \
+		'elif [ "${WDM_INSTALL_TEST_SCENARIO:-}" = "rootless_substring_docker" ]; then' \
+		'	printf "%s\n" "[\"name=rootless-extra\",\"name=seccomp\"]"' \
 		'else' \
 		'	printf "%s\n" "[\"name=rootless\",\"name=seccomp\"]"' \
 		'fi'
@@ -842,6 +844,9 @@ run_manifest_failure_rolls_back_case
 run_binary_install_failure_preserves_catalog_case
 run_case "rootful docker fails closed" \
 	"rootful_docker" \
+	"wdm requires rootless Docker; the active daemon is not running rootless"
+run_case "rootless substring security option fails closed" \
+	"rootless_substring_docker" \
 	"wdm requires rootless Docker; the active daemon is not running rootless"
 run_case "missing checksum entry fails closed" \
 	"missing_catalog_checksum" \
