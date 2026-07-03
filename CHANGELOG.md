@@ -30,6 +30,11 @@ follows Keep a Changelog, and the project follows Semantic Versioning.
 - The installer's rootless Docker pre-flight now matches the `name=rootless`
   security option exactly, aligning with the runtime gate instead of a
   substring match that a value like `name=rootless-extra` would satisfy.
+- `wdm apps install --force` orphan recovery no longer aborts with a
+  permission error when the orphaned stack contains data written by
+  containers as subordinate UIDs. Recovery now clears such bind-mount
+  contents through the Docker cleanup helper and retries the removal,
+  matching what `apps delete` already did.
 
 ## v1.4.0 - 2026-06-29
 
