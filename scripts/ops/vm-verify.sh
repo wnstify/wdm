@@ -131,15 +131,15 @@ verify() {
 	echo "== make dev-catalog-seed FORCE=1 =="
 	make dev-catalog-seed FORCE=1 || die "dev-catalog-seed failed"
 
+	echo "== make e2e =="
+	make e2e || die "make e2e failed"
+
 	# A leftover stack dir from a prior run makes install refuse; clear the
-	# matrix dirs (subuid-owned) before installing.
+	# matrix dirs (subuid-owned) right before installing.
 	echo "== pre-install guard: clear matrix stack dirs =="
 	for app in $apps; do
 		[ ! -e "$HOME/docker/$app" ] || rootlesskit rm -rf "$HOME/docker/$app" || die "pre-install clear ~/docker/$app failed"
 	done
-
-	echo "== make e2e =="
-	make e2e || die "make e2e failed"
 
 	for app in $apps; do
 		echo "== install $app =="
