@@ -81,7 +81,7 @@ func (e *Engine) recoverOrphanedStack(
 
 	switch outcome {
 	case state.StackLockClearCleared:
-		if err := removeOrphanStackDir(stackPath); err != nil {
+		if err := removeOrphanStackDir(ctx, client, stackPath); err != nil {
 			return err
 		}
 		lg.step(ctx, "recover: removed wdm-owned orphan stack directory")
@@ -119,7 +119,7 @@ func (e *Engine) recoverOrphanedStack(
 // reject an unsafe root, reject symlinked ancestors, reject an out-of-home
 // or suspiciously shallow resolved path, then RemoveAll. Named volumes are
 // Docker objects and are never touched here.
-func removeOrphanStackDir(stackPath string) error {
+func removeOrphanStackDir(ctx context.Context, client docker.Client, stackPath string) error {
 	if err := security.RejectUnsafeRoot(stackPath); err != nil {
 		return stackPathUnsafeError(err)
 	}
@@ -163,14 +163,31 @@ func removeOrphanStackDir(stackPath string) error {
 	}
 
 	if err := os.RemoveAll(cleaned); err != nil {
-		return types.WrapError(
-			types.ErrCodeGeneric,
-			"the orphan stack directory could not be removed",
-			"inspect the stack directory and remove it manually",
-			err,
-		)
+		if errors.Is(err, os.ErrPermission) {
+			// An interrupted install can leave subuid-owned bind files under
+			// the orphan directory, so the host user's RemoveAll gets EACCES.
+			// The fallback mounts only the already containment-proven directory
+			// and never touches Compose named volumes (issue #166).
+			if cleanupErr := docker.RemoveBindMountContents(ctx, client, cleaned); cleanupErr != nil {
+				return wrapRemoveOrphanStackDirError(errors.Join(err, cleanupErr))
+			}
+			if retryErr := os.RemoveAll(cleaned); retryErr != nil {
+				return wrapRemoveOrphanStackDirError(errors.Join(err, retryErr))
+			}
+			return nil
+		}
+		return wrapRemoveOrphanStackDirError(err)
 	}
 	return nil
+}
+
+func wrapRemoveOrphanStackDirError(err error) error {
+	return types.WrapError(
+		types.ErrCodeGeneric,
+		"the orphan stack directory could not be removed",
+		"inspect the stack directory and remove it manually",
+		err,
+	)
 }
 
 // sweepRecoveredNetworks best-effort removes the wdm-created networks the

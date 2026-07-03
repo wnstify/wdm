@@ -1,15 +1,34 @@
 package core
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/wnstify/wdm/internal/docker"
 	"github.com/wnstify/wdm/pkg/types"
 )
+
+// recoverFakeClient is a minimal docker.Client for white-box recovery tests:
+// it records each invocation type and delegates to runFn.
+type recoverFakeClient struct {
+	runFn      func(inv docker.Invocation) (docker.CommandResult, error)
+	invokeTypes []string
+}
+
+func (c *recoverFakeClient) Run(_ context.Context, inv docker.Invocation) (docker.CommandResult, error) {
+	c.invokeTypes = append(c.invokeTypes, fmt.Sprintf("%T", inv))
+	if c.runFn != nil {
+		return c.runFn(inv)
+	}
+	return docker.CommandResult{}, nil
+}
 
 // TestRemoveOrphanStackDir_Guards exercises removeOrphanStackDir's
 // containment wiring through the REAL security seam (RejectUnsafeRoot,
@@ -88,7 +107,7 @@ func TestRemoveOrphanStackDir_Guards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := tc.setup(t)
 
-			err := removeOrphanStackDir(path)
+			err := removeOrphanStackDir(t.Context(), nil, path)
 
 			if tc.wantErr {
 				require.Error(t, err)
@@ -107,4 +126,64 @@ func TestRemoveOrphanStackDir_Guards(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRemoveOrphanStackDir_PermissionDeniedBindFilesUsePathContainedDockerCleanup
+// pins issue #166: an interrupted install can leave subuid-owned bind files
+// under the orphan stack directory, so the host user's os.RemoveAll gets
+// EACCES. removeOrphanStackDir must recover exactly as deleteStackFiles does —
+// run one bounded, containment-proven Docker cleanup over the stack path, then
+// retry the removal — instead of aborting recovery. The removal boundary is
+// REAL: a 0o500 subdirectory holding a file makes the first os.RemoveAll fail
+// with os.ErrPermission; only the fallback lets the retry succeed.
+func TestRemoveOrphanStackDir_PermissionDeniedBindFilesUsePathContainedDockerCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are required to reproduce the bind-file removal failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can remove the protected fixture directly, so the fallback would not be exercised")
+	}
+
+	realHome, err := os.UserHomeDir()
+	require.NoError(t, err)
+	home, err := os.MkdirTemp(realHome, ".wdm-recover-perm-home-*")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+
+	stackPath := filepath.Join(home, "docker", "recoverapp")
+	protectedDir := filepath.Join(stackPath, "db")
+	protectedFile := filepath.Join(protectedDir, "ib_buffer_pool")
+	require.NoError(t, os.MkdirAll(protectedDir, 0o700))
+	require.NoError(t, os.WriteFile(protectedFile, []byte("subuid-owned db metadata"), 0o600))
+	require.NoError(t, os.Chmod(protectedDir, 0o500)) // r-x: unlink of the file fails
+	t.Cleanup(func() {
+		_ = os.Chmod(protectedDir, 0o700)
+		_ = os.RemoveAll(stackPath)
+	})
+
+	var helperCalls int
+	fake := &recoverFakeClient{
+		runFn: func(inv docker.Invocation) (docker.CommandResult, error) {
+			if fmt.Sprintf("%T", inv) == "docker.bindMountCleanupInvocation" {
+				helperCalls++
+				// The real helper runs as a subuid-mapped root and clears the
+				// contained path; emulate that by restoring perms and removing
+				// the bind contents so the retried os.RemoveAll succeeds.
+				require.NoError(t, os.Chmod(protectedDir, 0o700))
+				require.NoError(t, os.RemoveAll(protectedDir))
+			}
+			return docker.CommandResult{}, nil
+		},
+	}
+
+	err = removeOrphanStackDir(t.Context(), fake, stackPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, helperCalls,
+		"permission-denied bind files should trigger exactly one Docker cleanup helper")
+	assert.Contains(t, fake.invokeTypes, "docker.bindMountCleanupInvocation")
+	_, statErr := os.Stat(stackPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"the orphan stack directory should be removed after helper cleanup")
 }
