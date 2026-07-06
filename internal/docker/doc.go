@@ -40,9 +40,10 @@
 //	  before reaching the sink; [WithStreamExecutor] injects the
 //	  streaming seam for tests.
 //	- delete cleanup hardening: [EnsureBindMountCleanupHelperAvailable]
-//	  and [RemoveBindMountContents] add the local-only, digest-pinned
-//	  helper path used when container-owned bind files block host-side
-//	  stack deletion.
+//	  and [RemoveBindMountContents] add the digest-pinned helper path used
+//	  when container-owned bind files block host-side stack deletion. The
+//	  preflight pulls the pinned digest when absent (the only pull wdm
+//	  runs directly); the cleanup container itself runs --pull=never.
 //
 // Raw argv stays private to execClient's build/execute layer, so callers
 // cannot inject command tokens.
