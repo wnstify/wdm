@@ -123,6 +123,9 @@ const (
 	StepDeletePlanning = "step_delete_planning"
 	// StepDeleteConfirm reports destructive-delete confirmation gating.
 	StepDeleteConfirm = "step_delete_confirm"
+	// StepDeleteHelperPull reports the pre-mutation pull of the
+	// digest-pinned bind-cleanup helper image when it is absent locally.
+	StepDeleteHelperPull = "step_delete_helper_pull"
 	// StepDeleteComposeDown reports docker compose down during delete.
 	StepDeleteComposeDown = "step_delete_compose_down"
 	// StepDeleteRemoveNetworks reports best-effort removal of the app's
