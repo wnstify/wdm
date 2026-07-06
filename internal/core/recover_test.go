@@ -71,9 +71,10 @@ func recoverRunningContainerClient(t *testing.T) *fakeDockerClient {
 	}
 }
 
-// recoverHelperUnavailableClient reports no running containers but fails the
-// digest-pinned bind-cleanup helper probe, so the recovery preflight must
-// refuse before any state mutation.
+// recoverHelperUnavailableClient reports no running containers but fails
+// both the digest-pinned bind-cleanup helper probe and the fallback pinned
+// pull (issue #174 offline case), so the recovery preflight must refuse
+// before any state mutation.
 func recoverHelperUnavailableClient() *fakeDockerClient {
 	return &fakeDockerClient{
 		runFn: func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
@@ -82,6 +83,8 @@ func recoverHelperUnavailableClient() *fakeDockerClient {
 				return docker.CommandResult{}, nil // no containers
 			case "docker.imageDigestInspectInvocation":
 				return docker.CommandResult{}, errors.New("no such image")
+			case "docker.bindCleanupImagePullInvocation":
+				return docker.CommandResult{}, errors.New("dial tcp: no such host")
 			default:
 				return docker.CommandResult{}, nil
 			}

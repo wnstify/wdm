@@ -381,7 +381,7 @@ func (e *Engine) executeDelete(
 		return nil, err
 	}
 
-	if err := docker.EnsureBindMountCleanupHelperAvailable(ctx, client); err != nil {
+	if err := docker.EnsureBindMountCleanupHelperAvailable(ctx, client, onProgress); err != nil {
 		return nil, err
 	}
 

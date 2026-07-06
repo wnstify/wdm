@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.5.1 - 2026-07-06
+
+### Fixed
+- Deleting an app (and orphan recovery via `apps install --force`) no longer
+  fails when the digest-pinned busybox cleanup helper image is missing locally.
+  The pre-mutation preflight now pulls that exact pinned digest itself when the
+  image is absent, so no manual `docker pull` is needed and pruned images
+  recover automatically. If the pull fails (offline, registry error) the
+  operation still fails closed before anything is touched, with the same
+  actionable hint. The cleanup container itself is unchanged and still runs
+  with `--pull=never`, no network, and the pinned digest.
+
+### Changed
+- CI: the CodeQL actions (`init`, `analyze`, `upload-sarif`) were bumped to
+  v4.36.3. No effect on the shipped binary.
+
 ## v1.5.0 - 2026-07-03
 
 ### Added
