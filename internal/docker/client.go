@@ -265,6 +265,10 @@ func buildCommand(inv Invocation) (commandSpec, error) {
 		return buildContainerInspectCommand(typedInv.id)
 	case imageDigestInspectInvocation:
 		return buildImageDigestInspectCommand(typedInv.imageRef)
+	case bindCleanupImagePullInvocation:
+		// Fixed literal argv: the pinned helper digest is the only image
+		// wdm ever pulls directly (issue #174).
+		return commandSpec{argv: []string{"image", "pull", bindCleanupImage}}, nil
 	case projectVolumeListInvocation:
 		return buildProjectVolumeListCommand(typedInv.projectName)
 	case bindMountCleanupInvocation:
@@ -1050,6 +1054,12 @@ func validateImageArgv(argv []string) error {
 		argv[3] == imageDigestInspectFormat {
 		_, err := validateImageRef(argv[4])
 		return err
+	}
+	// The bind-cleanup helper preflight pull: every token including the
+	// digest-pinned ref is a fixed literal, so no tag-based or caller-chosen
+	// pull can ever pass this gate (issue #174).
+	if len(argv) == 3 && argv[1] == "pull" && argv[2] == bindCleanupImage {
+		return nil
 	}
 	return unsupportedDockerArgv(argv)
 }

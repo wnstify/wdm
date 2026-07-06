@@ -528,6 +528,7 @@ func TestProgressStepConstants_RestartRestoreDeleteAreStableAndUnique(t *testing
 		{name: "StepRestoreStatus", got: types.StepRestoreStatus, want: "step_restore_status"},
 		{name: "StepDeletePlanning", got: types.StepDeletePlanning, want: "step_delete_planning"},
 		{name: "StepDeleteConfirm", got: types.StepDeleteConfirm, want: "step_delete_confirm"},
+		{name: "StepDeleteHelperPull", got: types.StepDeleteHelperPull, want: "step_delete_helper_pull"},
 		{name: "StepDeleteComposeDown", got: types.StepDeleteComposeDown, want: "step_delete_compose_down"},
 		{name: "StepDeleteRemoveNetworks", got: types.StepDeleteRemoveNetworks, want: "step_delete_remove_networks"},
 		{name: "StepDeleteFiles", got: types.StepDeleteFiles, want: "step_delete_files"},
