@@ -41,7 +41,7 @@ func EnsureBindMountCleanupHelperAvailable(ctx context.Context, client Client, o
 	}
 
 	if onProgress != nil {
-		onProgress(types.StepDeleteHelperPull, 20, "pulling delete cleanup helper image")
+		onProgress(types.StepDeleteHelperPull, 35, "pulling delete cleanup helper image")
 	}
 	if _, err := client.Run(ctx, bindCleanupImagePullInvocation{}); err != nil {
 		if ctx.Err() != nil {
