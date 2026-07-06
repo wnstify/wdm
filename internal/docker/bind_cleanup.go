@@ -16,10 +16,13 @@ const (
 )
 
 // EnsureBindMountCleanupHelperAvailable verifies the digest-pinned helper
-// image is already present locally. Delete calls this before any mutation,
-// so the fallback cleanup cannot trigger a registry pull once deletion
-// has begun.
-func EnsureBindMountCleanupHelperAvailable(ctx context.Context, client Client) error {
+// image is present locally, pulling the exact pinned digest when the local
+// inspect finds it absent (issue #174). Delete and orphan recovery call this
+// before any mutation, so the fallback cleanup (which runs --pull=never)
+// cannot trigger a registry pull once deletion has begun. A failed pull
+// fails closed pre-mutation with a manual `docker pull` hint. onProgress may
+// be nil; it fires only when a pull actually starts.
+func EnsureBindMountCleanupHelperAvailable(ctx context.Context, client Client, onProgress types.ProgressFn) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -31,8 +34,16 @@ func EnsureBindMountCleanupHelperAvailable(ctx context.Context, client Client) e
 		)
 	}
 
-	_, err := client.Run(ctx, imageDigestInspectInvocation{imageRef: bindCleanupImage})
-	if err != nil {
+	if _, err := client.Run(ctx, imageDigestInspectInvocation{imageRef: bindCleanupImage}); err == nil {
+		return nil
+	} else if ctx.Err() != nil {
+		return err
+	}
+
+	if onProgress != nil {
+		onProgress(types.StepDeleteHelperPull, 20, "pulling delete cleanup helper image")
+	}
+	if _, err := client.Run(ctx, bindCleanupImagePullInvocation{}); err != nil {
 		if ctx.Err() != nil {
 			return err
 		}
@@ -73,6 +84,13 @@ type bindMountCleanupInvocation struct {
 }
 
 func (bindMountCleanupInvocation) isDockerInvocation() {}
+
+// bindCleanupImagePullInvocation maps to `docker image pull` of the pinned
+// helper digest — the only pull argv wdm ever allowlists. It carries no
+// fields so no caller input can vary the pulled ref.
+type bindCleanupImagePullInvocation struct{}
+
+func (bindCleanupImagePullInvocation) isDockerInvocation() {}
 
 func validateBindCleanupPath(rawPath string) (string, error) {
 	cleaned, err := validateAbsolutePath(

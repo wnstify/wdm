@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -653,10 +654,11 @@ func TestDeleteApp_DownFailureLeavesFilesIntact(t *testing.T) {
 }
 
 // TestDeleteApp_HelperUnavailableStopsBeforeComposeDownAndFiles proves the
-// local-only cleanup-helper preflight runs before any delete mutation. If the
-// digest-pinned helper image is not already present locally, DeleteApp must
-// refuse with a typed generic error, run no compose down, and leave the stack
-// byte-identical for a later retry after the operator pre-pulls the helper.
+// cleanup-helper preflight runs before any delete mutation. When the
+// digest-pinned helper image is absent AND the preflight pull fails (issue
+// #174 offline case), DeleteApp must refuse with a typed generic error, run
+// no compose down, and leave the stack byte-identical for a later retry
+// after the operator pre-pulls the helper.
 func TestDeleteApp_HelperUnavailableStopsBeforeComposeDownAndFiles(t *testing.T) {
 	t.Parallel()
 
@@ -678,12 +680,15 @@ func TestDeleteApp_HelperUnavailableStopsBeforeComposeDownAndFiles(t *testing.T)
 	require.NoError(t, err)
 
 	helperMissing := errors.New("No such image: docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662")
+	pullFailed := errors.New("dial tcp: no such host")
 	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
 		switch fmt.Sprintf("%T", inv) {
 		case "docker.projectVolumeListInvocation":
 			return volumeListResult("wdm-delete-helper-missing-app_data"), nil
 		case "docker.imageDigestInspectInvocation":
 			return docker.CommandResult{Stderr: helperMissing.Error(), ExitCode: 1}, helperMissing
+		case "docker.bindCleanupImagePullInvocation":
+			return docker.CommandResult{Stderr: pullFailed.Error(), ExitCode: 1}, pullFailed
 		default:
 			return docker.CommandResult{}, nil
 		}
@@ -702,6 +707,8 @@ func TestDeleteApp_HelperUnavailableStopsBeforeComposeDownAndFiles(t *testing.T)
 	assert.Contains(t, typedErr.Hint, "docker pull docker.io/library/busybox@sha256")
 
 	assert.Contains(t, fx.fake.invocationTypes, "docker.imageDigestInspectInvocation")
+	assert.Contains(t, fx.fake.invocationTypes, "docker.bindCleanupImagePullInvocation",
+		"the preflight must attempt the pinned-digest pull before failing closed")
 	assert.NotContains(t, fx.fake.invocationTypes, "docker.composeDownInvocation",
 		"helper preflight must refuse before compose down mutates containers")
 	assert.NotContains(t, fx.fake.invocationTypes, "docker.bindMountCleanupInvocation",
@@ -722,6 +729,43 @@ func TestDeleteApp_HelperUnavailableStopsBeforeComposeDownAndFiles(t *testing.T)
 		"helper preflight failure must not partially delete bind-mounted files")
 	_, statErr := os.Stat(fx.stackPath)
 	assert.NoError(t, statErr, "the stack directory must remain for retry")
+}
+
+// TestDeleteApp_PullsMissingCleanupHelperBeforeMutation pins the issue #174
+// fix at the engine seam: on a machine that never pulled the digest-pinned
+// cleanup helper, the preflight pulls it (still pre-mutation, surfaced as a
+// step_delete_helper_pull progress step) and the delete then completes
+// without any manual docker pull.
+func TestDeleteApp_PullsMissingCleanupHelperBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	fx := newDeleteFixture(t, appFixture("delete-helper-pull-app", 18081), nil)
+
+	helperMissing := errors.New("No such image: docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662")
+	fx.fake.runFn = func(_ int, inv docker.Invocation) (docker.CommandResult, error) {
+		if fmt.Sprintf("%T", inv) == "docker.imageDigestInspectInvocation" {
+			return docker.CommandResult{Stderr: helperMissing.Error(), ExitCode: 1}, helperMissing
+		}
+		return docker.CommandResult{}, nil
+	}
+
+	var steps []string
+	res, err := fx.eng.DeleteApp(t.Context(), types.DeleteRequest{
+		AppID:            fx.appID,
+		ConfirmationName: fx.appID,
+	}, func(step string, _ float64, _ string) { steps = append(steps, step) }, &fakeConfirmer{})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Contains(t, steps, types.StepDeleteHelperPull)
+
+	pullIdx := slices.Index(fx.fake.invocationTypes, "docker.bindCleanupImagePullInvocation")
+	downIdx := slices.Index(fx.fake.invocationTypes, "docker.composeDownInvocation")
+	require.GreaterOrEqual(t, pullIdx, 0, "the preflight must pull the pinned helper digest")
+	require.GreaterOrEqual(t, downIdx, 0, "the delete must proceed to compose down after the pull")
+	assert.Less(t, pullIdx, downIdx, "the helper pull must complete before compose down mutates state")
+
+	_, statErr := os.Stat(fx.stackPath)
+	assert.True(t, os.IsNotExist(statErr), "the delete must complete after the preflight pull")
 }
 
 // TestDeleteApp_PermissionDeniedBindFilesUsePathContainedDockerCleanup
