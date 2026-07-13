@@ -9,9 +9,6 @@ updates:
       time: "06:00"
       timezone: "Europe/Bratislava"
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - go
     commit-message:
       prefix: "deps"
       include: scope
@@ -25,9 +22,6 @@ updates:
       time: "06:00"
       timezone: "Europe/Bratislava"
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - github-actions
     commit-message:
       prefix: "ci"
       include: scope
