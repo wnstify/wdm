@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file. The format
 follows Keep a Changelog, and the project follows Semantic Versioning.
 
+## v1.5.2 - 2026-07-13
+
+### Security
+- Raised the required Go version and all CI and release builds to Go 1.26.5,
+  clearing the `GO-2026-5856` toolchain finding from `govulncheck`.
+
+### Fixed
+- Removed invalid explicit Dependabot labels so GitHub applies its default
+  dependency labels to update pull requests.
+
 ## v1.5.1 - 2026-07-06
 
 ### Fixed
