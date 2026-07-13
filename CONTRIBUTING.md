@@ -4,7 +4,7 @@ Contributions are welcome. `wdm` is released under the [MIT license](LICENSE); b
 
 ## Prerequisites
 
-- Go 1.26 (the toolchain version in [go.mod](go.mod)).
+- Go 1.26.5 or newer (the minimum toolchain version in [go.mod](go.mod)).
 - Docker 20.10+ with Compose V2, required to run the end-to-end tests.
 - A Linux amd64 target. `wdm` targets Linux amd64; other platforms are unsupported.
 
