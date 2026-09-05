@@ -26,7 +26,7 @@ Use the project's Make targets:
 
 `make build` writes the binary to `bin/wdm`, and a from-source build reports its version as `dev`. `make e2e` needs a working Docker daemon with the Compose V2 plugin.
 
-GitHub Actions run the required unit, lint, vulnerability, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
+GitHub Actions run the required unit, lint, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
 
 The repository owner merges pull requests once the required checks pass and every review thread is resolved. Maintainers review when they are available, but the branch rules do not require an approving review.
 

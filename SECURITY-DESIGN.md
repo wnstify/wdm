@@ -40,7 +40,7 @@ This document describes the actors, actions, trust boundaries, external interfac
 | Update catalog | End user or CI-provided release asset | Requires signed/checksummed catalog artifacts and fails closed on verification failure. |
 | Self-update binary | End user | Verifies checksums, detached Ed25519 signature, and attestation before staging a replacement binary. |
 | Publish release | Maintainer through Git tag | Runs only on `push` to `refs/tags/v*` in `wnstify/wdm`; signs `SHA256SUMS`, emits provenance, and creates a GitHub Release. |
-| Run CI | GitHub Actions | Uses pinned actions, read-only default token permissions, CodeQL, govulncheck, lint, tests, and protected-branch required checks. |
+| Run CI | GitHub Actions | Uses pinned actions, read-only default token permissions, CodeQL, lint, tests, and protected-branch required checks. |
 
 ## External Interfaces
 
@@ -95,9 +95,9 @@ The most likely and impactful risks are:
 | Accidental application-data deletion | Loss of user volumes. | Remove operations never run `docker compose down -v`; volume deletion is not part of normal removal. |
 | Secret disclosure in logs or JSON | Credentials exposed to terminal, logs, or automation. | Secrets are generated and redacted before output sinks. |
 | Untrusted pull request gaining privileged CI credentials | Secret or release-key exposure. | The release signing secret is only used in the tag-gated release job; pull request workflows do not run the release publisher. |
-| Vulnerable third-party dependency or container image | Known vulnerability reaches users. | Go dependencies are tracked in `go.mod`/`go.sum`, Dependabot is enabled, govulncheck and CodeQL run in CI, and app image updates are surfaced through update checks. |
+| Vulnerable third-party dependency or container image | Known vulnerability reaches users. | Go dependencies are tracked in `go.mod`/`go.sum`, Dependabot is enabled, CodeQL runs in CI, and app image updates are surfaced through update checks. |
 
-Security assessment is continuous: CI runs unit tests, linting, govulncheck, CodeQL, and Scorecard; releases require signed artifacts and provenance; repository rules protect `main` with required checks.
+Security assessment is continuous: CI runs unit tests, linting, CodeQL, and Scorecard; releases require signed artifacts and provenance; repository rules protect `main` with required checks.
 
 ## Maintainer Responsibilities
 
@@ -119,4 +119,4 @@ Escalated access is removed when it is no longer needed. Release signing secrets
 
 The project is run by a single active owner. The `webnestify-dev` team holds Write access and can review, but the rulesets on `dev` and `main` do not require an approving review, so most pull requests merge on the strength of the automated checks alone. Every change still arrives through a public pull request with signed commits, a DCO signoff, resolved review threads, and green required CI. The owner is the only account that can merge into `dev` or `main`, and the only bypass actor on `main` and the `v*` tag rules. The project does not use alternate accounts to simulate independent review.
 
-Controls are public pull requests, signed commits, DCO signoff, required CI (`test`, `lint`, `govulncheck`), CodeQL, protected `main`, protected `dev`, protected release tags, signed release artifacts, and public issue/security reporting.
+Controls are public pull requests, signed commits, DCO signoff, required CI (`test`, `lint`), CodeQL, protected `main`, protected `dev`, protected release tags, signed release artifacts, and public issue/security reporting.
