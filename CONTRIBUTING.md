@@ -67,7 +67,7 @@ Every security fix must ship a regression test named after the finding that exer
 2. Keep commits focused and atomic: one logical change per commit, with a clear message.
 3. Sign off every commit with `git commit -s` to certify the Developer Certificate of Origin.
 4. Run `make lint` and `make test` before opening a pull request.
-5. Open a pull request against the default branch (`main`) describing what changed and why.
+5. Open a pull request against `dev` describing what changed and why. `main` only receives merges from `dev`.
 
 ## Developer Certificate of Origin
 
