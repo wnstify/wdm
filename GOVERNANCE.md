@@ -24,7 +24,7 @@ The owner is the `wnstfy` GitHub account.
 
 ### Maintainers
 
-Maintainers hold Write access and review changes. They are the members of the `@wnstify/webnestify-dev` team, which is the code-owner team in [CODEOWNERS](CODEOWNERS) and is auto-requested to review every pull request.
+Maintainers hold Write access and review changes. They are the members of the `@wnstify/webnestify-dev` team. The repository has no CODEOWNERS file, so nobody is requested automatically; the owner asks for a review when a change needs one.
 
 Responsibilities:
 
@@ -35,7 +35,7 @@ Responsibilities:
 
 Maintainers review changes but do not merge into `dev` or `main`; branch protection restricts merging to the owner. The owner's own pull requests go through the same required checks as everyone else's.
 
-The current maintainers and their review scope are recorded in [CODEOWNERS](CODEOWNERS); team membership is visible on the `@wnstify/webnestify-dev` team page. Maintainer responsibilities for security and release material are detailed in [SECURITY-DESIGN.md](SECURITY-DESIGN.md).
+Team membership is visible on the `@wnstify/webnestify-dev` team page. Maintainer responsibilities for security and release material are detailed in [SECURITY-DESIGN.md](SECURITY-DESIGN.md).
 
 ### Contributors
 
