@@ -28,7 +28,7 @@ Use the project's Make targets:
 
 GitHub Actions run the required unit, lint, vulnerability, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
 
-Pull requests are merged by the repository owner after required checks pass and a maintainer other than the author approves the change.
+The repository owner merges pull requests once the required checks pass and every review thread is resolved. Maintainers review when they are available, but the branch rules do not require an approving review.
 
 ## Seed a catalog for local testing
 

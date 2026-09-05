@@ -4,7 +4,7 @@ This document defines how the `wdm` project is run: the roles, who holds them, h
 
 ## Model
 
-`wdm` uses a small maintainer-led model. A maintainer team reviews and approves changes, and the project owner holds final decision authority and merge rights. Decisions are made by maintainer consensus in public pull requests and issues; the owner decides when consensus is not reached. The model is intentionally lightweight to match the size of the project, and it is reviewed as the project grows.
+`wdm` uses a small owner-led model. A maintainer team reviews changes when available, and the project owner holds final decision authority and merge rights. Decisions are made by maintainer consensus in public pull requests and issues; the owner decides when consensus is not reached. The model is intentionally lightweight to match the size of the project, and it is reviewed as the project grows.
 
 ## Roles and responsibilities
 
@@ -28,12 +28,12 @@ Maintainers hold Write access and review changes. They are the members of the `@
 
 Responsibilities:
 
-- Review and approve pull requests; every change requires an approving review from a maintainer other than the author.
+- Review pull requests. Reviews are welcome on every change but the branch rules do not require one.
 - Triage issues and security reports.
 - Keep documentation and tests in sync with changes.
 - Uphold the Code of Conduct.
 
-Maintainers approve changes but do not merge into `dev` or `main`; merging is restricted to the owner by branch protection. This keeps an independent human review on every change, including the owner's own pull requests.
+Maintainers review changes but do not merge into `dev` or `main`; branch protection restricts merging to the owner. The owner's own pull requests go through the same required checks as everyone else's.
 
 The current maintainers and their review scope are recorded in [CODEOWNERS](CODEOWNERS); team membership is visible on the `@wnstify/webnestify-dev` team page. Maintainer responsibilities for security and release material are detailed in [SECURITY-DESIGN.md](SECURITY-DESIGN.md).
 
@@ -43,7 +43,7 @@ Anyone may contribute. Contributors open issues and pull requests following [CON
 
 ## Decision-making
 
-- Routine changes are decided by maintainer review and the required checks. A pull request merges once required CI passes, conversations are resolved, and a maintainer other than the author has approved the latest push.
+- Routine changes are decided by the required checks and any review that maintainers leave. A pull request merges once required CI passes and every review thread is resolved.
 - Larger or contested decisions are discussed in the relevant issue or pull request. Maintainers seek consensus; the owner decides if consensus is not reached.
 - Changes to security policy, release signing, repository settings, or this governance document are owner decisions.
 
