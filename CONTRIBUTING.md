@@ -26,9 +26,9 @@ Use the project's Make targets:
 
 `make build` writes the binary to `bin/wdm`, and a from-source build reports its version as `dev`. `make e2e` needs a working Docker daemon with the Compose V2 plugin.
 
-GitHub Actions run the required unit, lint, vulnerability, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
+GitHub Actions run the required unit, lint, static-analysis, and DCO checks on pull requests and pushes. The Docker end-to-end suite runs on a schedule, on manual dispatch, and when its workflow changes.
 
-Pull requests are merged by the repository owner after required checks pass and a maintainer other than the author approves the change.
+The repository owner merges pull requests once the required checks pass and every review thread is resolved. Maintainers review when they are available, but the branch rules do not require an approving review.
 
 ## Seed a catalog for local testing
 
@@ -67,7 +67,7 @@ Every security fix must ship a regression test named after the finding that exer
 2. Keep commits focused and atomic: one logical change per commit, with a clear message.
 3. Sign off every commit with `git commit -s` to certify the Developer Certificate of Origin.
 4. Run `make lint` and `make test` before opening a pull request.
-5. Open a pull request against the default branch (`main`) describing what changed and why.
+5. Open a pull request against `dev` describing what changed and why. `main` only receives merges from `dev`.
 
 ## Developer Certificate of Origin
 

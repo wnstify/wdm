@@ -38,7 +38,7 @@ Rotate a project secret when it may have been exposed, when the maintainer accou
 
 The project treats Software Composition Analysis (SCA), Static Application Security Testing (SAST), and license findings as release-blocking inputs.
 
-SCA inputs include `go mod verify`, `go mod tidy -diff`, Dependabot alerts, and `govulncheck`. A failing `go mod verify`, unexpected module drift, or a `govulncheck` finding in reachable code blocks merge and release until fixed or documented as non-exploitable.
+SCA inputs include `go mod verify`, `go mod tidy -diff`, and Dependabot alerts. A failing `go mod verify`, unexpected module drift, or a Dependabot alert in reachable code blocks merge and release until fixed or documented as non-exploitable. The `govulncheck` CI job was removed and will return as part of a shell-based tooling migration.
 
 SAST inputs include CodeQL code scanning and security-relevant linter findings. Critical SAST findings block merge and release. High and medium findings must be fixed, downgraded with written rationale, or tracked before the next stable release, based on exploitability and affected code path.
 
